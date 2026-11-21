@@ -16,7 +16,7 @@
 
 <p align="center">▶ <a href="docs/assets/pibot-intro-60s.mp4">看 60 秒视频</a> · <a href="https://pibot.space">下载</a> · <a href="docs/guide/README.md">使用指南</a></p>
 
-[English](README.md) · [中文](README.zh-CN.md)
+[English](README.md) · [中文](README.zh-CN.md) · [日本語](README.ja.md)
 
 Pi Bot 是一个桌面应用：一群有名字的 Bot 在你自己的电脑上干活。你可以和某个 Bot 私聊，也可以把几个 Bot
 拉进群聊；给它们一个工作文件夹，它们会做计划、跑命令、改文件、互相交接，有风险的步骤都等你批准。
