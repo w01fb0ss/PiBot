@@ -52,6 +52,7 @@ export function capabilityPrompt(language: "zh" | "en", facts: CapabilityFacts):
     bing: "Bing",
     brave: "Brave Search",
     tavily: "Tavily",
+    keenable: "Keenable",
     searxng: "SearXNG",
   };
   const search = facts.search

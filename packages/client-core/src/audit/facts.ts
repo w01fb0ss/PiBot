@@ -251,6 +251,7 @@ export function auditProvider(detail: AuditDetail, t: AuditT) {
     "github-copilot": "GitHub Copilot",
     brave: "Brave",
     tavily: "Tavily",
+    keenable: "Keenable",
     searxng: "SearXNG",
   };
   return (

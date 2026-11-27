@@ -43,7 +43,7 @@ export const SearchMethods = {
     params: z.union([
       z.strictObject({ provider: z.enum(["keyless", "duckduckgo", "bing"]) }),
       z.strictObject({
-        provider: z.enum(["brave", "tavily"]),
+        provider: z.enum(["brave", "tavily", "keenable"]),
         apiKey: SafeSecretSchema.optional(),
       }),
       z.strictObject({ provider: z.literal("searxng"), baseUrl: WebUrlSchema }),
@@ -52,7 +52,7 @@ export const SearchMethods = {
   },
   "search.disclose": {
     params: z.strictObject({
-      provider: z.enum(["brave", "tavily", "searxng", "duckduckgo", "bing"]),
+      provider: z.enum(["brave", "tavily", "keenable", "searxng", "duckduckgo", "bing"]),
       expectedEndpoint: WebUrlSchema.optional(),
     }),
     result: ok,
