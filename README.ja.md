@@ -16,7 +16,7 @@
 
 <p align="center">▶ <a href="docs/assets/pibot-intro-60s.mp4">60 秒の動画を見る</a> · <a href="https://pibot.space">ダウンロード</a> · <a href="docs/guide/README.md">ユーザーガイド</a> · <a href="https://pibot.space/en/guides/">オンラインドキュメント</a></p>
 
-[English](README.md) · [中文](README.zh-CN.md) · [日本語](README.ja.md)
+[English](README.md) · [中文](README.zh-CN.md) · [日本語](README.ja.md) · [Türkçe](README.tr.md)
 
 Pi Bot は、名前を持つ Bot のチームがあなた自身のコンピューター上で作業するデスクトップアプリです。Bot と直接チャットしたり、複数の Bot をグループチャットに入れたりして作業フォルダーを渡すと、Bot は計画を立て、コマンドを実行し、ファイルを編集し、互いに作業を引き継ぎます。リスクのある手順はすべてあなたの承認を待ちます。「頭脳」もあなたのマシン上で動作します。チャット、ファイル、メモリ、キーはローカルに保存され、あなたが送信したプロンプトを見るのは、あなたが選んだモデルプロバイダーだけです。
 
