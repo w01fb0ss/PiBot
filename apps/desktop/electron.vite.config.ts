@@ -37,6 +37,7 @@ const CHILD_NODE_ENTRIES = [
   "violation-log",
   "plugin-calendar-server",
   "plugin-contacts-server",
+  "plugin-image-inspiration-server",
   ...(includeLocalGmail ? ["plugin-gmail-server"] : []),
   "linux-sandbox-check",
   "pibot-mcp-bridge",
@@ -154,7 +155,9 @@ export default defineConfig(({ command }) => ({
                 (includeLocalGmail && parts[0] === "gmail" && parts[1] === "pibot.local.json") ||
                 parts[1] === ".mcp.json" ||
                 parts[1] === ".claude-plugin" ||
-                parts[1] === "skills"
+                parts[1] === "skills" ||
+                parts[1] === "LICENSE" ||
+                parts[1] === "NOTICE"
               );
             },
           });

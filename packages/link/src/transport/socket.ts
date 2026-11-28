@@ -132,7 +132,6 @@ export function connectRelay(options: SocketOptions) {
       clearTimeout(deadline);
       clearInterval(stepTimer);
       clearInterval(heartbeat);
-      connection.abort();
       for (const [type, handler] of handlers) current?.removeEventListener(type, handler);
       current?.addEventListener("error", ignoreRetiredError);
       const progress = current?.connectProgress;
@@ -174,6 +173,10 @@ export function connectRelay(options: SocketOptions) {
         } catch {
           /* Diagnostics never interrupt cleanup. */
         }
+      }
+      // A room waiter can reject synchronously on abort. Record the socket failure first.
+      connection.abort();
+      if (!stopped && id === generation) {
         state("offline");
         if (stopped) return;
         timer = setTimeout(start, Math.min(60_000, 1000 * 2 ** Math.min(retry++, 6)));

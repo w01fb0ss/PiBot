@@ -1,8 +1,19 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { open, readdir, realpath, stat } from "node:fs/promises";
-import { basename, join } from "node:path";
-import type { DiscoveredItemKind, DiscoverySourceId } from "@pibot/plugins-contract/full";
+import { lstat, open, readdir, realpath, stat } from "node:fs/promises";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { PortablePiBotApplicationSchema } from "@pibot/plugin-sdk";
+import {
+  type DiscoveredItemKind,
+  type DiscoverySourceId,
+  implicitPluginConfigKeys,
+  isExcludedPluginEntry,
+  normalizePluginConfigField,
+  PLUGIN_CONFIG_MAX_BYTES,
+  requiresPluginSetup,
+} from "@pibot/plugins-contract/full";
+import { importWorkingDirectory } from "../import-working-directory.ts";
+import { packageManagerDomains } from "../service/connector-import.ts";
 import { codexMcpServers, parseJsonc, skillFrontMatter } from "./formats.ts";
 import type { McpFormat, SourceLayout } from "./locations.ts";
 import {
@@ -42,6 +53,9 @@ export interface ScannedItem {
   description: string;
   secrets: { name: string; kind: "stored" | "needed" }[];
   contains?: { mcp: boolean; skills: boolean };
+  needsSetup?: boolean;
+  workingDirectory?: string;
+  registrySites?: readonly string[];
   locator: Locator;
   /**
    * Fingerprint of what was read (kept in memory only): bringing it over re-reads and refuses
@@ -66,7 +80,7 @@ export function itemKey(locator: Locator) {
     .slice(0, 24)}`;
 }
 
-const digestOf = (value: unknown) =>
+export const digestOf = (value: unknown) =>
   createHash("sha256")
     .update(typeof value === "string" ? value : JSON.stringify(value))
     .digest("hex");
@@ -276,6 +290,128 @@ async function pluginFolders(
   return out;
 }
 
+function insideDir(root: string, candidate: string): boolean {
+  const rel = relative(root, candidate);
+  return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel));
+}
+
+/**
+ * Reads a bounded regular file strictly inside `realRoot` without following any symbolic links
+ * along the path or at the leaf, matching the import host's containment checks.
+ */
+async function readPluginFileNoFollow(
+  realRoot: string,
+  filePath: string,
+  max: number,
+  signal: AbortSignal,
+): Promise<string | undefined> {
+  signal.throwIfAborted();
+  const resolvedPath = resolve(filePath);
+  if (realRoot === resolvedPath || !insideDir(realRoot, resolvedPath)) return undefined;
+  let initial: Awaited<ReturnType<typeof lstat>>;
+  try {
+    let ancestor = realRoot;
+    for (const part of relative(realRoot, resolvedPath).split(sep).slice(0, -1)) {
+      ancestor = join(ancestor, part);
+      if (!(await lstat(ancestor)).isDirectory()) return undefined;
+    }
+    initial = await lstat(resolvedPath, { bigint: true });
+  } catch (error) {
+    if (missing(error)) return undefined;
+    throw error;
+  }
+  if (!initial.isFile() || Number(initial.size) > max) return undefined;
+  if (!insideDir(realRoot, await realpath(resolvedPath))) return undefined;
+  const file = await open(
+    resolvedPath,
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | constants.O_NONBLOCK,
+  );
+  try {
+    const info = await file.stat({ bigint: true });
+    if (
+      !info.isFile() ||
+      Number(info.size) > max ||
+      info.dev !== initial.dev ||
+      info.ino !== initial.ino
+    )
+      return undefined;
+    const buffer = Buffer.alloc(Number(info.size));
+    const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+    const latest = await lstat(resolvedPath, { bigint: true });
+    if (
+      bytesRead !== buffer.length ||
+      !insideDir(realRoot, await realpath(resolvedPath)) ||
+      latest.dev !== info.dev ||
+      latest.ino !== info.ino ||
+      latest.size !== info.size ||
+      latest.mtimeMs !== info.mtimeMs
+    )
+      return undefined;
+    signal.throwIfAborted();
+    return buffer.toString("utf8");
+  } finally {
+    await file.close();
+  }
+}
+
+/** Uses the importer's setting rules without staging or reading the full plugin package. */
+async function pluginNeedsSetup(
+  realFolder: string,
+  manifest: Record<string, unknown>,
+  signal: AbortSignal,
+): Promise<boolean> {
+  const fields = [];
+  for (const [key, raw] of Object.entries(record(manifest.userConfig) ?? {})) {
+    const field = record(raw);
+    if (field) fields.push(normalizePluginConfigField(key, field));
+  }
+  if (requiresPluginSetup(fields)) return true;
+
+  const readConfig = async (filePath: string) => {
+    try {
+      const text = await readPluginFileNoFollow(
+        realFolder,
+        filePath,
+        PLUGIN_CONFIG_MAX_BYTES,
+        signal,
+      );
+      if (text !== undefined) return record(JSON.parse(text.replace(/^\uFEFF/u, "")));
+    } catch {
+      signal.throwIfAborted();
+      // The full import reports unreadable, unsafe or malformed files when opened.
+    }
+    return undefined;
+  };
+  const declared = new Set(fields.map((field) => field.key));
+  const needsImplicitSetting = (servers: unknown) => {
+    const source = record(servers);
+    return !!source && implicitPluginConfigKeys(source, declared).size > 0;
+  };
+  const application = PortablePiBotApplicationSchema.safeParse(
+    await readConfig(join(realFolder, "pibot.json")),
+  );
+  if (application.success) return needsImplicitSetting({ env: application.data.server.env });
+
+  const rootMcpPath = join(realFolder, ".mcp.json");
+  const rootMcp = await readConfig(rootMcpPath);
+  if (needsImplicitSetting(rootMcp?.mcpServers ?? rootMcp)) return true;
+  if (typeof manifest.mcpServers !== "string") return needsImplicitSetting(manifest.mcpServers);
+
+  const declaredPath = manifest.mcpServers;
+  if (isAbsolute(declaredPath) || declaredPath.includes("${")) return false;
+  const resolved = resolve(realFolder, declaredPath);
+  if (
+    resolved === rootMcpPath ||
+    !insideDir(realFolder, resolved) ||
+    relative(realFolder, resolved)
+      .split(sep)
+      .some((part, index) => isExcludedPluginEntry(part, index === 0))
+  )
+    return false;
+  const source = await readConfig(resolved);
+  return needsImplicitSetting(source?.mcpServers ?? source);
+}
+
 /** The manifest text and its fields; the text is what the item's digest covers. */
 export async function pluginManifest(folder: string, signal: AbortSignal) {
   for (const candidate of [
@@ -285,7 +421,7 @@ export async function pluginManifest(folder: string, signal: AbortSignal) {
   ])
     try {
       const text = await readBounded(candidate, PLUGIN_MANIFEST_BYTES, true, signal);
-      const value = record(JSON.parse(text));
+      const value = record(JSON.parse(text.replace(/^\uFEFF/u, "")));
       if (value) return { text, value };
     } catch (error) {
       if (!missing(error)) throw error;
@@ -341,6 +477,7 @@ export async function scanSource(
   seen: Set<string>,
   signal: AbortSignal,
   skip: SkipLog,
+  userHome: string,
 ): Promise<ScannedSource> {
   const installed = await isDirectory(layout.base);
   const items: ScannedItem[] = [];
@@ -416,10 +553,20 @@ export async function scanSource(
         chosen.set(candidate.name, { ...candidate, entry: candidate.entry });
     }
     for (const { scope, name, entry } of chosen.values()) {
+      const workingDirectory =
+        entry.cwd === undefined ? undefined : importWorkingDirectory(entry.cwd, userHome);
+      if (entry.cwd !== undefined && workingDirectory === undefined) {
+        skip(layout.id, basename(file.path), "mcp_entry_unsupported");
+        continue;
+      }
       push({
         kind: "mcp",
         name,
         description: entryDescription(entry),
+        ...(workingDirectory ? { workingDirectory } : {}),
+        ...(entry.transport === "stdio" && entry.command
+          ? { registrySites: packageManagerDomains(entry.command) }
+          : {}),
         secrets: entrySecrets(entry),
         locator: {
           kind: "mcp",
@@ -453,12 +600,14 @@ export async function scanSource(
           mcp: manifest.value.mcpServers !== undefined || (await exists(join(real, ".mcp.json"))),
           skills: await isDirectory(join(real, "skills")),
         };
+        const needsSetup = await pluginNeedsSetup(real, manifest.value, signal);
         push({
           kind: "plugin",
           name: clean(manifest.value.name, 200) || basename(folder),
           description: clean(manifest.value.description, 1024),
           secrets: [],
           contains,
+          ...(needsSetup ? { needsSetup: true } : {}),
           locator: { kind: "plugin", source: layout.id, folder: real },
           digest: digestOf(manifest.text),
         });

@@ -11,7 +11,7 @@ import {
   type Peer,
   RpcError,
   RpcErrorCodes,
-  SkillImportPreviewSchema,
+  SkillImportDetailsSchema,
   SkillImportSourceSchema,
   TEAM_ARCHIVE_MAX_BYTES,
   TEAM_ARCHIVE_MAX_FILES,
@@ -263,14 +263,7 @@ export class TeamService {
         input.contentHash,
         signal,
       );
-      return SkillImportPreviewSchema.parse(
-        Object.fromEntries(
-          Object.keys(SkillImportPreviewSchema.shape).map((key) => [
-            key,
-            preview[key as keyof typeof preview],
-          ]),
-        ),
-      );
+      return SkillImportDetailsSchema.parse(preview);
     });
     this.pending.add(work);
     void work

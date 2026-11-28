@@ -41,6 +41,7 @@ export async function createConnectorOAuthProvider(
     redirectUrl: string;
     state: string;
     open(url: string): Promise<void>;
+    fresh?: boolean;
   },
 ): Promise<OAuthClientProvider> {
   let state: State = {};
@@ -52,13 +53,21 @@ export async function createConnectorOAuthProvider(
       throw new ConnectorAuthenticationError();
     }
   }
-  if (interactive && state.redirectUrl !== interactive.redirectUrl) {
-    // Dynamic registration is bound to its redirect URI; a fresh random port needs a new registration.
+  if (interactive && (interactive.fresh || state.redirectUrl !== interactive.redirectUrl)) {
+    // Dynamic registration is bound to its redirect URI; a fresh random port or an explicit
+    // re-authorization consent flow must start without reusing cached tokens.
     delete state.client;
     delete state.tokens;
     delete state.discovery;
+    delete state.verifier;
   }
   const save = async () => storage.save(JSON.stringify(state));
+  // Interactive authorization (including fresh re-authorization while already signed in) keeps
+  // intermediate discovery, dynamic client registration and PKCE verifier in memory until new
+  // tokens are issued, so cancelling or declining never clobbers a working saved login.
+  const persistIntermediate = async () => {
+    if (!interactive) await save();
+  };
   return {
     redirectUrl: interactive?.redirectUrl ?? state.redirectUrl,
     clientMetadata: {
@@ -75,7 +84,7 @@ export async function createConnectorOAuthProvider(
       state.client as Awaited<ReturnType<OAuthClientProvider["clientInformation"]>>,
     async saveClientInformation(client) {
       state.client = clientSchema.parse(client);
-      await save();
+      await persistIntermediate();
     },
     tokens: () => state.tokens as Awaited<ReturnType<OAuthClientProvider["tokens"]>>,
     async saveTokens(tokens) {
@@ -87,7 +96,7 @@ export async function createConnectorOAuthProvider(
     async saveCodeVerifier(verifier) {
       state.verifier = verifier;
       state.redirectUrl = interactive?.redirectUrl ?? state.redirectUrl;
-      await save();
+      await persistIntermediate();
     },
     codeVerifier() {
       if (!state.verifier) throw new ConnectorAuthenticationError();
@@ -97,7 +106,7 @@ export async function createConnectorOAuthProvider(
       state.discovery as Awaited<ReturnType<NonNullable<OAuthClientProvider["discoveryState"]>>>,
     async saveDiscoveryState(discovery) {
       state.discovery = z.record(z.string(), z.json()).parse(JSON.parse(JSON.stringify(discovery)));
-      await save();
+      await persistIntermediate();
     },
     async redirectToAuthorization(url) {
       if (!interactive || url.protocol !== "https:") throw new ConnectorAuthenticationError();
@@ -109,7 +118,7 @@ export async function createConnectorOAuthProvider(
       if (scope === "tokens") delete state.tokens;
       if (scope === "verifier") delete state.verifier;
       if (scope === "discovery") delete state.discovery;
-      await save();
+      await persistIntermediate();
     },
   };
 }
@@ -126,7 +135,10 @@ export function connectorAuthError(error: unknown, seen = new Set<unknown>()): b
 }
 
 /** Explicit user action owns the loopback listener; no browser is opened by an agent call. */
-export async function authorizeConnectorOAuth(input: ConnectorOAuthAuthorization): Promise<void> {
+export async function authorizeConnectorOAuth(
+  input: ConnectorOAuthAuthorization,
+  networkFetch: typeof fetch = fetch,
+): Promise<void> {
   const signal = AbortSignal.any([input.signal, AbortSignal.timeout(5 * 60_000)]);
   signal.throwIfAborted();
   const expectedState = randomBytes(32).toString("base64url");
@@ -192,9 +204,10 @@ export async function authorizeConnectorOAuth(input: ConnectorOAuthAuthorization
       redirectUrl: `http://127.0.0.1:${address.port}/oauth/callback`,
       state: expectedState,
       open: input.openExternal,
+      fresh: input.fresh,
     });
     const fetchFn: typeof fetch = (url, init) =>
-      fetch(url, {
+      networkFetch(url, {
         ...init,
         signal: AbortSignal.any([signal, ...(init?.signal ? [init.signal] : [])]),
       });

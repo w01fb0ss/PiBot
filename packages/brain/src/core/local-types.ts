@@ -9,8 +9,9 @@ import type {
 } from "@pibot/agent";
 import type { AliasFileSystem, ExecutionTarget, fetchPage, NetworkProxy } from "@pibot/execution";
 import type { Logger } from "@pibot/observability";
-import type { PolicyResult } from "@pibot/policy";
+import type { PolicyResult, ProjectNotesFingerprint } from "@pibot/policy";
 import type {
+  ApprovalModelOption,
   AuditDetail,
   CapabilityToolRegistry,
   EventTable,
@@ -28,6 +29,11 @@ import type { SearchRecipient, SearchService } from "../integrations/search/sear
 import type { ToolInput } from "../runtime/tools/tools.ts";
 import type { BrainRedactor } from "./privacy.ts";
 
+export type ToolApprovalModelOption = ApprovalModelOption & {
+  input: Record<string, unknown>;
+  binding: string;
+};
+
 export interface ToolRunContext {
   /** Kernel-issued, single-call project change; never parsed from tool or RPC arguments. */
   projectNotesChange?: Readonly<{
@@ -36,6 +42,7 @@ export interface ToolRunContext {
     diff: string;
     /** `null`: the reviewed change creates AGENTS.md, so the file must still be missing. */
     expectedHash: string | null;
+    review?: ProjectNotesFingerprint;
     assertSource?(signal: AbortSignal): Promise<void>;
     assertCurrent?(): void;
   }>;
@@ -52,11 +59,14 @@ export interface ToolRunContext {
   modelAcceptsImages?: boolean;
   /** Output budget used to size recovery guidance after a truncated tool call. */
   modelMaxTokens?: number;
+  toolInputSession?: { id: string; model?: { provider: string; id: string } };
   /** This run's request/hand-off, before old task results or checkpoints are appended. */
   memoryQuery?: string;
   /** Shared, monotonic runtime evidence, never accepted from model arguments. */
   untrustedContent?: { seen: boolean };
   toolTiming?: (callId: string) => import("@pibot/protocol-base").ToolTiming | undefined;
+  /** Only canonical roots from the run's freshly verified Windows workplace snapshot. */
+  policyWorkspacePaths?: { key: string; paths: ReadonlyMap<string, string> };
   /** Sandbox blocks this run hit; set by LocalRun, lives as long as the run. */
   sandboxBlocks?: import("../runtime/tools/outside-sandbox.ts").SandboxBlockRegistry;
   pdfBatch?: { admitted: Set<string>; read: Set<string>; total: number };
@@ -311,7 +321,10 @@ export interface CollaborationPort {
   ): Promise<PromptContext>;
 }
 export interface LocalDependencies {
+  interactiveAttached?(): boolean;
   modelRequest?(runId: string, request: ModelRequestMetrics): void;
+  liveActivityChanged?(): void;
+  liveActivityReplying?(runId: string, replying: boolean): void;
   /** L4 orchestration is composed outside the L3 kernel; the kernel only owns this factory port. */
   orchestration: import("./orchestration.ts").OrchestrationFactory;
   aliasFileSystem?: AliasFileSystem;
@@ -337,6 +350,7 @@ export interface LocalDependencies {
   downloadImage?: ImageDownload;
   /** The agent port that lets the auxiliary model read a fetched page; absent → raw page. */
   extractPage?: AgentRuntime["extractPage"];
+  transformToolInput?: AgentRuntime["transformMessage"];
   /** Probes only: replaces the 300 s cap on one image generation request (never raises it). */
   imageGenerationTimeoutMs?: number;
   /** Probes only: a stubbed page source with `fetchPage`'s contract (policy callbacks included). */
@@ -356,6 +370,12 @@ export interface LocalDependencies {
   logger: Logger;
 }
 export interface PreparedTool {
+  skillSecretUses?: NonNullable<
+    NonNullable<PreparedTool["commandSkill"]>["secretBindings"]
+  >["uses"];
+  commandSkill?: Awaited<
+    ReturnType<NonNullable<import("../runtime/tools/skills/port.ts").SkillsPort["commandRuntime"]>>
+  >;
   /** Kernel-only optimistic write condition, bound by this call's approval fingerprint. */
   projectNotesWrite?: { expectedHash: string | null };
   browserSecretUses?: import("@pibot/protocol-base").BrowserSecretUse[];
@@ -366,6 +386,10 @@ export interface PreparedTool {
    * instead of in shared mutable state, so concurrent calls and slow approvals cannot mix.
    */
   capabilityPolicyData?: unknown;
+  capabilityPolicyBinding?: string;
+  settingsAction?: import("@pibot/protocol-base").ToolSettingsAction;
+  refusalText?: string;
+  capabilityModelOptions?: () => ToolApprovalModelOption[];
   /** Trusted recipe preparation, consumed only after the same call's ordinary policy gate. */
   gitConfiguration?: import("../runtime/tools/git-configuration-prepare.ts").PreparedGitConfiguration;
   gitHook?: import("../runtime/tools/git-hook-prepare.ts").PreparedGitHook;
@@ -386,10 +410,14 @@ export interface PreparedTool {
    * without a second card. File-manager confirmation also uses this call-bound receipt.
    */
   confirmedNow?: true;
+  /** Folder-scoped direct-run pattern selected by the person on this call's live card. */
+  rememberDirectRun?: string;
+  approvalId?: string;
   sensitiveReadRoots?: readonly string[];
   docker?: import("@pibot/execution").DockerConnection;
   messageScope?: string;
   boundary?: WorkspaceSnapshot;
+  displayFolders?: ResolvedWorkplace["displayFolders"];
   searchRecipient?: SearchRecipient;
   sendPaths?: string[];
   patchPaths?: string[];

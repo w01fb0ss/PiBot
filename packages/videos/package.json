@@ -1,0 +1,24 @@
+{
+  "name": "@pibot/videos",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "pibot": {
+    "layer": "L2"
+  },
+  "exports": {
+    "./brain": "./src/brain/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@pibot/brain": "workspace:0.0.0",
+    "@pibot/execution": "workspace:0.0.0",
+    "@pibot/policy": "workspace:0.0.0",
+    "@pibot/protocol-base": "workspace:0.0.0",
+    "@pibot/storage": "workspace:0.0.0",
+    "@pibot/videos-contract": "workspace:0.0.0",
+    "zod": "4.6.5"
+  }
+}

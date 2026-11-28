@@ -1,3 +1,4 @@
+import { activeToolLabel, toolTarget } from "@pibot/client-core";
 import { createTranslator, type Language } from "@pibot/i18n";
 import type { Logger } from "@pibot/observability";
 import {
@@ -7,19 +8,33 @@ import {
   type Settings,
   type UiNavigation,
 } from "@pibot/protocol";
-import {
-  type IslandAction,
-  type IslandState,
-  liveIslandSupport,
-} from "../../shared/live-island.ts";
+import { type IslandPresentation, liveIslandSupport } from "../../shared/live-island.ts";
 import { createIslandWindow } from "./island-window.ts";
 
 type Translate = ReturnType<typeof createTranslator>;
 
+function compactApprovalTitle(title: string, botName: string) {
+  // The card can prefix the request with a routine name. The island already labels its Bot.
+  const divider = " · ";
+  const dividerAt = title.indexOf(divider);
+  const nestedStart = dividerAt + divider.length;
+  const start = dividerAt >= 0 && title.startsWith(botName, nestedStart) ? nestedStart : 0;
+  if (!title.startsWith(botName, start)) return title;
+  const suffix = title.slice(start + botName.length);
+  return /^(?:\s|想|请求)/u.test(suffix) ? title.slice(0, start) + suffix.trimStart() : title;
+}
+
 function statusText(item: LiveActivityItem, language: Language, t: Translate) {
   const title = item.localizedTitle?.[language] ?? item.title;
   if (item.kind === "waiting")
-    return title ? t("liveIsland.status.waitingNamed", { title }) : t("liveIsland.status.waiting");
+    return title
+      ? t("liveIsland.status.waitingNamed", { title: compactApprovalTitle(title, item.botName) })
+      : t("liveIsland.status.waiting");
+  if (item.step) {
+    const [tool = "unknown_tool"] = item.step.split(": ", 1);
+    return activeToolLabel(tool, toolTarget(tool, item.step), t);
+  }
+  if (item.replying) return t("liveIsland.status.replying");
   if (item.kind === "routine")
     return title ? t("liveIsland.status.routineNamed", { title }) : t("liveIsland.status.routine");
   return title ?? t(item.kind === "group" ? "liveIsland.status.group" : "liveIsland.status.chat");
@@ -28,9 +43,8 @@ function statusText(item: LiveActivityItem, language: Language, t: Translate) {
 /**
  * Decides when the live island shows and what it says. Inputs arrive from the brain (busy Bots,
  * settings), the GUI (whether the Pi Bot window is in front) and the computer-use guard (its bar
- * takes the top of the screen while it shows). Owner: the process running the brain; `dispose()`
- * destroys the window. Where the session cannot place an always-on-top window (Wayland) nothing
- * is created at all.
+ * takes the top of the screen while it shows). The brain owner can keep a window of its own
+ * while the GUI is closed. Wayland cannot place the window and has no presenter.
  */
 export function createLiveIsland(options: {
   outputDir: string;
@@ -51,31 +65,46 @@ export function createLiveIsland(options: {
   let guardVisible = false;
   let disposed = false;
   let shown: LiveActivityItem[] = [];
-
-  const onAction = (action: IslandAction) => {
-    if (action.kind !== "open") return;
-    // Only what is on screen now; a stale click from a row that just went away is dropped.
-    const item = shown.find((entry) => entry.key === action.key);
-    if (item) options.open(item.target);
-  };
+  let presentInGui: ((value: IslandPresentation | null) => void) | undefined;
+  let reported: string | undefined;
+  const target = (key: string) => shown.find((entry) => entry.key === key)?.target;
 
   const render = () => {
     if (disposed || support !== "supported") return;
     const kinds = new Set(settings?.liveIslandKinds ?? LIVE_ISLAND_KINDS);
     shown = items.filter((item) => kinds.has(item.kind));
-    const hidden =
-      !settings ||
-      settings.liveIsland === false ||
-      !shown.length ||
-      guardVisible ||
-      // Only for when Pi Bot is in the background: the open window already shows the same work.
-      foreground;
+    const hidden = !settings
+      ? "settings_pending"
+      : settings.liveIsland === false
+        ? "disabled"
+        : !shown.length
+          ? "activity_filtered"
+          : guardVisible
+            ? "computer_guard_visible"
+            : // The GUI decides using its own window's focus when it hosts the presenter.
+              foreground && !presentInGui
+              ? "gui_focused"
+              : undefined;
+    const reason = items.length
+      ? (hidden ?? (presentInGui ? "gui_presenter" : "owner_presenter"))
+      : undefined;
+    if (reason && reason !== reported && options.platform === "win32")
+      options.logger.info(
+        JSON.stringify({
+          module: "live-island",
+          event: hidden ? "hidden" : "present",
+          platform: options.platform,
+          reason,
+        }),
+      );
+    reported = reason;
     if (hidden) {
-      window?.hide();
+      if (presentInGui) presentInGui(null);
+      else window?.hide();
       return;
     }
     const t = createTranslator(language);
-    const state: Omit<IslandState, "theme"> = {
+    const view: IslandPresentation["view"] = {
       mode: settings?.liveIslandContent ?? "full",
       labels: {
         previous: t("liveIsland.previous"),
@@ -90,22 +119,37 @@ export function createLiveIsland(options: {
         key: item.key,
         name: item.botName,
         text: statusText(item, language, t),
+        ...(item.runnerName ? { runner: t("liveIsland.onRunner", { name: item.runnerName }) } : {}),
         open: t("liveIsland.open", { bot: item.botName }),
         avatar: item.avatar,
         startedAt: Math.max(0, Date.parse(item.startedAt) || 0),
       })),
     };
+    const presentation = { title: t("liveIsland.windowTitle"), view };
+    if (presentInGui) {
+      presentInGui(presentation);
+      return;
+    }
     window ??= createIslandWindow({
       outputDir: options.outputDir,
-      title: t("liveIsland.windowTitle"),
-      onAction,
+      logger: options.logger,
+      open: (key) => {
+        const navigation = target(key);
+        if (navigation) options.open(navigation);
+      },
     });
-    window.setTitle(t("liveIsland.windowTitle"));
-    window.show(state);
+    window.show(presentation);
   };
 
   return {
     support,
+    target,
+    presentThrough(present?: typeof presentInGui) {
+      presentInGui = present;
+      window?.destroy();
+      window = undefined;
+      render();
+    },
     activity(value: LiveActivity) {
       items = value.items;
       render();
@@ -118,7 +162,7 @@ export function createLiveIsland(options: {
     foreground(value: boolean) {
       if (foreground === value) return;
       foreground = value;
-      render();
+      if (!presentInGui) render();
     },
     guardVisible(value: boolean) {
       if (guardVisible === value) return;

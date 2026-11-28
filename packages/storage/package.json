@@ -8,7 +8,9 @@
   },
   "exports": {
     ".": "./src/index.ts",
-    "./data-dir": "./src/database/data-dir.ts"
+    "./chat-search-index": "./src/conversations/chat-search-index.ts",
+    "./data-dir": "./src/database/data-dir.ts",
+    "./transactions": "./src/database/transactions.ts"
   },
   "dependencies": {
     "@pibot/protocol-base": "workspace:0.0.0",

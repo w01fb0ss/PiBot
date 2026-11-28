@@ -10,6 +10,7 @@ import {
   type ChatNotice,
   type Message,
   resolveGroupMentions,
+  slashHelpRequest,
 } from "@pibot/protocol";
 import { BotAvatar, useT } from "@pibot/renderer-kit";
 import { Button, Icon, IconButton } from "@pibot/ui";
@@ -21,7 +22,7 @@ import {
   AttachmentDropOverlay,
   AttachmentIssues,
 } from "../../chat/composer/Attachments.tsx";
-import { useComposerDraft } from "../../chat/composer/composer-drafts.tsx";
+import { groupDraftKey, useComposerDraft } from "../../chat/composer/composer-drafts.tsx";
 import { shouldSend } from "../../chat/composer/input.ts";
 import { ModeSwitch } from "../../chat/composer/ModeSwitch.tsx";
 import {
@@ -64,11 +65,13 @@ export function GroupComposer({
   runs,
   cycleId,
   coordinatorBotId,
+  threadBotId,
 }: {
   controller: GroupConversation;
   runs: PublicRun[];
   cycleId?: string | null;
   coordinatorBotId?: string;
+  threadBotId?: string;
   messages: Message[];
   notices: ChatNotice[];
   members: Bot[];
@@ -115,12 +118,11 @@ export function GroupComposer({
   const id = useId();
   const [text, setText] = useComposerDraft(
     controller.peer,
-    JSON.stringify([
-      "group",
+    groupDraftKey(
       controller.target.groupId,
       controller.target.draftId ?? controller.target.conversationId,
       controller.target.threadId,
-    ]),
+    ),
   );
   const [caret, setCaret] = useState(0);
   const [dismissed, setDismissed] = useState(false);
@@ -167,8 +169,27 @@ export function GroupComposer({
     textarea,
   );
   const attachments = useAttachments(images, disabled);
+  const owners = members.filter((bot) => bot.category !== "image" && !bot.archivedAt);
+  const fixedConnectionOwnerId = thread ? threadBotId : reply?.draft?.message.botId;
+  const defaultConnectionOwnerId = fixedConnectionOwnerId ?? coordinatorBotId;
+  const connectionOwners = owners
+    .filter(
+      (bot) =>
+        bot.kind !== "agent" &&
+        (thread || fixedConnectionOwnerId ? bot.id === fixedConnectionOwnerId : true),
+    )
+    .sort(
+      (a, b) =>
+        Number(b.id === defaultConnectionOwnerId) - Number(a.id === defaultConnectionOwnerId),
+    );
   const skillCommands = useSkillCommands({
-    owners: members.filter((bot) => bot.category !== "image" && !bot.archivedAt),
+    owners: owners.filter(
+      (bot) =>
+        bot.kind !== "agent" && (!fixedConnectionOwnerId || bot.id === fixedConnectionOwnerId),
+    ),
+    connectionOwners,
+    defaultConnectionOwnerId,
+    readOnly: groupMode.mode === "plan",
     groupId: controller.target.groupId,
     text,
     edit: history.edit,
@@ -184,6 +205,8 @@ export function GroupComposer({
     messages,
     topics: scope,
     notices,
+    completion: skillCommands.helpCompletion,
+    completionHidden: disabled || attachments.reading || !!attachments.drafts.length,
     hidden:
       disabled ||
       attachments.reading ||
@@ -232,21 +255,27 @@ export function GroupComposer({
     }
     setAdditionTargetError(undefined);
     beforeSend();
+    const sendQueued = () =>
+      controller.send(
+        value,
+        attachments.drafts.map((d) => d.input),
+        pickedMentions(value, picks.current, members),
+        reply?.draft?.message.id,
+      );
     if (
-      await (target.run && !waiting && !reply?.draft
+      await (target.run &&
+      !waiting &&
+      !reply?.draft &&
+      (attachments.drafts.length || !slashHelpRequest(value))
         ? controller.append(
             value,
             attachments.drafts.map((d) => d.input),
             target.run,
             mode,
             thread ? target.run.botId : target.explicit[0],
+            sendQueued,
           )
-        : controller.send(
-            value,
-            attachments.drafts.map((d) => d.input),
-            pickedMentions(value, picks.current, members),
-            reply?.draft?.message.id,
-          ))
+        : sendQueued())
     ) {
       picks.current = [];
       history.reset();
@@ -335,7 +364,7 @@ export function GroupComposer({
             ))}
           </div>
         )}
-        {waiting && (
+        {waiting && (!!text.trim() || attachments.drafts.length > 0) && (
           <p className={styles.note} role="status">
             {t("chat.additionWaiting")}
           </p>

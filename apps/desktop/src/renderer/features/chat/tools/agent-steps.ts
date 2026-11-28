@@ -13,25 +13,30 @@ export interface AgentStepDetail {
   output?: string;
 }
 export interface AgentSteps {
-  /** Set in an agent Bot's chat: every step there is the agent's. */
+  /** Bot names also identify live steps that have no stored turn facts yet. */
   agentName?: string;
-  details: ReadonlyMap<string, AgentStepDetail>;
+  agentNames?: ReadonlyMap<string, string>;
+  details: ReadonlyMap<string, ReadonlyMap<string, AgentStepDetail>>;
 }
 export const AgentStepsContext = createContext<AgentSteps>({ details: new Map() });
 export const useAgentSteps = () => useContext(AgentStepsContext);
 
-const cache = new WeakMap<readonly unknown[], ReadonlyMap<string, AgentStepDetail>>();
+const cache = new WeakMap<readonly unknown[], AgentSteps["details"]>();
 /** Built once per message list (the history re-renders often; the list identity rarely changes). */
 export function agentStepDetails(
-  messages: readonly { usage: unknown; role: string }[],
-): ReadonlyMap<string, AgentStepDetail> {
+  messages: readonly { usage: unknown; role: string; runId: string | null }[],
+): AgentSteps["details"] {
   const known = cache.get(messages);
   if (known) return known;
-  const details = new Map<string, AgentStepDetail>();
+  const details = new Map<string, Map<string, AgentStepDetail>>();
   for (const message of messages) {
-    if (message.role !== "assistant") continue;
-    for (const detail of agentTurnFacts(message.usage)?.stepDetails ?? [])
-      details.set(detail.toolCallId, {
+    if (message.role !== "assistant" || !message.runId) continue;
+    const steps = agentTurnFacts(message.usage)?.stepDetails;
+    if (!steps?.length) continue;
+    const run = details.get(message.runId) ?? new Map<string, AgentStepDetail>();
+    details.set(message.runId, run);
+    for (const detail of steps)
+      run.set(detail.toolCallId, {
         ...(detail.input ? { input: detail.input } : {}),
         ...(detail.output ? { output: detail.output } : {}),
       });

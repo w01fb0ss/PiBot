@@ -174,29 +174,29 @@ export function Sidebar() {
     const statuses = Object.values(data.statuses).filter((s) =>
       kind === "group" ? s.groupId === id : s.botId === id && !s.groupId,
     );
-    const needs =
-      entry.waitingForPlan ||
-      data.inbox.some((item) =>
-        kind === "group"
-          ? item.kind === "approval" &&
-            (item.conversationId === group?.conversationId ||
-              statuses.some(
-                (s) =>
-                  s.runId === item.approval.runId &&
-                  s.botId === item.approval.botId &&
-                  s.conversationId === item.conversationId,
-              ))
-          : item.kind === "approval"
-            ? item.approval.botId === id && item.conversationKind === "dm"
-            : item.kind === "memory" && item.proposal.botId === id,
-      );
-    const status = needs
-      ? "waiting"
-      : statuses.some((s) => s.state === "running")
-        ? "running"
-        : statuses.some((s) => s.state === "queued")
-          ? "queued"
-          : undefined;
+    const needsApproval = data.inbox.some((item) =>
+      kind === "group"
+        ? item.kind === "approval" &&
+          (item.origin?.groupId === id ||
+            item.conversationId === group?.conversationId ||
+            statuses.some(
+              (s) =>
+                s.runId === item.approval.runId &&
+                s.botId === item.approval.botId &&
+                s.conversationId === item.conversationId,
+            ))
+        : item.kind === "approval"
+          ? item.approval.botId === id && item.conversationKind === "dm"
+          : item.kind === "memory" && item.proposal.botId === id,
+    );
+    const status =
+      entry.waitingForPlan || needsApproval
+        ? "waiting"
+        : statuses.some((s) => s.state === "running")
+          ? "running"
+          : statuses.some((s) => s.state === "queued")
+            ? "queued"
+            : undefined;
     return (
       <ConversationRow
         key={entry.conversationKey}
@@ -230,7 +230,7 @@ export function Sidebar() {
         busy={task.busy}
         editing={editing === entry.conversationKey}
         renameError={editing === entry.conversationKey ? renameError : undefined}
-        open={() => open(entry.conversationKey)}
+        open={() => open(entry.conversationKey, kind === "group" && needsApproval)}
         menu={(position) => setMenu({ entry, ...position })}
         stopEditing={() => {
           setRenameError(undefined);

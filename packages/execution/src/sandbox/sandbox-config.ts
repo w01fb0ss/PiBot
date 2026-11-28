@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { SandboxRuntimeConfigSchema } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-config.js";
+import { commandHomePath } from "../command/command-home.ts";
 import { skillPythonPaths } from "../command/skill-python.ts";
 import { canonicalPath, within } from "../core/paths.ts";
 import { ExecError, type ExecOptions, type NetworkSettings } from "../core/types.ts";
@@ -11,7 +12,11 @@ import { gitDefaultWriteDenies, gitMetadataWriteDenies } from "../git/git-init-s
 import { linuxGitWriteDenies } from "../git/git-protected-paths.ts";
 import { bundledNodePath } from "../runtime/child-node.ts";
 import { profileRoot } from "./profile-paths.ts";
-import { type BotReadContext, sensitiveReadBoundary } from "./sensitive-paths.ts";
+import {
+  type BotReadContext,
+  type SandboxReadContext,
+  sensitiveReadBoundary,
+} from "./sensitive-paths.ts";
 import { commandTempBoundary } from "./temp-boundary.ts";
 import { verifyCommandAliases } from "./workspace.ts";
 
@@ -32,18 +37,43 @@ export const SAFE_SYSTEM_SERVICES = [
 /** Sandbox host sockets live under the exec temp dir: short enough for 104-byte socket paths. */
 export const SANDBOX_HOST_DIR = "pibot-srt";
 
+async function isExecutable(path: string) {
+  const real = await realpath(path).catch(() => undefined);
+  if (!real) return undefined;
+  return access(real, constants.X_OK).then(
+    () => real,
+    () => undefined,
+  );
+}
+
+function workspaceSandboxRuntime() {
+  try {
+    return dirname(
+      dirname(createRequire(import.meta.url).resolve("@anthropic-ai/sandbox-runtime")),
+    ).replace(`${sep}app.asar${sep}`, `${sep}app.asar.unpacked${sep}`);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "MODULE_NOT_FOUND") throw error;
+    // A standalone runner keeps modules under resources, outside normal Node resolution.
+    return undefined;
+  }
+}
+
 /**
  * ripgrep and (Linux) the seccomp helper SRT needs, resolved from the packaged resources or the
  * workspace; shared by command hosts and external-agent hosts. A missing helper fails closed.
  */
-export function createSandboxDependencies(options: Pick<ExecOptions, "platform" | "resourcesDir">) {
+export function createSandboxDependencies(
+  options: Pick<ExecOptions, "platform" | "resourcesDir" | "helperArgs">,
+) {
   let ripgrep: Promise<string> | undefined;
   const ripgrepPath = () => {
     ripgrep ??= (async () => {
       const rg = options.resourcesDir
         ? join(options.resourcesDir, "bin", options.platform === "win32" ? "rg.exe" : "rg")
         : (await import("@vscode/ripgrep")).rgPath;
-      await access(rg, constants.X_OK);
+      await access(rg, constants.X_OK).catch(() => {
+        throw new ExecError("isolation_unavailable", "ripgrep_unavailable");
+      });
       return rg;
     })().catch((error) => {
       ripgrep = undefined;
@@ -54,40 +84,21 @@ export function createSandboxDependencies(options: Pick<ExecOptions, "platform" 
   let pending: Promise<{ rg: string; helper?: string }> | undefined;
   const dependencies = () => {
     pending ??= (async () => {
-      const require = createRequire(import.meta.url);
       const rg = await ripgrepPath();
       let helper: string | undefined;
       if (options.platform === "linux") {
         const runtime = join("node_modules", "@anthropic-ai", "sandbox-runtime");
-        // Packages unpack SRT's executables to resources/app.asar.unpacked (asarUnpack); there is
-        // no resources/node_modules. Looking only there made every packaged Linux command report
-        // isolation_unavailable. The module's own location
-        // covers development, where resourcesDir holds only bin/ and wasm/.
-        const candidates = [
-          ...(options.resourcesDir
-            ? [
-                join(options.resourcesDir, "app.asar.unpacked", runtime),
-                join(options.resourcesDir, runtime),
-              ]
-            : []),
-          dirname(dirname(require.resolve("@anthropic-ai/sandbox-runtime"))).replace(
-            `${sep}app.asar${sep}`,
-            `${sep}app.asar.unpacked${sep}`,
-          ),
-        ];
-        for (const base of candidates) {
-          const candidate = join(base, "vendor", "seccomp", process.arch, "apply-seccomp");
-          const real = await realpath(candidate).catch(() => undefined);
-          if (!real) continue;
-          if (
-            await access(real, constants.X_OK).then(
-              () => true,
-              () => false,
-            )
-          ) {
-            helper = real;
-            break;
-          }
+        const executable = join("vendor", "seccomp", process.arch, "apply-seccomp");
+        // Resolve packaged helpers first. The SEA main has no adjacent node_modules.
+        if (options.resourcesDir) {
+          helper =
+            (await isExecutable(
+              join(options.resourcesDir, "app.asar.unpacked", runtime, executable),
+            )) ?? (await isExecutable(join(options.resourcesDir, runtime, executable)));
+        }
+        if (!helper && !options.helperArgs?.sandbox) {
+          const workspace = workspaceSandboxRuntime();
+          if (workspace) helper = await isExecutable(join(workspace, executable));
         }
         if (!helper) throw new ExecError("isolation_unavailable", "seccomp_helper_unavailable");
       }
@@ -135,7 +146,7 @@ export function createSandboxConfig(options: ExecOptions) {
     roots: string[],
     network: NetworkSettings,
     signal: AbortSignal,
-    bot?: BotReadContext,
+    context?: SandboxReadContext,
     denied: string[] = [],
     gitConfig = false,
     gitDirectories = false,
@@ -150,6 +161,8 @@ export function createSandboxConfig(options: ExecOptions) {
     // Created up front: on Linux a missing deny path would become a mount-point file.
     const hosts = join(temp, SANDBOX_HOST_DIR);
     await mkdir(hosts, { recursive: true, mode: 0o700 });
+    const bot = context?.botHome !== undefined ? context : undefined;
+    const commandHome = bot?.commandHome ? commandHomePath(bot.botHome) : undefined;
     // Commands receive only their private temp folder. Scanning the shared OS temp tree
     // encounters unrelated protected app folders; skipping those would miss writable aliases.
     // Initialization only writes the authorized .git, without any writable temp directory.
@@ -158,14 +171,24 @@ export function createSandboxConfig(options: ExecOptions) {
         ...(await Promise.all(roots.map((root, index) => writeRoot(root, index, bot)))),
         ...(gitConfig || gitDirectories
           ? []
-          : [await profileRoot(commandTempDir ?? temp, "profile_temp_root")]),
+          : [
+              await profileRoot(commandTempDir ?? temp, "profile_temp_root"),
+              ...(commandHome ? [await profileRoot(commandHome, "profile_bot_home")] : []),
+            ]),
       ]),
     ];
     const reads = await sensitiveReadBoundary(
       options.platform,
-      [...new Set([options.systemHome, homedir(), ...(bot ? [bot.botHome] : [])])],
+      [
+        ...new Set([
+          options.systemHome,
+          homedir(),
+          ...(bot ? [bot.botHome] : []),
+          ...(commandHome ? [commandHome] : []),
+        ]),
+      ],
       options.env,
-      bot,
+      context,
     );
     // Selected projects remain readable in OS temp even when a query receives no write roots.
     const temporary = await commandTempBoundary(
@@ -191,6 +214,7 @@ export function createSandboxConfig(options: ExecOptions) {
     const effectiveRoots = canonical.filter(reads.permitsWriteRoot);
     const writeDenies = [
       ...denied,
+      ...(commandHome ? [join(commandHome, ".gitconfig")] : []),
       // Include the runtime in alias verification as well as the readonly sandbox binds.
       ...(helper ? [dirname(helper)] : []),
       // A command must not replace or remove another Bot's sandbox-host proxy sockets.
@@ -203,7 +227,7 @@ export function createSandboxConfig(options: ExecOptions) {
       ...defaults.filter((path) => !canonical.some((root) => within(root, path))),
     ];
     // The status probe isn't an agent command. Scan only the actual command's readable write roots.
-    if (options.platform === "linux" && bot) {
+    if (options.platform === "linux" && context) {
       const permitsRead = (path: string) =>
         reads.permitsWriteRoot(path) && !writeDenies.some((root) => within(root, path));
       if ((gitConfig || gitDirectories) && !gitDirectory) throw new ExecError("invalid_input");

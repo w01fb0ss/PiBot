@@ -4,6 +4,7 @@ import { visibleTaskText } from "@pibot/protocol-base";
 import { BotAvatar, botAvatarLook, useNavigation, useT } from "@pibot/renderer-kit";
 import { Button, Icon } from "@pibot/ui";
 import { type CSSProperties, useEffect, useState } from "react";
+import { ModelOverrideControl } from "../../chat/topics/ModelOverrideControl.tsx";
 import { RunApprovals } from "../../execution/RunApprovals.tsx";
 import { TaskCheckpoint } from "../../execution/TaskCheckpoint.tsx";
 import { GroupRunStop } from "../conversation/RunList.tsx";
@@ -73,6 +74,18 @@ export function GroupTaskDetails({
           <BotAvatar bot={bot} unknown label={bot?.name ?? task.assigneeBotId} size={24} />
           <span>{bot?.name ?? task.assigneeBotId}</span>
           <TaskStatus task={task} data={data} />
+          {bot && bot.kind !== "agent" && (
+            <ModelOverrideControl
+              peer={peer}
+              kind="task"
+              category={bot.category ?? "chat"}
+              override={task.modelOverride}
+              save={async (override) => {
+                await peer.call("groups.taskModel.set", { taskId: task.id, override });
+                await refresh();
+              }}
+            />
+          )}
         </div>
         <div className={styles.taskDetailTags}>
           <span>

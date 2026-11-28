@@ -9,6 +9,9 @@ On this page:
 - [Memory](#memory)
 - [External agents](#external-agents)
 - [Import and sidebar groups](#import-and-sidebar-groups)
+- [Let Pi manage Bots and assign work](#let-pi-manage-bots-and-assign-work)
+- [Let Pi change settings](#let-pi-change-settings)
+- [Let Pi check for and repair stuck state](#let-pi-check-for-and-repair-stuck-state)
 
 ## Create a Bot
 
@@ -52,7 +55,7 @@ Click the Bot's name or avatar at the top of the chat to open its profile on the
 ![Profile](../images/en/bot-profile.png)
 
 - **Name, Its job**: shown in the sidebar and in chats.
-- **Model, Thinking level**: defaults to the default model in Settings › Models & API keys; each Bot can use its own. Thinking level is Low, Medium or High.
+- **Model, Thinking level**: a new Bot starts with the default model in Settings › Models & API keys. Each Bot can use its own model. The available levels are Off, Low, Medium and High, depending on the model.
 - **From role**: Bots created from a role show the role and its version.
 - **Code review**: **Default reviewer** decides which Bot handles "Ask … to review" in the changes panel (automatic recommendation looks for a Code Reviewer Bot first, then a Bot on a different model). **Ask for a review after changing code** only applies to turns that changed files; reviews are read-only.
 - **Automatic actions**: run formatting after writing (still approved per your permissions); notify on completion (no chat text in the notification).
@@ -65,7 +68,7 @@ Click the Bot's name or avatar at the top of the chat to open its profile on the
 
 ![Topics](../images/en/bot-topics.png)
 
-This Bot's routines (you can create one here with **New routine**) and all its topics, including Archived.
+This Bot's routines (you can create one here with **New routine**) and all its topics, including archived and imported conversations.
 
 ### Skills
 
@@ -113,7 +116,7 @@ Memory is stored only on this computer and can be edited or deleted any time. Ea
 
 ## External agents
 
-Coding agents already installed on your computer (Codex, Claude Agent, Cursor, OpenCode, or any agent that supports ACP) can join Pi Bot as Bots. In "Pick a role", choose the **External agents** category: Pi Bot checks which ones are installed (only their paths and versions; it never reads their accounts or chats). Pick one and follow **Add … as a Bot**.
+Coding agents already installed on your computer (Codex, Claude Agent, Cursor, OpenCode, Antigravity, or any agent that supports ACP) can join Pi Bot as Bots. In "Pick a role", choose the **External agents** category: Pi Bot checks which ones are installed (only their paths and versions; it never reads their accounts or chats). Pick one and follow **Add … as a Bot**.
 
 - It uses its own sign-in and billing; Pi Bot never reads or stores its tokens.
 - It runs in Pi Bot's sandbox and can only write to the topic's working folder. Windows has no command sandbox, so the card is marked **Runs without sandbox**.
@@ -130,9 +133,33 @@ Coding agents already installed on your computer (Codex, Claude Agent, Cursor, O
 
 The default Pi is your chief of staff. In your direct chat with Pi, say things like "set up someone for the bookkeeping", "make a group with Fin and Dev" or "have the reviewer check the contracts": Pi can create, edit, archive or restore Bots, create groups, add or remove members, archive or restore groups, and hand a task to a Bot or a group.
 
-- Every change shows a card first that lists exactly what changes (name, role, model, members, or who gets which task). Ticking **Don't ask again** sets the matching row on Pi's permissions tab to **Always**. With YOLO on in Pi's topic these cards pass like other YOLO-able confirmations (a row set to **Never** still refuses).
-- Pi's **Permissions** tab starts with **Manage and assign · Pi only**: **Manage Bots and groups** and **Assign work to Bots and groups** can each be **Never**, **Ask** (default) or **Always**. No other Bot has these rows or the tools behind them.
-- Pi cannot delete Bots or groups (archive only, always restorable), cannot change any Bot's permissions, and cannot read keys.
+- When Pi asks you to confirm, the card shows what will change or who gets the task. Ticking **Don't ask again** sets the matching row on Pi's permissions tab to **Always**. YOLO in Pi's topic can skip eligible cards. A row set to **Never** still refuses.
+- Pi's **Permissions** tab starts with **Manage, assign, repair and configure · Pi only**: **Manage Bots and groups**, **Assign work to Bots and groups**, **Check and repair stuck state** and **Change settings** can each be **Never**, **Ask** (default) or **Always**. No other Bot has these rows or the tools behind them.
+- Pi can archive and restore Bots or groups. Deleting them is unavailable. For settings and permissions, see [Let Pi change settings](#let-pi-change-settings).
 - Assigned work opens a new topic marked **From Pi** at the receiver, which works under its own permissions; a group plans it through its coordinator as usual. When it finishes, fails, stops or needs you, a receipt card appears in Pi's chat (result, summary, outputs, **Open topic**) and Pi tells you in a sentence or two.
 - At most 3 hand-offs per turn; a Bot or group working on Pi's task cannot hand work on, or back to Pi.
 - This works only in your direct chat with Pi: on the computer, or from your paired phone through the computer (cards and receipts show there too, including **Don't ask again**). Not with the phone's own offline model, an editor (ACP), groups or routines.
+
+## Let Pi change settings
+
+In your direct chat with the default Pi, ask it to check or change a setting, such as “switch to dark mode” or “change Dev's model.” Pi checks the current value. When confirmation is required, the card shows the old and new values. Changes use the same controls as Settings and appear in the activity log.
+
+- **Ordinary settings** include language, appearance, chat text size, live island, tray icon, routine sleep and away rules, automatic memory Dream and memory budgets. Pi can also change a Bot's model, thinking level, memory options and current working folder. It can change the generation mode for image Bots and editable, non-secret fields on installed connections. To switch to a project folder, the topic must be idle and the folder must already be set up for the Bot on this computer.
+- **Ordinary approvals** follow Pi's **Change settings** permission. **Ask** is the default. When allowing a card, tick **Allow Pi to change ordinary settings next time** to switch to **Always**. **Always** or YOLO in Pi's topic lets ordinary changes go through without a card.
+- **Security settings** include global and per-Bot permission levels, command network access and allowed websites, revoking a Bot's remembered permissions, and asking each time a Bot sends something out. Pi can also change sandbox settings on supported systems, phone link settings, browser extension controls and whether memory Dream uses only a local model. For connections, Pi can change access, confirmation rules, allowed domains and tool permissions. Pi can propose changing YOLO for its current topic. To change YOLO in another topic, use that topic's header.
+- **Security approvals** show one change and a risk note per card. Confirm each one yourself. **Always** and YOLO do not skip these cards, and you cannot save the approval for next time.
+- Set **Change settings** to **Never** to block all changes through this feature. Pi can still read the supported settings, including whether model credentials are set. The feature gives Pi no access to read or change keys, passwords, tokens or saved sign-ins. Manage those in Settings. On desktop, a credential refusal can include an **Open Settings** button.
+- Pi can remove remembered sandbox exceptions or withdraw Windows YOLO consent. Adding remembered exceptions and granting Windows YOLO consent require the app's own controls. Pi can only propose settings changes from its allowed list.
+- Pi checks the proposed change against the current values again before saving. If they have changed, it stops. Use this feature on the computer or on a connected, paired phone. It is unavailable in the phone's offline mode, an ACP editor, group chats, routines, unattended runs or on a runner.
+
+## Let Pi check for and repair stuck state
+
+When a Bot or group keeps saying it waits for you, will not take a message, has a plan that stopped moving, or a connection that will not connect, tell Pi in your direct chat "my group is stuck" or "see what is wrong with Dev". Pi runs a check first (read-only; it changes nothing and can look at one Bot or group only) and lists every stuck item in its reply: where, since when, why it is stuck and the suggested fix. When nothing is stuck it says so.
+
+Pi looks for: approvals that can no longer be answered (a newer turn came after them, or no run waits on them); runs that say running but have no process, and runs queued with nothing to start them; topics that refuse new messages with nothing running behind them; plans and steps waiting for your choice (continue the remaining steps, accept as is, retry or skip, end the plan); tasks open for a long time with no activity; failed connections; background commands whose process is gone.
+
+- Tap one of the fixes under an item in the list (for example **Stop the run** or **Continue the remaining steps**), or tell Pi which item to fix. Pi repairs an item only once you agree, and each repair shows a card first that says what will change and what cannot be undone. Every fix uses the same path as the app's own buttons; Pi never edits the database or data files and never deletes Bots, groups, messages or snapshots.
+- Pi checks the item again right before it acts; if it changed meanwhile, Pi says "the state changed; run the check again" and changes nothing.
+- With **Check and repair stuck state** set to **Always**, or YOLO on, ordinary repairs skip the card; stopping a run that still has a live process, ending a plan and closing a task always ask.
+- Every check (counts only) and every repair is written to the audit log.
+- As above, this works only in your direct chat with Pi (on the computer, or from your paired phone through the computer). A damaged database itself is not something Pi repairs: restore from a backup instead.

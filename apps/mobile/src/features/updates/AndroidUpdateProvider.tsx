@@ -12,7 +12,7 @@ import {
 } from "react";
 import { AppState, Platform } from "react-native";
 import { pibotAndroid } from "../../../modules/pibot-android/index.ts";
-import { useOffline, useOfflineEngine } from "../../offline/OfflineProvider.tsx";
+import { useOfflineEngine } from "../../offline/OfflineProvider.tsx";
 import { useRuntime } from "../../runtime/context.tsx";
 import {
   type AndroidUpdate,
@@ -65,9 +65,9 @@ function useUpdateChecks(onResult: (update: AndroidUpdate) => void, busy: () => 
   const runtime = useRuntime();
   const data = runtime.storage.data;
   const offline = useOfflineEngine();
-  const { unreachable } = useOffline();
   const current = useRef<AbortController | undefined>(undefined);
   const [checking, setChecking] = useState(false);
+  const [feedback, setFeedback] = useState<"current" | "failed">();
 
   const check = useCallback(
     async (automatic: boolean) => {
@@ -75,7 +75,12 @@ function useUpdateChecks(onResult: (update: AndroidUpdate) => void, busy: () => 
         const { selectedId, status } = runtime.getSnapshot();
         return !!selectedId && (status === "offline" || offline.getSnapshot().unreachable);
       };
-      if (Platform.OS !== "android" || current.current || busy() || offlineMode()) return;
+      if (Platform.OS !== "android" || current.current || busy()) return;
+      if (offlineMode()) {
+        if (!automatic) setFeedback("failed");
+        return;
+      }
+      if (!automatic) setFeedback(undefined);
       const controller = new AbortController();
       const { signal } = controller;
       current.current = controller;
@@ -91,12 +96,9 @@ function useUpdateChecks(onResult: (update: AndroidUpdate) => void, busy: () => 
       });
       try {
         const network = await getNetworkStateAsync();
-        if (
-          signal.aborted ||
-          network.isConnected === false ||
-          network.isInternetReachable === false
-        )
-          return;
+        signal.throwIfAborted();
+        if (network.isConnected === false || network.isInternetReachable === false)
+          throw new Error("update_offline");
         if (automatic) {
           const last = await data.get(lastCheckKey);
           if (
@@ -111,9 +113,14 @@ function useUpdateChecks(onResult: (update: AndroidUpdate) => void, busy: () => 
         await data.put(lastCheckKey, Date.now());
         signal.throwIfAborted();
         const update = await fetchAndroidUpdate(signal);
-        if (!signal.aborted && !busy()) onResult(update);
+        signal.throwIfAborted();
+        if (!busy()) {
+          onResult(update);
+          if (!automatic && !isNewerUpdate(update)) setFeedback("current");
+        }
       } catch {
-        // A failed background check leaves the current offer alone and reports no raw network error.
+        // Only manual checks need feedback. Keep any previous offer and hide raw network errors.
+        if (!automatic && current.current === controller) setFeedback("failed");
       } finally {
         networkListener.remove();
         unsubscribeRuntime();
@@ -135,11 +142,13 @@ function useUpdateChecks(onResult: (update: AndroidUpdate) => void, busy: () => 
     });
     return () => {
       disposed = true;
-      current.current?.abort();
+      const controller = current.current;
+      current.current = undefined;
+      controller?.abort();
     };
   }, [check]);
 
-  return { check: () => check(false), checkDisabled: checking || unreachable || busy() };
+  return { check: () => check(false), checkDisabled: checking || busy(), checking, feedback };
 }
 
 function clearCachedUpdate() {

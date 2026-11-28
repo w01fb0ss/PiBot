@@ -1,15 +1,30 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import { IdSchema, MemoryDreamSummarySchema } from "@pibot/protocol-base";
+import {
+  IdSchema,
+  MemoryDreamSummarySchema,
+  type MemoryFailureReason,
+  MemoryFailureReasonSchema,
+  MemoryModelFallbackSchema,
+} from "@pibot/protocol-base";
 import { z } from "zod";
+import { visibleImportedRows } from "../conversations/conversations.ts";
 import { transaction } from "../database/database.ts";
 
 const select = `id,day,started_at AS startedAt,finished_at AS finishedAt,status,cursor,
-  merged,retired,proposed,tokens,MAX(COALESCE(cost_usd,0),0) AS costUsd,undo_json AS undoJson,undone`;
-const scalar = MemoryDreamSummarySchema.omit({ undoable: true }).extend({
+  merged,retired,proposed,tokens,MAX(COALESCE(cost_usd,0),0) AS costUsd,undo_json AS undoJson,undone, model_fallback AS fallbackJson, failure_reason AS storedReason, budget_update AS budgetUpdate`;
+const scalar = MemoryDreamSummarySchema.omit({
+  undoable: true,
+  fallback: true,
+  failureReason: true,
+  budgetUpdated: true,
+}).extend({
   day: z.string(),
   cursor: z.string().nullable(),
   undoJson: z.string(),
+  fallbackJson: z.string().nullable(),
+  storedReason: MemoryFailureReasonSchema.nullable(),
+  budgetUpdate: z.enum(["saved", "continue", "retry"]).nullable(),
   undone: z.number().int().min(0).max(1),
 });
 const receipts = z.array(z.strictObject({ botId: IdSchema, proposalId: IdSchema })).max(100);
@@ -35,7 +50,7 @@ export class MemoryDreamRepo {
 
   recover(now: string) {
     this.db
-      .prepare(`UPDATE memory_dream_runs SET status='interrupted',finished_at=?
+      .prepare(`UPDATE memory_dream_runs SET status='interrupted',finished_at=?,budget_update=NULL
       WHERE status='running'`)
       .run(now);
   }
@@ -45,8 +60,13 @@ export class MemoryDreamRepo {
       .prepare(`SELECT ${select} FROM memory_dream_runs ORDER BY day DESC LIMIT 1`)
       .get();
     if (!row) return undefined;
-    const { undoJson, ...state } = scalar.parse(row);
-    return { ...state, receipts: receipts.parse(JSON.parse(undoJson)) };
+    const { undoJson, fallbackJson, storedReason, ...state } = scalar.parse(row);
+    return {
+      ...state,
+      receipts: receipts.parse(JSON.parse(undoJson)),
+      ...(fallbackJson && { fallback: MemoryModelFallbackSchema.parse(JSON.parse(fallbackJson)) }),
+      ...(storedReason && { failureReason: storedReason }),
+    };
   }
 
   start(day: string, startedAt: string, cursor: string | null) {
@@ -60,16 +80,30 @@ export class MemoryDreamRepo {
 
   resume(id: string) {
     const updated = this.db
-      .prepare(`UPDATE memory_dream_runs SET status='running', finished_at=NULL
-        WHERE id=? AND status IN ('failed','interrupted') AND undone=0`)
+      .prepare(`UPDATE memory_dream_runs SET status='running', finished_at=NULL,
+        failure_reason=NULL
+        WHERE id=? AND (status IN ('failed','interrupted') OR (status='limited' AND budget_update IN ('continue','retry')))
+          AND undone=0`)
       .run(id);
     if (updated.changes !== 1) throw new Error("dream_resume_unowned");
+  }
+
+  budgetsSaved(dailyRaised: boolean, runRaised: boolean, wasDailyExhausted: boolean) {
+    // Older limited runs lack a reason. A saturated ledger is sufficient to retry them once.
+    this.db
+      .prepare(`UPDATE memory_dream_runs SET budget_update=CASE
+        WHEN budget_update='retry' OR (? AND failure_reason IS 'budget_exhausted')
+          OR (? AND failure_reason IS NULL) THEN 'retry'
+        WHEN budget_update='continue' OR ? OR (? AND failure_reason IS NULL) THEN 'continue'
+        ELSE 'saved' END
+      WHERE day=(SELECT MAX(day) FROM memory_dream_runs) AND status='limited'`)
+      .run(Number(dailyRaised), Number(wasDailyExhausted), Number(runRaised), Number(dailyRaised));
   }
 
   checkpoint(
     id: string,
     cursor: string,
-    result: Pick<DreamRun, "merged" | "retired" | "proposed" | "receipts">,
+    result: Pick<DreamRun, "merged" | "retired" | "proposed" | "receipts" | "fallback">,
     facts?: DreamSourceProgress,
   ) {
     transaction(this.db, () => {
@@ -78,13 +112,14 @@ export class MemoryDreamRepo {
         throw new Error("dream_checkpoint_unowned");
       const updated = this.db
         .prepare(`UPDATE memory_dream_runs SET cursor=?,merged=merged+?,retired=retired+?,
-        proposed=proposed+?,undo_json=? WHERE id=? AND status='running'`)
+        proposed=proposed+?,undo_json=?,model_fallback=COALESCE(?,model_fallback) WHERE id=? AND status='running'`)
         .run(
           cursor,
           result.merged,
           result.retired,
           result.proposed,
           JSON.stringify(receipts.parse([...run.receipts, ...result.receipts])),
+          result.fallback ? JSON.stringify(result.fallback) : null,
           id,
         );
       if (updated.changes !== 1) throw new Error("dream_checkpoint_unowned");
@@ -115,7 +150,7 @@ export class MemoryDreamRepo {
         JOIN scoped_memories m ON m.id=p.resolved_memory_id AND m.scope=p.scope AND m.owner_id=p.owner_id
         WHERE e.id=? AND e.status='done' AND e.reason<>'correction' AND e.group_id IS NULL
           AND b.kind IS NULL AND b.archived_at IS NULL AND b.memory_extraction=1
-          AND c.kind='dm' AND c.import_id IS NULL AND c.internal_task_id IS NULL
+          AND c.kind='dm' AND ${visibleImportedRows("c.import_id")} AND c.internal_task_id IS NULL
           AND coverage.import_id IS NULL AND src.import_id IS NULL
           AND src.role='user' AND src.status='done' AND src.bot_id IS NULL
           AND p.status='accepted' AND p.action IN ('add','update')
@@ -143,7 +178,7 @@ export class MemoryDreamRepo {
           AND f.seq>COALESCE((SELECT w.through_seq FROM memory_dream_source_watermarks w
             WHERE w.scope=f.scope AND w.owner_id=f.owner_id),0)
           AND e.status='done' AND e.reason<>'correction' AND e.group_id IS NULL
-          AND c.kind='dm' AND c.import_id IS NULL AND c.internal_task_id IS NULL
+          AND c.kind='dm' AND ${visibleImportedRows("c.import_id")} AND c.internal_task_id IS NULL
           AND coverage.import_id IS NULL AND src.import_id IS NULL
           AND src.role='user' AND src.status='done' AND src.bot_id IS NULL
           AND p.status='accepted' AND p.text=m.text AND p.category IS m.category
@@ -178,11 +213,16 @@ export class MemoryDreamRepo {
       .run(tokens, nonNegativeCost(costUsd), id);
   }
 
-  finish(id: string, status: Exclude<DreamRun["status"], "running">, finishedAt: string) {
+  finish(
+    id: string,
+    status: Exclude<DreamRun["status"], "running">,
+    finishedAt: string,
+    failureReason?: MemoryFailureReason,
+  ) {
     this.db
-      .prepare(`UPDATE memory_dream_runs SET status=?,finished_at=?
+      .prepare(`UPDATE memory_dream_runs SET status=?,finished_at=?,failure_reason=?,budget_update=NULL
       WHERE id=? AND status='running'`)
-      .run(status, finishedAt, id);
+      .run(status, finishedAt, failureReason ?? null, id);
   }
 
   markUndone(id: string) {

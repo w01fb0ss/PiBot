@@ -391,6 +391,8 @@ export function registerWorkflowRpc(
         ...(request.costCapUsd === undefined ? {} : { costCapUsd: request.costCapUsd }),
       },
       AbortSignal.any([signal, AbortSignal.timeout(RUN_PREPARE_MS)]),
+      undefined,
+      ctx.logger,
     );
     if (!prepared.ok)
       return {

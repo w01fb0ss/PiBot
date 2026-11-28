@@ -1,4 +1,9 @@
-import { approvalText } from "@pibot/client-core";
+import {
+  approvalExplanation,
+  approvalText,
+  isDirectRunApproval,
+  isWindowsDirectRunApproval,
+} from "@pibot/client-core";
 import type { Approval, UserQuestionPauseSchema } from "@pibot/protocol";
 import type { ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
@@ -9,7 +14,14 @@ import { useColors } from "../../../theme/use-theme.ts";
 import { Button, ListCard } from "../../../ui/controls.tsx";
 import { Icon, type IconName } from "../../../ui/icons.tsx";
 import { Radio } from "../../../ui/sheet.tsx";
-import { approvalIcon, approvalTarget } from "../../approvals/card-facts.ts";
+import {
+  approvalIcon,
+  approvalLead,
+  approvalTarget,
+  isSecuritySettingsApproval,
+} from "../../approvals/card-facts.ts";
+import { useApprovalDeadline } from "../../approvals/use-approval-deadline.ts";
+import { canRemember, desktopOnly } from "../../approvals/use-approvals.ts";
 
 /** Header row of an approval card; red on `dangerBg` when the request is dangerous. */
 export function ApprovalHeader({ approval, title }: { approval: Approval; title: string }) {
@@ -163,11 +175,15 @@ export function ApprovalInlineCard({
   disabled,
   onView,
   onAllow,
+  onAlways,
+  onDeny,
 }: {
   approval: Approval;
   disabled: boolean;
   onView: () => void;
   onAllow: () => void;
+  onAlways: () => void;
+  onDeny: () => void;
 }) {
   const t = useText(),
     shared = useSharedText(),
@@ -175,10 +191,82 @@ export function ApprovalInlineCard({
     colors = useColors();
   const target = approvalTarget(approval, language, shared);
   const danger = approval.risk === "danger";
+  const deadline = useApprovalDeadline(approval);
+  const desktop = desktopOnly(approval);
+  const canDecide = !disabled && !deadline.expired && !desktop;
+  const windowsDirectRun = isWindowsDirectRunApproval(approval);
+  const directRun = windowsDirectRun || isDirectRunApproval(approval);
+  const review = directRun || isSecuritySettingsApproval(approval);
+  const text = approvalText(approval, language);
+  const explanation = approvalExplanation(approval, shared);
+  const lead = approvalLead(approval, language);
+  if (approval.connectorNetworkSite)
+    return (
+      <ListCard flush raised>
+        <ApprovalHeader approval={approval} title={text.title} />
+        <ConnectorNetworkDestination host={approval.connectorNetworkSite} />
+        <View
+          style={{
+            flexDirection: "row",
+            justifyContent: "flex-end",
+            flexWrap: "wrap",
+            gap: 8,
+            padding: 12,
+          }}
+        >
+          <Button title={t("deny")} disabled={!canDecide} onPress={onDeny} />
+          <Button
+            variant="prim"
+            title={shared("connectors.network.allowRemember")}
+            disabled={!canDecide}
+            onPress={onAllow}
+          />
+        </View>
+      </ListCard>
+    );
+  const model = text.facts.find((fact) => fact.labelKey === "videoModel");
   return (
     <ListCard flush raised danger={danger}>
-      <ApprovalHeader approval={approval} title={approvalText(approval, language).title} />
+      <ApprovalHeader approval={approval} title={text.title} />
+      {lead && (
+        <Text style={[type.caption, { color: colors.text, paddingHorizontal: 12 }]}>{lead}</Text>
+      )}
       {!!target && <CodeBlock text={target} />}
+      {directRun && (
+        <Text style={[type.caption, { color: colors.text2, padding: 12 }]}>
+          {shared(
+            windowsDirectRun ? "facts.value.windows_unisolated" : "facts.value.outside_sandbox",
+          )}
+        </Text>
+      )}
+      {model && (
+        <Text
+          style={[type.caption, { color: colors.text2, paddingHorizontal: 12, paddingBottom: 8 }]}
+        >
+          {shared("video.model")} · {model.value}
+        </Text>
+      )}
+      {(danger || explanation.summary || desktop || deadline.paused || deadline.expired) && (
+        <Text
+          style={[
+            type.caption,
+            {
+              color: danger ? colors.danger : colors.text2,
+              paddingHorizontal: 12,
+              paddingBottom: 8,
+            },
+          ]}
+        >
+          {[
+            danger && shared("approval.danger"),
+            explanation.summary,
+            desktop && t("desktopOnly"),
+            (deadline.paused || deadline.expired) && deadline.label,
+          ]
+            .filter(Boolean)
+            .join("\n")}
+        </Text>
+      )}
       <View
         style={{
           flexDirection: "row",
@@ -191,18 +279,47 @@ export function ApprovalInlineCard({
           borderTopColor: colors.b1,
         }}
       >
-        <Button title={t("view")} onPress={onView} />
         <Button
-          variant="prim"
-          icon={danger ? "face" : undefined}
-          title={t("allowOnce")}
-          disabled={disabled}
-          onPress={onAllow}
+          title={t(directRun ? "approvalReview" : "view")}
+          variant={review ? "prim" : "ghost"}
+          onPress={onView}
         />
+        {!desktop && !review && (
+          <>
+            <Button title={t("deny")} disabled={!canDecide} onPress={onDeny} />
+            {!deadline.paused && !danger && canRemember(approval) && (
+              <Button
+                title={shared("approval.allowAlways")}
+                disabled={!canDecide}
+                onPress={onAlways}
+              />
+            )}
+            <Button
+              variant="prim"
+              icon={danger ? "face" : undefined}
+              title={t(deadline.paused ? "allow" : "allowOnce")}
+              disabled={!canDecide}
+              onPress={onAllow}
+            />
+          </>
+        )}
       </View>
     </ListCard>
   );
 }
+export function ConnectorNetworkDestination({ host }: { host: string }) {
+  const colors = useColors();
+  const shared = useSharedText();
+  return (
+    <View style={{ gap: 6, paddingHorizontal: 16, paddingBottom: 12 }}>
+      <Text selectable style={{ fontSize: 20, fontWeight: "600", color: colors.text }}>
+        {host}
+      </Text>
+      <Text style={{ color: colors.text2 }}>{shared("connectors.network.requestNote")}</Text>
+    </View>
+  );
+}
+
 /** Raised chat card with a title row and an accent "View" action (desktop changes card). */
 export function ChangesCard({
   title,

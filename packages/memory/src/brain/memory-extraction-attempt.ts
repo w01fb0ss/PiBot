@@ -1,12 +1,17 @@
 // Dispatches and settles one leased extraction, including its fixed-code health and audit receipts.
 import type { DatabaseSync } from "node:sqlite";
-import type { MemoryDraftRequest, MemoryDraftUsage } from "@pibot/agent";
+import type { MemoryDraftRequest, MemoryDraftResult } from "@pibot/agent";
 import type { BrainRedactor } from "@pibot/brain/kit";
-import type { Message } from "@pibot/protocol-base";
+import {
+  type Message,
+  memoryFailureNeedsSettings,
+  memoryFailureReason,
+} from "@pibot/protocol-base";
 import {
   BackgroundTaskHealthRepo,
   BotsRepo,
   correctionTopic,
+  memoryBudgetDayStart as dayStart,
   type MemoryExtraction,
   type MemoryExtractionsRepo,
   memoryMaintenanceUsage,
@@ -21,13 +26,10 @@ import {
 } from "./memory-extraction.ts";
 import { extractionErrorCode } from "./memory-extraction-result.ts";
 import { settleExtraction } from "./memory-extraction-settlement.ts";
-import { logMemoryAttempt } from "./memory-maintenance-log.ts";
+import { logMemoryAttempt, logMemoryFallback } from "./memory-maintenance-log.ts";
+import { memoryModelRoute } from "./memory-organization-model.ts";
 import type { MemoryService } from "./memory-service.ts";
 
-interface Model {
-  provider: string;
-  id: string;
-}
 export interface MemoryExtractionAttemptDeps {
   db: DatabaseSync;
   redactor: BrainRedactor;
@@ -38,16 +40,10 @@ export interface MemoryExtractionAttemptDeps {
   isBotIdle(botId: string, correction?: boolean): boolean;
   publishReply?(message: Message, botId: string): void;
   isPaused(): boolean;
-  draftMemories?: (
-    request: MemoryDraftRequest,
-  ) => Promise<{ draft: unknown; tokens: number; costUsd?: number }>;
+  draftMemories?: (request: MemoryDraftRequest) => Promise<MemoryDraftResult>;
 }
 
-export function dayStart(now = new Date()): string {
-  const value = new Date(now);
-  value.setHours(0, 0, 0, 0);
-  return value.toISOString();
-}
+export { dayStart };
 
 export class MemoryExtractionAttempt {
   private readonly bots: BotsRepo;
@@ -67,24 +63,6 @@ export class MemoryExtractionAttempt {
       costUsd: settings.memoryExtractionDailyCostUsd ?? 0.5,
       tokens: settings.memoryExtractionDailyTokens ?? 2_000_000,
     };
-  }
-  /**
-   * The model this Bot actually chats with: its own, else the default it follows. The auxiliary
-   * model setting is tried first inside draftMemories, which falls back to this one. Preferring
-   * the default here made every Bot's extraction fail with no_model once the default became
-   * unusable (maintainers 2026-11-15: default on the official ChatGPT plan OpenAI refuses, while Pi ran
-   * fine on the Codex sign-in), and the inbox filled with failure cards.
-   */
-  private model(botId: string): Model | undefined {
-    const bot = this.bots.get(botId);
-    // An image Bot's own model only draws (e.g. seedream), so it is never among the text models
-    // extraction can run on and every attempt failed with no_model (maintainers 2026-11-18, 小图). It
-    // uses the default model its sibling Bots chat with instead.
-    const { defaultModel, auxiliaryModel } = this.settings.get();
-    if (bot?.imageMode) return defaultModel ?? auxiliaryModel ?? undefined;
-    return bot?.modelProvider && bot.modelId
-      ? { provider: bot.modelProvider, id: bot.modelId }
-      : (defaultModel ?? auxiliaryModel ?? undefined);
   }
   private permitted(row: MemoryExtraction): boolean {
     const bot = this.bots.get(row.botId);
@@ -155,15 +133,15 @@ export class MemoryExtractionAttempt {
       skip("no_new_human_content");
       return;
     }
-    const model = this.model(row.botId);
+    const route = memoryModelRoute(this.deps.db, row.botId);
     const draftMemories = this.deps.draftMemories;
-    if (!model || !draftMemories) {
+    if (!route || !draftMemories) {
       // A missing model used to be silent forever; a streak makes the inbox say it.
       this.health.fail("memory_extraction", row.botId, "no_model");
       skip("no_model");
       return;
     }
-    const result = await this.draft(row, source, model, draftMemories, signal);
+    const result = await this.draft(row, source, route, draftMemories, signal);
     signal.throwIfAborted();
     if (!this.deps.isBotIdle(row.botId, urgent)) {
       this.repo.defer(row, "bot_busy");
@@ -178,7 +156,7 @@ export class MemoryExtractionAttempt {
   private finish(
     row: MemoryExtraction,
     source: ExtractionSource,
-    result: { draft: unknown; tokens: number; costUsd?: number },
+    result: MemoryDraftResult,
     correction?: ReturnType<typeof correctionSource>,
   ) {
     if (correction) {
@@ -228,7 +206,7 @@ export class MemoryExtractionAttempt {
   private draft(
     row: MemoryExtraction,
     source: ExtractionSource,
-    model: Model,
+    route: NonNullable<ReturnType<typeof memoryModelRoute>>,
     draftMemories: NonNullable<MemoryExtractionAttemptDeps["draftMemories"]>,
     signal: AbortSignal,
   ) {
@@ -240,36 +218,17 @@ export class MemoryExtractionAttempt {
         : redact(extractionPrompt(catalog, source.text, source.truncated));
     const used = memoryMaintenanceUsage(this.deps.db, dayStart());
     const limit = this.limit();
-    let reserved = false;
-    const draft = (chosen: Model) =>
-      draftMemories({
-        model: chosen,
-        text,
-        ...(row.groupId ? { instruction: groupExtractionInstruction() } : {}),
-        signal,
-        budget: {
-          tokens: Math.max(0, limit.tokens - used.tokens),
-          costUsd: Math.max(0, limit.costUsd - used.costUsd),
-        },
-        onUsage: (usage: MemoryDraftUsage) => {
-          this.repo.recordUsage(row.id, usage);
-          reserved = true;
-        },
-      });
-    // The Bot's own model may be gone or its key invalid while the main model in Settings still
-    // works. A reservation means dispatch may have occurred, so never retry that call.
-    const fallback = this.settings.get().defaultModel ?? undefined;
-    return draft(model).catch((error: unknown) => {
-      const code = extractionErrorCode(error);
-      if (
-        (code !== "no_model" && code !== "auth_failed") ||
-        reserved ||
-        !fallback ||
-        (fallback.provider === model.provider && fallback.id === model.id) ||
-        signal.aborted
-      )
-        throw error;
-      return draft({ provider: fallback.provider, id: fallback.id });
+    return draftMemories({
+      ...route,
+      text,
+      ...(row.groupId ? { instruction: groupExtractionInstruction() } : {}),
+      signal,
+      budget: {
+        tokens: Math.max(0, limit.tokens - used.tokens),
+        costUsd: Math.max(0, limit.costUsd - used.costUsd),
+      },
+      onUsage: (usage) => this.repo.recordUsage(row.id, usage),
+      onFallback: logMemoryFallback(this.deps, row.botId),
     });
   }
   private failed(row: MemoryExtraction, signal: AbortSignal, error: unknown) {
@@ -282,12 +241,11 @@ export class MemoryExtractionAttempt {
       this.repo.defer(row, code);
       return;
     }
-    if (code === "no_model" || code === "auth_failed") {
-      this.health.fail("memory_extraction", row.botId, code);
-      this.repo.finish(row.id, { status: "skipped", error: code });
-      return;
-    }
-    this.health.fail("memory_extraction", row.botId, code);
-    this.repo.finish(row.id, { status: "failed", error: code });
+    const reason = memoryFailureReason(code);
+    this.health.fail("memory_extraction", row.botId, reason);
+    this.repo.finish(row.id, {
+      status: memoryFailureNeedsSettings(reason) ? "skipped" : "failed",
+      error: code,
+    });
   }
 }

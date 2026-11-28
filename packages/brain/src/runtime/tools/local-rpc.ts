@@ -9,11 +9,13 @@ import type { LocalService } from "../../local-service.ts";
 import { grantList } from "../../resources/workplaces/grant-list.ts";
 import { revealWorkingFolder } from "../../resources/workplaces/reveal-folder.ts";
 import { browseRunner } from "../../resources/workplaces/runner-browse.ts";
+import { registerCommandProtectionRpc } from "./command-protection-rpc.ts";
 import { registerSandboxWebsiteRpc } from "./sandbox-website-rpc.ts";
 
 export function registerLocalRpc(handle: KernelRegisterRpc, local: LocalService) {
   const { approvals, workplaces, permissions } = local;
   registerDraftRpc(handle, local.drafts);
+  registerCommandProtectionRpc(handle, local);
   const savePermissions: typeof permissions.set = async (params) => {
     const result = await permissions.set(params);
     try {
@@ -115,7 +117,7 @@ export function registerLocalRpc(handle: KernelRegisterRpc, local: LocalService)
     local.autoCheck.resolveProposal(noticeId, accept, commands),
   );
   let discoveringCommandPaths = false;
-  handle("permissions.paths.discover", async ({ source }) => {
+  handle("permissions.paths.discover", async ({ source }, { signal }) => {
     if (discoveringCommandPaths) throw new RpcError(-32001, "command_path_discovery_in_progress");
     discoveringCommandPaths = true;
     try {
@@ -124,7 +126,7 @@ export function registerLocalRpc(handle: KernelRegisterRpc, local: LocalService)
         env: local.deps.env,
         home: local.deps.userHome,
         source,
-        signal: local.shutdown.signal,
+        signal: AbortSignal.any([signal, local.shutdown.signal]),
       });
     } catch {
       throw new RpcError(-32001, "command_path_discovery_failed");
@@ -184,6 +186,8 @@ export function registerLocalRpc(handle: KernelRegisterRpc, local: LocalService)
     return savePermissions(params);
   });
   handle("approvals.pending", async (params) => approvals.repo.pending(params));
+  handle("approvals.groupTimeline", async (params) => approvals.repo.groupTimeline(params));
+  handle("approvals.groupFocus", async ({ groupId }) => approvals.repo.groupFocus(groupId));
   handle("approvals.addWritableFolder", ({ id }, { signal }) =>
     approvals.addWritableFolder(id, signal),
   );
@@ -194,17 +198,20 @@ export function registerLocalRpc(handle: KernelRegisterRpc, local: LocalService)
         id,
         decision,
         remember,
+        rememberDirectRun,
         preauthorize,
         rememberSecrets,
         connectorConsent,
+        modelOptionId,
         allowConversation,
         allowTaskWeb,
         allowSession,
         conversationId,
       },
-      { source },
+      { source, phone },
     ) => {
       const approval = approvals.repo.get(id);
+      if (modelOptionId && phone) throw new RpcError(-32602, "video_approval_changed");
       if (conversationId && approval?.conversationId !== conversationId)
         throw new RpcError(-32602, "Approval conversation changed");
       // "Don't ask again" on Pi's cards changes Pi's own level: the person's switch, on this
@@ -228,6 +235,8 @@ export function registerLocalRpc(handle: KernelRegisterRpc, local: LocalService)
         allowConversation,
         allowTaskWeb,
         allowSession,
+        modelOptionId,
+        rememberDirectRun,
       );
     },
   );

@@ -4,23 +4,50 @@
 // never inherited from a plugin manifest.
 
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
-import { RpcError, RpcErrorCodes } from "@pibot/plugins-contract/full";
+import { join, sep } from "node:path";
+import { looksLikeCredentialValue, RpcError, RpcErrorCodes } from "@pibot/plugins-contract/full";
 import type { PluginsRepo } from "../../../store/index.ts";
 import {
   type ConnectorPreview,
   finalizeConnectorPreview,
+  importSavedKeys,
+  pluginSettingsTemplate,
   USER_SECRET_SCOPE,
 } from "../connector-import.ts";
 import type { ConnectorServiceOperations } from "../connector-service.ts";
 
-export function pickImportStep(
+/** Drops any symlink filename that resembles a credential or matches a registered secret. */
+export function scrubSymlinkError(
+  error: unknown,
+  displayRedact?: (value: string) => string,
+): unknown {
+  if (!(error instanceof RpcError) || !error.message.startsWith("connector_import_symlink:"))
+    return error;
+  const raw = error.message.slice("connector_import_symlink:".length);
+  if (raw.length > 120 || looksLikeCredentialValue(raw) || displayRedact?.(raw) !== raw)
+    return new RpcError(error.code, "connector_import_symlink");
+  const item = raw
+    .split(sep)
+    .join("/")
+    .normalize("NFC")
+    .replace(/[\p{Cc}]/gu, " ")
+    .trim();
+  if (!item || looksLikeCredentialValue(item) || displayRedact(item) !== item)
+    return new RpcError(error.code, "connector_import_symlink");
+  return new RpcError(error.code, `connector_import_symlink:${item}`);
+}
+
+export async function pickImportStep(
   this: ConnectorServiceOperations,
   input: { kind: "file" | "directory" },
 ) {
   if (!this.deps.importHost)
     throw new RpcError(RpcErrorCodes.pluginImportInvalid, "Import picker unavailable");
-  return this.deps.importHost.pick(input);
+  try {
+    return await this.deps.importHost.pick(input);
+  } catch (error) {
+    throw scrubSymlinkError(error, this.deps.displayRedact);
+  }
 }
 
 async function previewResult(
@@ -42,6 +69,8 @@ async function previewResult(
     if (risk) warnings.add(risk);
   }
   signal.throwIfAborted();
+  const namesOnly = (fields: Record<string, string>) =>
+    Object.fromEntries(Object.keys(fields).map((name) => [name, ""]));
   const visibleManifest = {
     ...preview.manifest,
     servers: preview.manifest.servers.map((server) => {
@@ -49,6 +78,7 @@ async function previewResult(
         return {
           ...server,
           url: server.url.replaceAll(/\$\{secret:[A-Z][A-Z0-9_]{0,63}\}/g, "REDACTED"),
+          headers: namesOnly(server.headers),
         };
       if (server.transport === "stdio" && preview.plugin && service.deps.dataDir) {
         const root = preview.installationRoot as string;
@@ -57,11 +87,17 @@ async function previewResult(
           value
             .replaceAll(data, `\${CLAUDE_PLUGIN_DATA}`)
             .replaceAll(root, `\${CLAUDE_PLUGIN_ROOT}`);
-        return { ...server, command: scrub(server.command), args: server.args.map(scrub) };
+        return {
+          ...server,
+          env: namesOnly(server.env),
+          command: scrub(server.command),
+          args: server.args.map(scrub),
+        };
       }
-      return server;
+      return server.transport === "stdio" ? { ...server, env: namesOnly(server.env) } : server;
     }),
   };
+  const savedKeys = importSavedKeys(preview.manifest, preview.installationId);
   return {
     previewId: preview.previewId,
     digest: preview.digest,
@@ -80,7 +116,14 @@ async function previewResult(
         }
       : {}),
     expiresAt: preview.expiresAt,
+    ...(preview.discovery || service.selectionPreviews.get(preview.previewId)?.broughtOver
+      ? { fromBringOver: true }
+      : {}),
     commandWarnings: [...warnings],
+    ...(preview.ignoredMcpMetadata ? { ignoredMcpMetadata: true as const } : {}),
+    ...(preview.requiredKeys ? { requiredKeys: preview.requiredKeys } : {}),
+    ...(savedKeys.length ? { savedKeys } : {}),
+    ...(preview.plainFields ? { plainFields: preview.plainFields } : {}),
   };
 }
 
@@ -96,6 +139,11 @@ async function checkedPreview(
     service.previews.cancel(preview.previewId);
     const selection = service.selectionPreviews.get(preview.previewId);
     if (selection) {
+      if (selection.broughtOver) {
+        // Setup can retry the same host selection, including its origin, until the host expires it.
+        service.selectionPreviews.delete(preview.previewId);
+        throw error;
+      }
       // Retain only cleanup ownership if the host cannot release it now; the next preview retries.
       selection.expiresAt = new Date(0).toISOString();
       try {
@@ -112,14 +160,15 @@ async function checkedPreview(
 export async function previewImportStep(
   this: ConnectorServiceOperations,
   source:
-    | { kind: "json"; text: string }
-    | { kind: "selection"; selectionId: string; installationId?: string }
+    | { kind: "json"; text: string; moveCommandKeyTo?: string }
+    | { kind: "selection"; selectionId: string; installationId?: string; moveCommandKeyTo?: string }
     | {
         kind: "configured";
         previewId: string;
         config: Record<string, string | number | boolean>;
       },
   signal: AbortSignal = AbortSignal.timeout(30_000),
+  existingInstallationId?: string,
 ) {
   const now = Date.now();
   for (const [previewId, pending] of this.selectionPreviews) {
@@ -144,31 +193,49 @@ export async function previewImportStep(
     return checkedPreview(this, preview, signal);
   }
   let text: string;
-  const installationId =
-    source.kind === "selection" && source.installationId
+  let installationId: string =
+    existingInstallationId ??
+    (source.kind === "selection" && source.installationId
       ? (source.installationId as ReturnType<typeof randomUUID>)
-      : randomUUID();
+      : randomUUID());
   let selection:
     | {
         selectionId: string;
         sourceDigest: string;
         sourceKind: "json" | "plugin";
         fileChanges?: import("@pibot/plugins-contract/full").ConnectorImportFileChanges;
+        broughtOver?: import("@pibot/plugins-contract/full").ConnectorImportOrigin;
       }
     | undefined;
   if (source.kind === "selection") {
     if (!this.deps.importHost)
       throw new RpcError(RpcErrorCodes.pluginImportInvalid, "Import picker unavailable");
-    const read = await this.deps.importHost.read({
-      selectionId: source.selectionId,
-      installationId,
-    });
+    let read: Awaited<ReturnType<NonNullable<typeof this.deps.importHost>["read"]>>;
+    try {
+      read = await this.deps.importHost.read({
+        selectionId: source.selectionId,
+        installationId,
+      });
+    } catch (error) {
+      throw scrubSymlinkError(error, this.deps.displayRedact);
+    }
+    if (read.bringOver) {
+      installationId = source.selectionId;
+      // A retried read can replace a preview whose response was lost. Its expiry must no longer
+      // release the host selection that the new preview still owns.
+      for (const [id, pending] of this.selectionPreviews) {
+        if (pending.selectionId !== source.selectionId) continue;
+        this.selectionPreviews.delete(id);
+        this.previews.cancel(id);
+      }
+    }
     text = read.text;
     selection = {
       selectionId: source.selectionId,
       sourceDigest: read.sourceDigest,
       sourceKind: read.sourceKind,
       ...(read.fileChanges ? { fileChanges: read.fileChanges } : {}),
+      ...(read.bringOver ? { broughtOver: read.bringOver } : {}),
     };
   } else text = source.text;
   const installationRoot =
@@ -183,9 +250,11 @@ export async function previewImportStep(
       Date.now(),
       installationId,
       installationRoot,
+      this.deps.home,
+      source.moveCommandKeyTo,
     );
   } catch (error) {
-    if (selection)
+    if (selection && !selection.broughtOver)
       await this.deps.importHost
         ?.release({ selectionId: selection.selectionId })
         .catch(() => undefined);
@@ -198,12 +267,23 @@ export async function previewImportStep(
 
 export async function cancelPreviewStep(
   this: ConnectorServiceOperations,
-  { previewId }: { previewId: string },
+  input: { previewId: string } | { selectionId: string },
 ) {
-  const selection = this.selectionPreviews.get(previewId);
-  if (selection) await this.deps.importHost?.release({ selectionId: selection.selectionId });
-  this.selectionPreviews.delete(previewId);
-  this.previews.cancel(previewId);
+  const selectionId =
+    "selectionId" in input
+      ? input.selectionId
+      : this.selectionPreviews.get(input.previewId)?.selectionId;
+  if (selectionId) await this.deps.importHost?.release({ selectionId });
+  if ("previewId" in input) {
+    this.selectionPreviews.delete(input.previewId);
+    this.previews.cancel(input.previewId);
+  } else {
+    for (const [previewId, selection] of this.selectionPreviews) {
+      if (selection.selectionId !== input.selectionId) continue;
+      this.selectionPreviews.delete(previewId);
+      this.previews.cancel(previewId);
+    }
+  }
   return { ok: true as const };
 }
 
@@ -216,6 +296,8 @@ export async function importStep(
     botInstall?: boolean;
     expectedDigest: string;
     config: Record<string, string | number | boolean>;
+    plainFields?: string[];
+    useSavedKeys?: true;
     networkDomains?: Record<string, string[]>;
     /**
      * Internal only (bring-over; RPC params are strict and cannot carry it): where it came
@@ -264,6 +346,9 @@ export async function importStep(
   }
   if (preview.digest !== input.expectedDigest)
     throw new RpcError(RpcErrorCodes.pluginImportInvalid, "Preview changed; re-run the import");
+  const selection = this.selectionPreviews.get(preview.previewId);
+  if (selection?.broughtOver && input.enable && preview.manifest.servers.length)
+    throw new RpcError(RpcErrorCodes.invalidParams, "bring_over_assign_after_import");
   const appPlatforms = preview.plugin?.applicationCard?.platforms;
   if (
     preview.plugin?.application &&
@@ -278,20 +363,36 @@ export async function importStep(
     !appPlatforms.includes((this.deps.platform ?? process.platform) as "darwin" | "linux" | "win32")
   )
     throw new RpcError(-32602, "pibot_application_unsupported_platform");
+  const discovery = input.broughtOver ?? preview.discovery;
+  const sourcePath = input.sourcePath ?? preview.discovery?.path;
   const finalized = finalizeConnectorPreview(
     preview,
     input.config,
     input.networkDomains,
     input.botInstall,
+    input.plainFields,
   );
+  const savedKeys = importSavedKeys(finalized.manifest, preview.installationId);
+  if (
+    savedKeys.length &&
+    (!input.useSavedKeys ||
+      input.botInstall ||
+      JSON.stringify(savedKeys) !==
+        JSON.stringify(importSavedKeys(preview.manifest, preview.installationId)))
+  )
+    throw new RpcError(RpcErrorCodes.pluginImportInvalid, "connector_paste_savedKeysConsent");
   if (input.botInstall && finalized.secrets.length)
     throw new RpcError(-32602, "plugin_sensitive_config_forbidden");
+  // Lets 高级 → 设置 change the plain settings later without the original package.
+  const settingsTemplate =
+    preview.plugin &&
+    pluginSettingsTemplate(preview.plugin, preview.installationId, preview.installationRoot);
   signal?.throwIfAborted();
   const targets = input.skillTargets ?? { bots: [], groups: [] };
   this.deps.skillCopies?.validate(targets);
   // Bringing a plugin over gives it to nobody yet; its skills wait in 「给 Bot 用」.
   if (
-    !input.broughtOver &&
+    !discovery &&
     !preview.manifest.servers.length &&
     !targets.bots.length &&
     !targets.groups.length
@@ -323,22 +424,30 @@ export async function importStep(
       if (!existed) commit();
     });
   }
-  const selection = this.selectionPreviews.get(preview.previewId);
   const alreadyInstalled = this.deps.plugins.get(preview.installationId);
-  if (selection?.sourceKind === "plugin" && !alreadyInstalled)
-    await this.deps.importHost?.materialize({
-      selectionId: selection.selectionId,
-      installationId: preview.installationId,
-      expectedDigest: selection.sourceDigest,
-    });
+  if (selection?.sourceKind === "plugin" && !alreadyInstalled) {
+    try {
+      await this.deps.importHost?.materialize({
+        selectionId: selection.selectionId,
+        installationId: preview.installationId,
+        expectedDigest: selection.sourceDigest,
+      });
+    } catch (error) {
+      throw scrubSymlinkError(error, this.deps.displayRedact);
+    }
+  }
   if (input.botInstall && alreadyInstalled) {
     if (!selection || !this.deps.importHost?.replaceMaterialize)
       throw new RpcError(-32602, "plugin_update_unavailable");
-    await this.deps.importHost.replaceMaterialize({
-      selectionId: selection.selectionId,
-      installationId: preview.installationId,
-      expectedDigest: selection.sourceDigest,
-    });
+    try {
+      await this.deps.importHost.replaceMaterialize({
+        selectionId: selection.selectionId,
+        installationId: preview.installationId,
+        expectedDigest: selection.sourceDigest,
+      });
+    } catch (error) {
+      throw scrubSymlinkError(error, this.deps.displayRedact);
+    }
     const installation = this.deps.plugins.updateImported({
       installationId: preview.installationId,
       expectedRevision: alreadyInstalled.revision,
@@ -355,6 +464,7 @@ export async function importStep(
       preview.plugin?.application === true,
       preview.plugin?.applicationCard?.platforms ?? [],
       preview.plugin?.applicationId,
+      settingsTemplate,
     );
     if (preview.plugin?.skills.length) {
       this.deps.skillCopies?.enqueue(installation.id, targets);
@@ -392,20 +502,33 @@ export async function importStep(
           preview.plugin?.application === true,
           preview.plugin?.applicationCard?.platforms ?? [],
           preview.plugin?.applicationId,
+          settingsTemplate,
         );
       },
-      manifest: input.broughtOver?.name
+      manifest: discovery?.name
         ? {
             ...finalized.manifest,
-            name: { zh: input.broughtOver.name, en: input.broughtOver.name },
+            name: { zh: discovery.name, en: discovery.name },
           }
         : finalized.manifest,
-      ...(input.broughtOver
-        ? { origin: { tool: input.broughtOver.tool, key: input.broughtOver.key } }
-        : {}),
-      ...(input.broughtOver && input.sourcePath ? { originPath: input.sourcePath } : {}),
+      ...(discovery ? { origin: { tool: discovery.tool, key: discovery.key } } : {}),
+      ...(selection?.broughtOver ? { setupOrigin: selection.broughtOver } : {}),
+      ...(discovery && sourcePath ? { originPath: sourcePath } : {}),
       digest: finalized.digest,
       sourceKind: selection?.sourceKind === "plugin" ? "directory" : "json",
+      networkDenials: new Map(
+        preview.manifest.servers.flatMap((server) => {
+          const allowed = input.networkDomains?.[server.id];
+          return allowed
+            ? [
+                [
+                  server.id,
+                  new Set(server.networkDomains.filter((site) => !allowed.includes(site))),
+                ],
+              ]
+            : [];
+        }),
+      ),
       actorBotId: this.deps.actorBotId,
       enableWithoutConnectors:
         input.enable && finalized.manifest.servers.length === 0 && !!preview.plugin?.skills.length,
@@ -426,6 +549,9 @@ export async function importStep(
       await this.deps.importHost?.remove({ installationId: preview.installationId });
     throw error;
   }
+  if (receipt.created)
+    for (const { name, value } of finalized.secrets)
+      this.deps.secrets.registerCommittedImport(USER_SECRET_SCOPE, name, value);
   // The durable install now owns every secret. Replace the plaintext-bearing preview immediately
   // with a minimal retry receipt before any host cleanup or optional start work can await/fail.
   this.previews.commit(preview, input);

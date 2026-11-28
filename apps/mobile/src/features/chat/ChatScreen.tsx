@@ -1,4 +1,4 @@
-import type { Message } from "@pibot/protocol";
+import { ImportSourceSchema, type Message } from "@pibot/protocol";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { type RefObject, useEffect, useRef, useState } from "react";
 import { KeyboardAvoidingView, Text, View } from "react-native";
@@ -29,6 +29,9 @@ const ParamsSchema = z.object({
   id: z.uuid(),
   topic: z.uuid().optional(),
   focus: z.uuid().optional(),
+  approvalFocus: z.uuid().optional(),
+  /** 新开计划 from the inbox: the old plan's goal, put in the input to edit and send. */
+  draft: z.string().max(8_000).optional(),
 });
 export function ChatScreen() {
   const params = ParamsSchema.safeParse(useLocalSearchParams());
@@ -39,7 +42,7 @@ export function ChatScreen() {
   const offline = useOfflineEngine();
   // The typed text survives the switch between the computer's chat and the phone's offline chat
   // (v0.0.2: a message waiting in the composer was lost when the link came back).
-  const draft = useRef("");
+  const draft = useRef(params.success ? (params.data.draft ?? "") : "");
   if (params.success && params.data.kind === "bot" && offline.canReply(params.data.id))
     return <OfflineChatView botId={params.data.id} topic={params.data.topic} draft={draft} />;
   if (!params.success)
@@ -51,11 +54,12 @@ export function ChatScreen() {
     );
   return (
     <ChatView
-      key={`${params.data.kind}:${params.data.id}:${params.data.topic ?? ""}:${params.data.focus ?? ""}`}
+      key={`${params.data.kind}:${params.data.id}:${params.data.topic ?? ""}:${params.data.focus ?? ""}:${params.data.approvalFocus ?? ""}`}
       kind={params.data.kind}
       id={params.data.id}
       topic={params.data.topic}
       focus={params.data.focus}
+      approvalFocus={params.data.approvalFocus}
       draft={draft}
     />
   );
@@ -69,7 +73,11 @@ function folderChip(workplace: ChatPage["workplace"], t: ReturnType<typeof useTe
   const name = workplace.isHome ? t("folderHome") : (workplace.currentName ?? t("folderOther"));
   return workplace.runnerOffline ? t("folderRunnerOffline", { name }) : name;
 }
-function subtitle(page: ChatPage, t: ReturnType<typeof useText>) {
+function subtitle(
+  page: ChatPage,
+  t: ReturnType<typeof useText>,
+  translate: ReturnType<typeof useSharedText>,
+) {
   const status = !page.online
     ? t(
         page.reconnecting
@@ -85,7 +93,17 @@ function subtitle(page: ChatPage, t: ReturnType<typeof useText>) {
       : page.kind === "group"
         ? t("groupMembers", { count: page.entry?.looks.length ?? 0 })
         : t("idle");
-  return `# ${page.topics.title || t("untitledTopic")} · ${status}`;
+  const source = ImportSourceSchema.safeParse(page.topics.importSource);
+  const imported = source.success
+    ? translate("conversationImport.topicSource", {
+        source: translate(`conversationImport.source.${source.data}`),
+      })
+    : page.topics.importSource
+      ? translate("conversationImport.importedTopic")
+      : undefined;
+  return [imported, `# ${page.topics.title || t("untitledTopic")}`, status]
+    .filter(Boolean)
+    .join(" · ");
 }
 /** Where the composer sits while an agent Bot's computer is offline. */
 function AgentOfflineBar() {
@@ -150,12 +168,14 @@ function ChatView({
   id,
   topic,
   focus,
+  approvalFocus,
   draft,
 }: {
   kind: "bot" | "group";
   id: string;
   topic?: string;
   focus?: string;
+  approvalFocus?: string;
   draft: RefObject<string>;
 }) {
   const page = useChatPage(kind, id, topic);
@@ -226,7 +246,7 @@ function ChatView({
       >
         <NavBar
           title={page.entry?.name ?? ""}
-          subtitle={subtitle(page, t)}
+          subtitle={subtitle(page, t, shared)}
           lead={
             page.entry && (
               <ConversationAvatar
@@ -276,6 +296,7 @@ function ChatView({
           ref={thread}
           page={page}
           focus={focus}
+          approvalFocus={approvalFocus}
           onMessage={(message) => setSheet({ kind: "message", message })}
           onRetry={(source) => void retry(source)}
         />
@@ -325,7 +346,13 @@ function ChatView({
             }
           />
         )}
-        <ChatSheets page={page} sheet={sheet} setSheet={setSheet} onBrowser={openBrowser} />
+        <ChatSheets
+          page={page}
+          sheet={sheet}
+          setSheet={setSheet}
+          onBrowser={openBrowser}
+          onApproval={(id) => thread.current?.focusApproval(id)}
+        />
         <OfflineDetailsSheet
           visible={offlineDetails}
           wait={t("offlineUnavailable")}

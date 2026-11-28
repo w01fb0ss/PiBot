@@ -2,11 +2,13 @@ import type { ConnectorConnectionFactory } from "@pibot/protocol-base";
 import { argumentValidator } from "./arguments.ts";
 
 /** One factory owns its validators/connections; the SDK is unused by first-screen reads. */
-export function createConnectorConnectionFactory(): ConnectorConnectionFactory {
+export function createConnectorConnectionFactory(
+  networkFetch?: typeof fetch,
+): ConnectorConnectionFactory {
   let pending: Promise<ConnectorConnectionFactory> | undefined;
   const load = () => {
     pending ??= import("./connection.ts").then((module) =>
-      module.createConnectorConnectionFactory(),
+      module.createConnectorConnectionFactory(networkFetch),
     );
     void pending.catch(() => {
       pending = undefined;

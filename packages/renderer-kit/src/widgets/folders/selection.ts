@@ -108,7 +108,11 @@ export function folderError(error: unknown): TranslationKey {
   if (/runner_folder_unreadable|runner_folder_invalid/.test(message))
     return "remote.runner.unreadable";
   if (message.includes("runner_path_unavailable")) return "remote.runner.pathUnavailable";
-  if (/Unknown working folder|changed; associate|workspace_boundary_changed/.test(message))
+  if (
+    /Unknown working folder|changed; associate|workspace_boundary_changed|path_unavailable|invalid_folder/.test(
+      message,
+    )
+  )
     return "folders.unavailable";
   // The request may have been applied: say so rather than inviting a duplicate.
   if (code === RpcErrorCodes.timeout || code === RpcErrorCodes.closed) return "folders.uncertain";

@@ -6,7 +6,7 @@ import { sameFile } from "../core/file-identity.ts";
 import { canonicalPath, missing, writablePath } from "../core/paths.ts";
 import { ExecError, type FileContext } from "../core/types.ts";
 import { verifyWorkspace } from "../sandbox/workspace.ts";
-import { createParents, newFileMode } from "./files.ts";
+import { createParents, newFileMode, verifyOpenedReadPath } from "./files.ts";
 
 const LIMIT = 20 * 1024 * 1024;
 export const binaryRevision = (bytes: Uint8Array) =>
@@ -42,6 +42,7 @@ export async function readBinaryFile(options: FileContext & { path: string; maxB
     const stat = await file.stat({ bigint: true });
     if (!stat.isFile() || stat.nlink !== 1n || !sameFile(stat, before) || stat.size > BigInt(limit))
       throw new ExecError("outside_workplace");
+    await verifyOpenedReadPath(path, file);
     const bytes = Buffer.alloc(Number(stat.size));
     let offset = 0;
     while (offset < bytes.length) {

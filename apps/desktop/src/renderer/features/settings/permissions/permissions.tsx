@@ -14,6 +14,7 @@ import {
 } from "@pibot/renderer-kit";
 import { Button } from "@pibot/ui";
 import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
+import { CommandProtectionCard } from "./CommandProtectionCard.tsx";
 import { DockerPermissions } from "./docker-permissions.tsx";
 import { AllowedDomains, CommandNetworkRows } from "./network-permissions.tsx";
 import { PathPermissions } from "./path-permissions.tsx";
@@ -26,7 +27,7 @@ import { usePermissions } from "./use-permissions.ts";
 
 const LOCAL: Category[] = ["run_command", "read_file", "list_dir", "write_file"];
 
-type SubPage = "sandbox" | "ssh" | "domains" | "accounts";
+type SubPage = "sandbox" | "ssh" | "domains" | "accounts" | "direct-runs";
 
 /**
  * Settings · Permissions: the global defaults every Bot starts from. Per-Bot overrides,
@@ -35,12 +36,10 @@ type SubPage = "sandbox" | "ssh" | "domains" | "accounts";
  * PATH, Docker and SSH form 「命令环境」; SSH hosts, the website allowlist and saved accounts
  * open as second-level pages, so each function shows in exactly one place.
  */
-export function PermissionsSettings({ target }: { target?: "passwords" }) {
+export function PermissionsSettings({ target }: { target?: "passwords" | "direct-runs" }) {
   const t = useT();
   const settings = usePermissions();
-  const [sub, setSub] = useState<SubPage | undefined>(
-    target === "passwords" ? "accounts" : undefined,
-  );
+  const [sub, setSub] = useState<SubPage | undefined>(target === "passwords" ? "accounts" : target);
   const root = useRef<HTMLDivElement>(null);
   // biome-ignore lint/correctness/useExhaustiveDependencies: Each page switch starts at the top.
   useLayoutEffect(() => {
@@ -78,6 +77,11 @@ export function PermissionsSettings({ target }: { target?: "passwords" }) {
   );
   if (sub === "sandbox")
     return subPage(t("permissions.sandboxRemembered"), <SandboxRemembered disabled={disabled} />);
+  if (sub === "direct-runs")
+    return subPage(
+      t("permissions.sandboxOutsideCommands"),
+      <SandboxOutsideCommandsRow disabled={disabled} initiallyOpen />,
+    );
   if (sub === "accounts")
     return subPage(
       t("credentials.title"),
@@ -111,7 +115,11 @@ export function PermissionsSettings({ target }: { target?: "passwords" }) {
           </div>
         )}
       </>,
-      t("permissions.domainsNote"),
+      t(
+        window.pibot.platform === "win32"
+          ? "permissions.domainsNoteWindows"
+          : "permissions.domainsNote",
+      ),
     );
   const enabledHosts = Object.values(data?.sshHosts ?? {}).filter((host) => host.enabled).length;
   const sandboxed = window.pibot.platform !== "win32";
@@ -122,6 +130,16 @@ export function PermissionsSettings({ target }: { target?: "passwords" }) {
         {data && settings.global && (
           <>
             <SettingsSection title={t("permissions.operations")}>
+              {window.pibot.platform === "linux" &&
+                !data.isolation.available &&
+                data.isolation.reason && (
+                  <CommandProtectionCard
+                    reason={data.isolation.reason}
+                    refreshed={(status) => {
+                      if (status.available) void settings.refresh();
+                    }}
+                  />
+                )}
               {LOCAL.map((category) => (
                 <LevelRow
                   key={category}
@@ -129,7 +147,6 @@ export function PermissionsSettings({ target }: { target?: "passwords" }) {
                   levels={data.levels}
                   disabled={disabled}
                   info
-                  unisolated={sandboxed && category === "run_command" && !data.isolation.available}
                   note={
                     category === "run_command"
                       ? window.pibot.platform === "win32"
@@ -149,15 +166,6 @@ export function PermissionsSettings({ target }: { target?: "passwords" }) {
               ) : (
                 <UnisolatedYoloRow disabled={disabled} />
               )}
-              <PathPermissions data={data} disabled={disabled} save={settings.save} />
-              <DockerPermissions data={data} disabled={disabled} save={settings.save} />
-              <SettingsLinkRow
-                icon="server"
-                tone="violet"
-                label={t("ssh.title")}
-                note={t("ssh.summary", { count: enabledHosts })}
-                onClick={() => setSub("ssh")}
-              />
             </SettingsSection>
             <SettingsSection title={t("permissions.network")}>
               <LevelRow
@@ -204,18 +212,28 @@ export function PermissionsSettings({ target }: { target?: "passwords" }) {
               ))}
               <SavedAccountsRow open={() => setSub("accounts")} />
             </SettingsSection>
-            {/* Both rows exist only where commands run in the sandbox (not Windows). */}
-            {sandboxed && (
-              <SettingsFold
-                icon="shield"
-                tone="orange"
-                title={t("permissions.advanced")}
-                summary={t("permissions.advancedSandbox")}
-              >
-                <StrictSandboxRow disabled={disabled} />
-                <SandboxOutsideCommandsRow disabled={disabled} />
-              </SettingsFold>
-            )}
+            <SettingsFold
+              icon="shield"
+              tone="orange"
+              title={t("permissions.advanced")}
+              summary={t(sandboxed ? "permissions.advancedSandbox" : "permissions.advancedSummary")}
+            >
+              {sandboxed && (
+                <>
+                  <StrictSandboxRow disabled={disabled} />
+                  <SandboxOutsideCommandsRow disabled={disabled} />
+                </>
+              )}
+              <PathPermissions data={data} disabled={disabled} save={settings.save} />
+              <DockerPermissions data={data} disabled={disabled} save={settings.save} />
+              <SettingsLinkRow
+                icon="server"
+                tone="violet"
+                label={t("ssh.title")}
+                note={t("ssh.summary", { count: enabledHosts })}
+                onClick={() => setSub("ssh")}
+              />
+            </SettingsFold>
           </>
         )}
       </SettingsPage>

@@ -459,10 +459,10 @@
         "zh": "幕僚长统筹：拆计划、分派、汇总，出每日简报和周经营复盘，把要你拍板的事收进决定记录。财务助理只读本地流水、账单和发票，做账、对账、现金流和税务日历，只出报告，从不付款、转账或登录账户。全栈开发改网站和工具；每次代码改动都交代码审查员独立审查，报告写「结论：通过／不通过」，不通过由全栈修复后交回同一审查员复验。运营经理排内容日历、写帖子草稿、做周指标；客服专员分诊工单、写回复草稿、维护常见问题。对外的一切都是草稿，每次发送都先问你。同一文件夹同一时间只有一个成员写。交付放在「.pibot/out/<主题>/」。",
         "en": "Chief of staff plans, assigns, sums up, writes briefings and weekly reviews, logs your decisions. Finance reads local statements and invoices for books, cash flow and tax dates; reports only, never pays or signs in. Every code change by the developer goes to the code reviewer: Verdict: PASS/FAIL; failures are fixed and rechecked by the same reviewer. Operations: content, posts, metrics. Support: tickets, replies, FAQ. All outward content is a draft; each send asks you. One writer per folder."
       },
-      "autoRoundLimit": 3,
+      "autoRoundLimit": 8,
       "template": {
         "id": "opc-team",
-        "version": 1
+        "version": 2
       },
       "summary": {
         "zh": "统筹、财务、开发与审查、运营、客服，一个人也能把公司转起来",

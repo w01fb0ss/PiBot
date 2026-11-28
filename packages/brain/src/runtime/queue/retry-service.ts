@@ -229,7 +229,11 @@ export async function retryGroupTaskRun(
   // The group path deliberately does not follow the brain's shutdown signal; a retry that started
   // only has its own deadline.
   const signal = AbortSignal.timeout(25_000);
-  const { bot } = await service.model(initial.task.assigneeBotId, signal, params);
+  const { bot } = await service.model(initial.task.assigneeBotId, signal, params, {
+    groupId,
+    taskId,
+    conversationId: initial.task.threadConversationId,
+  });
   signal.throwIfAborted();
   const result = insertRetry(
     service,
@@ -390,7 +394,11 @@ export async function retryDmRun(
   };
   check();
   const signal = AbortSignal.any([service.signal, AbortSignal.timeout(25_000)]);
-  const { bot } = await service.model(botId, signal, params);
+  const { bot } = await service.model(botId, signal, params, {
+    conversationId,
+    groupId: initial.groupId,
+    taskId: initial.taskId,
+  });
   signal.throwIfAborted();
   const savedGoal =
     recovery.session.state === "missing" && initial.userMessageId

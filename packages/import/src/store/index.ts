@@ -1,9 +1,22 @@
 // A batch owns its imported rows, allowing atomic publication, rollback, and recovery.
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import { type ImportStatus, ImportStatusSchema } from "@pibot/import-contract";
+import { setImmediate as yieldToLoop } from "node:timers/promises";
+import {
+  type ImportDistillationQuote,
+  type ImportStatus,
+  ImportStatusSchema,
+  MAX_IMPORT_TOPIC_REFERENCES,
+} from "@pibot/import-contract";
 import type { Attachment } from "@pibot/protocol-base";
-import { AttachmentsRepo, AuditRepo, transaction, type WorkplacesRepo } from "@pibot/storage";
+import {
+  AttachmentsRepo,
+  AuditRepo,
+  ChatSearchIndex,
+  transaction,
+  type WorkplacesRepo,
+} from "@pibot/storage";
+import { CleanupWork } from "./cleanup-work.ts";
 import { ImportFailure } from "./failure.ts";
 import { ImportMemories } from "./memories.ts";
 import { ImportPersonas } from "./personas.ts";
@@ -13,21 +26,21 @@ type ImportedTopic = {
   title: string;
   createdAt: string;
   updatedAt: string;
+  memoryExcluded?: boolean;
 };
 type ImportedMessage = {
   role: "user" | "assistant";
   text: string;
+  historyParts?: { kind: "call" | "result" | "attachment"; name: string; summary?: string }[];
   createdAt: string;
 };
 
 type Terminal = Exclude<ImportStatus["state"], "running" | "undoing">;
 type CleanupTarget = "failed" | "cancelled";
-const DELETE_RECORDS = 128;
-const DELETE_STEP = 8;
-const DELETE_WORK_MS = 18;
 
 export class ImportStore {
   private readonly audit: AuditRepo;
+  private statusStatement?: ReturnType<DatabaseSync["prepare"]>;
   readonly memories: ImportMemories;
   readonly personas: ImportPersonas;
   readonly projects: ImportProjects;
@@ -77,26 +90,30 @@ export class ImportStore {
   }
 
   get(id: string) {
-    const row = this.db
-      .prepare(`SELECT id AS importId, source,
+    this.statusStatement ??= this.db.prepare(`SELECT id AS importId, source,
         CASE cleanup_phase WHEN 'undoing' THEN 'undoing' WHEN 'discarding' THEN 'running'
           ELSE state END AS state, topics, messages, reason, cleanup_phase,
-        removed_topics, removed_messages, added_memories,
+        removed_topics, removed_messages, removed_memories, added_memories, distillation_result,
+        skipped_too_long,
         EXISTS(SELECT 1 FROM import_personas WHERE import_id=import_jobs.id) AS applied_persona,
         (SELECT COUNT(*) FROM import_project_notes
           WHERE import_id=import_jobs.id AND state='pending') AS project_files,
+        (SELECT COUNT(*) FROM import_project_notes
+          WHERE import_id=import_jobs.id AND removed=1) AS removed_project_files,
         (SELECT COUNT(*) FROM import_project_notes
           WHERE import_id=import_jobs.id AND state='kept') AS kept_files,
         (SELECT COUNT(*) FROM import_folders
           WHERE import_id=import_jobs.id AND state='pending') AS folders,
         (SELECT COUNT(*) FROM import_folders
           WHERE import_id=import_jobs.id AND state='kept') AS kept_folders
-        FROM import_jobs WHERE id=?`)
-      .get(id);
+        FROM import_jobs WHERE id=?`);
+    const row = this.statusStatement.get(id);
     if (!row) return undefined;
     const {
       removed_topics,
       removed_messages,
+      removed_memories,
+      removed_project_files,
       added_memories,
       applied_persona,
       project_files,
@@ -104,29 +121,89 @@ export class ImportStore {
       folders,
       kept_folders,
       cleanup_phase,
+      distillation_result,
+      skipped_too_long,
       ...status
     } = row;
     const completed = status.state === "completed";
+    const importedTopics =
+      completed && status.topics
+        ? this.db
+            .prepare(`SELECT c.id AS topicId, c.bot_id AS botId FROM conversations c
+              JOIN bots b ON b.id=c.bot_id
+              WHERE c.import_id=? AND c.archived_at IS NULL AND b.archived_at IS NULL
+              ORDER BY c.updated_at DESC,c.id DESC LIMIT ?`)
+            .all(id, MAX_IMPORT_TOPIC_REFERENCES)
+        : undefined;
     return ImportStatusSchema.parse({
       ...status,
+      ...(importedTopics?.length ? { importedTopics } : {}),
       ...(cleanup_phase ? { cleanup: cleanup_phase } : {}),
       ...(added_memories ? { memories: added_memories } : {}),
+      ...(typeof distillation_result === "string"
+        ? { distillation: JSON.parse(distillation_result) }
+        : {}),
       ...(applied_persona ? { persona: true } : {}),
       ...(project_files && completed ? { projectFiles: project_files } : {}),
       ...(folders && completed ? { folders } : {}),
       ...(kept_files ? { keptProjectFiles: kept_files } : {}),
       ...(kept_folders ? { keptFolders: kept_folders } : {}),
+      ...(skipped_too_long ? { skippedTooLong: skipped_too_long } : {}),
       ...(cleanup_phase || status.state === "undone"
-        ? { removed: { topics: removed_topics, messages: removed_messages } }
+        ? {
+            removed: {
+              topics: removed_topics,
+              messages: removed_messages,
+              ...(removed_memories ? { memories: removed_memories } : {}),
+              ...(removed_project_files ? { projectFiles: removed_project_files } : {}),
+            },
+          }
         : {}),
     });
   }
 
-  create(id: string, source: ImportStatus["source"], botId: string) {
+  create(
+    id: string,
+    source: ImportStatus["source"],
+    botId: string,
+    quote?: ImportDistillationQuote,
+    skippedTooLong = 0,
+  ) {
+    transaction(this.db, () => {
+      this.db
+        .prepare(`INSERT INTO import_jobs(id,source,bot_id,state,created_at,distillation_consent,skipped_too_long)
+          VALUES(?,?,?,'running',?,?,?)`)
+        .run(
+          id,
+          source,
+          botId,
+          new Date().toISOString(),
+          quote ? JSON.stringify(quote) : null,
+          skippedTooLong,
+        );
+      if (quote && !quote.local)
+        this.audit.append({
+          botId,
+          kind: "import.changed",
+          summary: "Import distillation consent / 导入记忆提炼已授权",
+          detail: {
+            actor: "user",
+            importDistillationConsent: {
+              importId: id,
+              provider: quote.provider,
+              model: quote.modelId,
+              conversations: quote.conversationCount,
+              estimatedTokens: quote.inputTokens + quote.outputTokens,
+            },
+          },
+        });
+    });
+  }
+
+  recordDistillation(id: string, result: NonNullable<ImportStatus["distillation"]>) {
     this.db
-      .prepare(`INSERT INTO import_jobs(id,source,bot_id,state,created_at)
-        VALUES(?,?,?,'running',?)`)
-      .run(id, source, botId, new Date().toISOString());
+      .prepare("UPDATE import_jobs SET distillation_result=? WHERE id=?")
+      .run(JSON.stringify(result), id);
   }
 
   /** Past batches newest first; the cursor is the row order, so a new batch never shifts a page. */
@@ -143,6 +220,10 @@ export class ImportStore {
       })),
       next: rows.length > limit ? Number(page.at(-1)?.cursor) : null,
     };
+  }
+
+  jobState(id: string) {
+    return this.db.prepare("SELECT state,cleanup_phase FROM import_jobs WHERE id=?").get(id);
   }
 
   target(id: string) {
@@ -166,8 +247,8 @@ export class ImportStore {
     const id = randomUUID();
     this.db
       .prepare(`INSERT INTO conversations
-      (id, kind, bot_id, title, created_at, updated_at, import_id, import_source, workplace_folder_id)
-      VALUES (?, 'dm', ?, ?, ?, ?, ?, ?, ?)`)
+      (id, kind, bot_id, title, created_at, updated_at, import_id, import_source, workplace_folder_id, import_memory_excluded)
+      VALUES (?, 'dm', ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(
         id,
         botId,
@@ -177,6 +258,7 @@ export class ImportStore {
         batchId,
         source,
         folderId ?? null,
+        Number(!!topic.memoryExcluded),
       );
     return id;
   }
@@ -189,26 +271,55 @@ export class ImportStore {
       .map((row) => String(row.bot_id));
   }
 
+  distillationTopics(id: string) {
+    return this.db
+      .prepare(`SELECT id FROM conversations WHERE import_id=?
+      AND import_memory_excluded=0 ORDER BY rowid`)
+      .all(id)
+      .map((row) => String(row.id));
+  }
+
+  async *distillationMessages(id: string, topicId: string, signal: AbortSignal) {
+    const pageSize = 16;
+    const page = this.db.prepare(`SELECT rowid AS cursor, role, content FROM messages
+      WHERE conversation_id=? AND import_id=? AND rowid>?
+      AND role IN ('user','assistant') AND content<>''
+      ORDER BY rowid LIMIT ?`);
+    let cursor = 0;
+    while (true) {
+      signal.throwIfAborted();
+      const rows = page.all(topicId, id, cursor, pageSize);
+      for (const row of rows) {
+        signal.throwIfAborted();
+        yield { role: String(row.role), text: String(row.content) };
+        cursor = Number(row.cursor);
+      }
+      if (rows.length < pageSize) break;
+      await yieldToLoop(undefined, { signal });
+    }
+  }
+
+  addDistilledMemories(
+    id: string,
+    botId: string,
+    selected: Parameters<ImportMemories["add"]>[2]["selected"],
+  ) {
+    return transaction(this.db, () =>
+      this.memories.add(id, botId, { scope: "bot", selected, bestEffort: true }),
+    );
+  }
+
   /** The full text of a long imported message, kept like any other topic file. */
   addAttachment(messageId: string, botId: string, saved: { metadata: Attachment; stored: string }) {
     new AttachmentsRepo(this.db).create(messageId, saved.metadata, saved.stored, null, botId);
-  }
-
-  /** Stored paths of the batch's attachment files, removed by cleanup before their rows go. */
-  attachmentFiles(id: string): { botId: string; path: string }[] {
-    return this.db
-      .prepare(`SELECT a.owner_bot_id AS botId, a.path FROM attachments a
-        JOIN messages m ON m.id=a.message_id WHERE m.import_id=? LIMIT 1000`)
-      .all(id)
-      .map((row) => ({ botId: String(row.botId), path: String(row.path) }));
   }
 
   addMessage(batchId: string, botId: string, conversationId: string, msg: ImportedMessage) {
     const id = randomUUID();
     this.db
       .prepare(`INSERT INTO messages
-      (id, conversation_id, role, content, status, bot_id, created_at, updated_at, import_id)
-      VALUES (?, ?, ?, ?, 'done', ?, ?, ?, ?)`)
+      (id, conversation_id, role, content, status, bot_id, created_at, updated_at, import_id, import_history_parts)
+      VALUES (?, ?, ?, ?, 'done', ?, ?, ?, ?, ?)`)
       .run(
         id,
         conversationId,
@@ -218,6 +329,7 @@ export class ImportStore {
         msg.createdAt,
         msg.createdAt,
         batchId,
+        msg.historyParts?.length ? JSON.stringify(msg.historyParts) : null,
       );
     return id;
   }
@@ -239,6 +351,12 @@ export class ImportStore {
     });
   }
 
+  ownsTopic(importId: string, topicId: string) {
+    return !!this.db
+      .prepare("SELECT 1 FROM conversations WHERE id=? AND import_id=?")
+      .get(topicId, importId);
+  }
+
   beginUndo(id: string) {
     return transaction(this.db, () => {
       if (this.projects.hasDependents(id)) throw new ImportFailure("project");
@@ -250,7 +368,8 @@ export class ImportStore {
         return { change: [], persona: undefined, status: this.requiredStatus(id) };
       const botId = this.target(id);
       if (typeof botId !== "string") throw new Error("import_job_missing");
-      const change = this.memories.remove(id, botId);
+      const { owners: change, removed } = this.memories.remove(id, botId);
+      this.db.prepare("UPDATE import_jobs SET removed_memories=? WHERE id=?").run(removed, id);
       const persona = this.personas.undo(id, botId);
       return { change, persona, status: this.requiredStatus(id) };
     });
@@ -280,22 +399,24 @@ export class ImportStore {
       : undefined;
   }
 
-  cleanupPage(id: string) {
+  cleanupWork() {
+    return new CleanupWork(this.db);
+  }
+
+  searchRebuilding() {
+    return new ChatSearchIndex(this.db).rebuilding();
+  }
+
+  finishCleanup(id: string): ImportStatus {
     return transaction(this.db, () => {
       const job = this.db
-        .prepare(`SELECT state,reason,cleanup_phase FROM import_jobs
-        WHERE id=? AND cleanup_phase IS NOT NULL`)
+        .prepare(
+          `SELECT state,reason,cleanup_phase FROM import_jobs WHERE id=? AND cleanup_phase IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM messages WHERE import_id=import_jobs.id)
+            AND NOT EXISTS (SELECT 1 FROM conversations WHERE import_id=import_jobs.id)`,
+        )
         .get(id);
       if (!job) throw new Error("import_cleanup_missing");
-      const messages = this.deletePage("messages", id);
-      const topics = messages === 0 ? this.deletePage("conversations", id) : 0;
-      if (messages || topics) {
-        this.db
-          .prepare(`UPDATE import_jobs SET removed_messages=removed_messages+?,
-          removed_topics=removed_topics+? WHERE id=?`)
-          .run(messages, topics, id);
-        return { status: this.requiredStatus(id), done: false };
-      }
       this.releaseFolderRecords(id);
       const state =
         job.cleanup_phase === "undoing"
@@ -304,7 +425,8 @@ export class ImportStore {
             ? "cancelled"
             : "failed";
       const reason = ImportStatusSchema.shape.reason.parse(job.reason);
-      return { status: this.finish(id, state, reason), done: true };
+      this.db.prepare("DELETE FROM chat_search_pruned_imports WHERE import_id=?").run(id);
+      return this.finish(id, state, reason);
     });
   }
 
@@ -332,19 +454,6 @@ export class ImportStore {
         this.workplaces.hide(botId, folderId);
     }
     this.db.prepare("DELETE FROM import_folder_records WHERE import_id=?").run(id);
-  }
-
-  private deletePage(table: "messages" | "conversations", id: string) {
-    const remove = this.db.prepare(`DELETE FROM ${table} WHERE rowid IN (
-      SELECT rowid FROM ${table} WHERE import_id=? LIMIT ?)`);
-    const start = performance.now();
-    let removed = 0;
-    do {
-      const changes = Number(remove.run(id, DELETE_STEP).changes);
-      removed += changes;
-      if (changes !== DELETE_STEP) break;
-    } while (removed < DELETE_RECORDS && performance.now() - start < DELETE_WORK_MS);
-    return removed;
   }
 
   private requiredStatus(id: string) {

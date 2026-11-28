@@ -1,6 +1,6 @@
 import {
   IdSchema,
-  SkillImportPreviewSchema,
+  SkillImportDetailsSchema,
   SkillImportSourceSchema,
   TeamPreviewSchema,
   TeamSkillReimportSchema,
@@ -28,7 +28,7 @@ export const TeamMethods = {
       source: SkillImportSourceSchema,
       contentHash: z.string().regex(/^[0-9a-f]{64}$/),
     }),
-    result: SkillImportPreviewSchema,
+    result: SkillImportDetailsSchema,
   },
   "teams.preview": {
     params: z.strictObject({ file: z.string().min(1).max(32768) }),

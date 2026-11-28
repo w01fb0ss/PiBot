@@ -110,6 +110,9 @@
   padding: 4px 16px 12px;
   overflow-wrap: anywhere;
 }
+.networkHost {
+  font-size: 1.25rem;
+}
 .url small {
   display: block;
   color: var(--text2);

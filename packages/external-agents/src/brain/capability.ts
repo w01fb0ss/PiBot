@@ -1,8 +1,15 @@
 // External coding agents as Bots (entry A: a Bot in the sidebar). The kernel hands
 // runs of Bots of kind "agent" to this capability; everything about the agent process, its sandbox
 // profile, its adapter and its ACP session lives here.
-import type { BrainCapability, RpcRequestContext, ToolRunContext } from "@pibot/brain/kit";
-import { resolveRunWorkplace, runPermissions } from "@pibot/brain/kit";
+import {
+  type BrainCapability,
+  EXTERNAL_AGENT_REPLAY_PORT,
+  type ExternalAgentReplayPort,
+  type RpcRequestContext,
+  resolveRunWorkplace,
+  runPermissions,
+  type ToolRunContext,
+} from "@pibot/brain/kit";
 import { cleanupAgentPlaceholders } from "@pibot/execution";
 import {
   type AgentDetection,
@@ -17,6 +24,7 @@ import { BotsRepo, ConversationsRepo, transaction } from "@pibot/storage";
 import { confirmationSubject } from "../store/index.ts";
 import { AgentStartError } from "./acp/agent-sessions.ts";
 import { agentPlaceholderLedger } from "./acp/launch.ts";
+import { createExternalAgentReplayPort } from "./acp/session-replay.ts";
 import { AdapterInstallError, isAdapterAgent } from "./adapters/adapter-install.ts";
 import { delegationTools } from "./delegation/delegate-tool.ts";
 import { AgentRunError, runExternalAgent } from "./run/agent-run.ts";
@@ -57,6 +65,7 @@ export function externalAgentsCapability(): BrainCapability {
           ),
         );
       ctx.externalAgents.provide({
+        kind: (botId) => service.bots.get(botId)?.agentId,
         run: (deps, run, text, bot, images) =>
           runExternalAgent(service, deps, run, text, bot, images),
         stepReadiness: (botId) => {
@@ -70,8 +79,27 @@ export function externalAgentsCapability(): BrainCapability {
               : "ok";
         },
       });
+      ctx.ports.provide<ExternalAgentReplayPort>(
+        EXTERNAL_AGENT_REPLAY_PORT,
+        createExternalAgentReplayPort({
+          launch: {
+            dataDir: ctx.dataDir,
+            platform: local.deps.platform,
+            env: local.deps.env,
+            userHome: local.deps.userHome,
+            tempDir: local.deps.tempDir,
+            ...(local.deps.resourcesDir ? { resourcesDir: local.deps.resourcesDir } : {}),
+            ...(local.deps.proxy ? { proxy: local.deps.proxy } : {}),
+            redactor: ctx.redactor,
+          },
+          version: ctx.version,
+          adapters: service.adapters,
+          confirmations: service.confirmations,
+          logger: ctx.logger,
+        }),
+      );
       // Pi Bot's own Bots hand work to an agent Bot (delegate_to_agent).
-      delegationTools(ctx, service);
+      const releaseDelegationTools = delegationTools(ctx, service);
       const handle = <K extends Method>(
         method: K,
         action: (
@@ -339,6 +367,7 @@ export function externalAgentsCapability(): BrainCapability {
         },
         stop: () => {
           if (warm) clearTimeout(warm);
+          releaseDelegationTools();
           return service.dispose();
         },
       };

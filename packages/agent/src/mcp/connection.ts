@@ -29,6 +29,7 @@ import {
   connectorNativeDiagnostics,
   IDEMPOTENCY_KEY_META,
 } from "@pibot/protocol-base";
+import { z } from "zod";
 import {
   type CatalogTool,
   createHostManagedMcpAdapter,
@@ -39,6 +40,18 @@ import { createHttpTransport } from "./http-transport.ts";
 import { authorizeConnectorOAuth, connectorAuthError } from "./oauth.ts";
 
 const PAGE_SIZE = 50;
+const ServiceFailure = z.object({
+  error: z.object({
+    code: z.enum([
+      "rate_limited",
+      "restricted_resource",
+      "object_not_found",
+      "unauthorized",
+      "forbidden",
+    ]),
+    retry_after_seconds: z.number().finite().nonnegative().optional(),
+  }),
+});
 
 /**
  * Bridges an exec-owned ConnectorStream into the SDK Transport interface.
@@ -136,17 +149,24 @@ function toolErrorText(content: readonly unknown[]): string | undefined {
   return boundedConnectorServiceMessage(parts.join("\n").replace(/^Error: /u, ""));
 }
 
-export function createConnectorConnectionFactory(): ConnectorConnectionFactory {
+export function createConnectorConnectionFactory(
+  networkFetch: typeof fetch = fetch,
+): ConnectorConnectionFactory {
   return {
     validateArguments: argumentValidator(),
-    authorizeOAuth: authorizeConnectorOAuth,
+    authorizeOAuth: (input) => authorizeConnectorOAuth(input, networkFetch),
     async connect(options: ConnectorConnectionOptions): Promise<ConnectorConnection> {
       let authFailure = false;
+      let legacyEndpoint = false;
       const callSignals = new Map<string, AbortSignal>();
       // Per-call ownership prevents simultaneous native calls from exchanging failure codes.
       const callFailures = new Map<
         string,
-        { code?: ConnectorNativeCallFailure; diagnostics?: ConnectorNativeDiagnostics }
+        {
+          code?: ConnectorNativeCallFailure;
+          diagnostics?: ConnectorNativeDiagnostics;
+          service?: z.infer<typeof ServiceFailure>["error"];
+        }
       >();
       let nativeFailure: ConnectorNativeFailure | undefined;
       let openDiagnostics: ConnectorNativeDiagnostics | undefined;
@@ -173,6 +193,10 @@ export function createConnectorConnectionFactory(): ConnectorConnectionFactory {
               },
               "streamable",
               callSignals,
+              networkFetch,
+              () => {
+                legacyEndpoint = true;
+              },
             );
       let catalog: readonly CatalogTool[] = [];
       const changeListeners = new Set<() => void>();
@@ -187,6 +211,7 @@ export function createConnectorConnectionFactory(): ConnectorConnectionFactory {
           onToolCall: async (call) => {
             try {
               const response = await call.dispatch();
+              const containsPrivate = options.containsPrivateValue;
               if (
                 options.transport === "stdio" &&
                 options.trustedAuthErrors &&
@@ -204,6 +229,21 @@ export function createConnectorConnectionFactory(): ConnectorConnectionFactory {
                   });
                 if (response.isError && failure.success && outcome) outcome.code = failure.data;
               }
+              if (response.isError) {
+                const error = ServiceFailure.safeParse(response.structuredContent).data?.error;
+                const outcome = callFailures.get(call.toolCallId);
+                if (outcome && error && !containsPrivate?.(error, true)) outcome.service = error;
+              }
+              // Check before the adapter serializes or truncates external data.
+              if (
+                containsPrivate &&
+                (containsPrivate(response.structuredContent, true) ||
+                  response.content.some(({ type: _type, ...data }) => containsPrivate(data, true)))
+              )
+                return {
+                  ...(response.isError ? { isError: true } : {}),
+                  content: [{ type: "text", text: "[REDACTED]" }],
+                };
               return response;
             } catch (error) {
               if (connectorAuthError(error)) authFailure = true;
@@ -248,7 +288,7 @@ export function createConnectorConnectionFactory(): ConnectorConnectionFactory {
         const authenticationFailed = authFailure || connectorAuthError(error);
         const shouldFallback =
           options.transport === "http" &&
-          options.sseFallback === true &&
+          (options.sseFallback === true || legacyEndpoint) &&
           !options.signal.aborted &&
           !authenticationFailed;
         if (!shouldFallback) {
@@ -264,6 +304,7 @@ export function createConnectorConnectionFactory(): ConnectorConnectionFactory {
             },
             "sse",
             callSignals,
+            networkFetch,
           ),
         );
         try {
@@ -296,7 +337,9 @@ export function createConnectorConnectionFactory(): ConnectorConnectionFactory {
           const page = catalog.slice(offset, offset + PAGE_SIZE);
           const next = offset + page.length;
           return {
-            tools: page.map(toRemoteTool),
+            tools: page.flatMap((tool) =>
+              options.containsPrivateValue?.(tool.definition) ? [] : [toRemoteTool(tool)],
+            ),
             ...(next < catalog.length ? { nextCursor: String(next) } : {}),
           };
         },
@@ -335,11 +378,13 @@ export function createConnectorConnectionFactory(): ConnectorConnectionFactory {
               const unknown =
                 ["may_have_run", "invalid_result"].includes(result.details.error) ||
                 (result.details.error === "host_error" && result.details.sent !== false);
+              const service = callFailures.get(callId)?.service;
               throw new ConnectorCallError(
                 unknown ? "unknown" : "failed",
-                undefined,
+                service?.code,
                 undefined,
                 result.details.error === "tool_error" ? toolErrorText(result.content) : undefined,
+                service?.retry_after_seconds,
               );
             }
             const diagnostics = callFailures.get(callId)?.diagnostics;

@@ -55,6 +55,9 @@ export const secretEn = {
   "connectors.secrets.replaceValue": "Replace value",
   "connectors.secrets.editMeta": "Edit description and who can use it",
   "connectors.secrets.deleteMenu": "Delete…",
+  "connectors.secrets.missingTarget":
+    "No access token named {name} exists yet. Create it so connections referencing it can authenticate.",
+  "connectors.secrets.createNamed": "Create {name}",
 };
 
 export const secretZh = {
@@ -111,4 +114,7 @@ export const secretZh = {
   "connectors.secrets.replaceValue": "更换值",
   "connectors.secrets.editMeta": "改说明和谁能用",
   "connectors.secrets.deleteMenu": "删除…",
+  "connectors.secrets.missingTarget":
+    "还没有「{name}」这个访问令牌。新建并填入值后，使用它的连接就能读取。",
+  "connectors.secrets.createNamed": "新建 {name}",
 };

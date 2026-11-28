@@ -35,7 +35,8 @@ export const managedResourcesZh = {
     "创建未完成，工作区目录不存在，无法恢复。请点击“新建”重新创建；原项目和已有分支会保留。",
   "errors.worktree_dirty":
     "独立工作区或主项目有未提交、未跟踪或忽略的文件。请先提交或处理这些文件，再整合。",
-  "errors.worktree_diverged": "工作区和主项目的提交已分叉，无法快进整合；请先手动处理分叉。",
+  "errors.worktree_diverged":
+    "主项目已有这个独立工作区未包含的新提交，无法直接自动合并；请先同步或手动合并。",
   "errors.worktree_stale": "目录、提交或工作区版本已变化。请重新检查工作区后重试。",
   "errors.worktree_source_scope": "请从原主项目或已绑定的独立工作区发起整合。",
   "errors.worktree_bound": "工作区仍被话题或群使用，请先解除绑定并停止相关任务。",
@@ -59,13 +60,13 @@ export const managedResourcesZh = {
   "errors.managed_git_failed": "Git 操作未完成，请检查仓库状态后重试。",
   "errors.managed_path_unavailable": "所需目录暂不可用，请确认目录存在且可访问后重试。",
   "errors.checkpoint_hardlink_unsupported":
-    "此文件系统不支持安全恢复所需的硬链接，尚未移动原文件。请在支持硬链接的磁盘上操作。",
+    "未能在当前磁盘上准备安全恢复，原文件未动。请检查磁盘剩余空间和文件夹的写入权限，再重试。",
   "errors.checkpoint_cross_device": "项目和恢复目录不在同一磁盘，无法安全撤回文件。",
   "errors.checkpoint_automatic_only": "这一轮的自动保留尚不可用。",
   "managed.resources": "工作区与文件检查点",
   "managed.title": "独立工作区",
   "managed.main": "主项目 · 仅查看",
-  "managed.detached": "分离的 HEAD",
+  "managed.detached": "未在分支上",
   "managed.review": "独立审查此工作区",
   "managed.reviewAction": "审查",
   "managed.reviewStarted": "独立审查已启动，审查范围已固定到选中的工作区。",
@@ -195,7 +196,7 @@ export const managedResourcesEn: Record<ManagedResourceKey, string> = {
   "errors.worktree_dirty":
     "The workspace or source project has changed, untracked or ignored files. Commit or handle them before integrating.",
   "errors.worktree_diverged":
-    "Workspace and source project commits have diverged. Resolve the divergence manually before a fast-forward.",
+    "The main project has newer commits that are not in this separate workspace, so it cannot be merged automatically. Sync or merge manually first.",
   "errors.worktree_stale":
     "The folder, commit or workspace revision changed. Check the workspace and retry.",
   "errors.worktree_source_scope":
@@ -230,7 +231,7 @@ export const managedResourcesEn: Record<ManagedResourceKey, string> = {
   "errors.managed_path_unavailable":
     "A required directory is unavailable. Check that it exists and is accessible, then retry.",
   "errors.checkpoint_hardlink_unsupported":
-    "This filesystem cannot create the hard links needed for safe restore. The original file has not been moved. Use a filesystem that supports hard links.",
+    "Could not prepare a safe restore on this drive. The original file is still in place. Check available space and folder write access, then retry.",
   "errors.checkpoint_cross_device":
     "The project and recovery directory are on different disks, so files cannot be restored safely.",
   "errors.checkpoint_automatic_only":
@@ -238,7 +239,7 @@ export const managedResourcesEn: Record<ManagedResourceKey, string> = {
   "managed.resources": "Workspaces and file checkpoints",
   "managed.title": "Separate workspaces",
   "managed.main": "Main project · View only",
-  "managed.detached": "Detached HEAD",
+  "managed.detached": "No branch",
   "managed.review": "Independently review this workspace",
   "managed.reviewAction": "Review",
   "managed.reviewStarted":

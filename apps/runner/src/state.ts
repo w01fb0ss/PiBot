@@ -523,14 +523,7 @@ export async function createRunnerControl(
           `${JSON.stringify({
             ok: true,
             ...link,
-            ...(probe
-              ? {
-                  isolation: {
-                    available: probe.available,
-                    ...(probe.reason ? { reason: probe.reason } : {}),
-                  },
-                }
-              : {}),
+            ...(probe ? { isolation: probe } : {}),
           })}\n`,
         );
         if (value.operation === "stop") setImmediate(stop);

@@ -1,5 +1,5 @@
 import { ExecError } from "../../core/types.ts";
-import { windowsTree } from "../process.ts";
+import { ProcessCleanupError, windowsTree } from "../process.ts";
 import { type ProcessRow, snapshot } from "../process-tree.ts";
 import type {
   BackgroundDependencies,
@@ -47,7 +47,11 @@ export class BackgroundCleanupError extends ExecError {
 }
 
 export function backgroundCleanupReason(error: unknown): BackgroundDrainReason {
-  return error instanceof BackgroundCleanupError ? `cleanup_${error.cleanup}` : "unknown";
+  const cleanup =
+    error instanceof BackgroundCleanupError || error instanceof ProcessCleanupError
+      ? error.cleanup
+      : undefined;
+  return cleanup ? `cleanup_${cleanup}` : "unknown";
 }
 
 /**
@@ -104,6 +108,7 @@ export function createBackgroundProcesses(deps: BackgroundDependencies) {
     if (platform === "win32") {
       try {
         await windowsTree({ members: refresh }, env, AbortSignal.timeout(STOP_GRACE_MS * 2));
+        if (verified) return;
       } catch {
         // taskkill could not confirm; the final refresh below decides what is still running.
       }

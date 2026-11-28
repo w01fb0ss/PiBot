@@ -1,5 +1,12 @@
 import type { AgentAuthPorts, AgentRuntimeDeps } from "@pibot/agent";
-import type { Bot, KernelMethodParams, Settings } from "@pibot/protocol-base";
+import type {
+  Bot,
+  DispatchModel,
+  KernelMethodParams,
+  Settings,
+  ToolSettingsAction,
+  VideoProviderConfig,
+} from "@pibot/protocol-base";
 
 /** Model selection is used by the kernel, while its persistence belongs to the capability. */
 export interface ModelSettingsPort {
@@ -15,6 +22,10 @@ export interface ModelProvidersPort
   extends Pick<AgentRuntimeDeps, "hasApiKey" | "getApiKey" | "customProviders" | "addedModels"> {
   /** Capability-owned UI invalidation; the kernel never names the provider event. */
   changed(): void;
+  videoProviders(): VideoProviderConfig[];
+  videoModelsToEnable?(): Extract<ToolSettingsAction, { kind: "enable_video_model" }>[];
+  dispatchDestination?(id: string): string | undefined;
+  dispatchModels?(signal: AbortSignal): Promise<DispatchModel[]>;
   readonly auth: AgentAuthPorts;
   readonly settings: ModelSettingsPort;
   credentials(providerId: string): Promise<void>;

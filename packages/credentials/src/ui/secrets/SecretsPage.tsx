@@ -61,7 +61,7 @@ function secretWriteError(error: unknown, fallback: TranslationKey): Translation
 type Assignment = UserSecretMeta["assignment"];
 
 type Form =
-  | { mode: "create" }
+  | { mode: "create"; initialName?: string }
   | { mode: "edit"; name: string; only?: "value" | "meta" }
   | { mode: "delete"; name: string };
 
@@ -75,11 +75,14 @@ export function SecretsPage({
   create = 0,
   formOpen,
   others = 0,
+  initialSecret,
 }: {
   create?: number;
   formOpen?(open: boolean): void;
   /** Tokens the dialog lists from elsewhere; the empty state shows only when there are none. */
   others?: number;
+  /** Opens directly on replacing this secret's value once the list loads. */
+  initialSecret?: string;
 }) {
   const t = useT();
   const { language } = useSettings();
@@ -90,9 +93,16 @@ export function SecretsPage({
   const [nextCursor, setNextCursor] = useState<string>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<"loadError" | "unavailable">();
+  const [missingTarget, setMissingTarget] = useState<string>();
   const generation = useRef(0);
+  const openedInitial = useRef<string | undefined>(undefined);
+  const skipNextLoad = useRef(false);
   const load = useCallback(async () => {
     if (!peer) return;
+    if (skipNextLoad.current) {
+      skipNextLoad.current = false;
+      return;
+    }
     const version = ++generation.current;
     setLoading(true);
     setError(undefined);
@@ -103,6 +113,45 @@ export function SecretsPage({
         { signal: AbortSignal.timeout(15_000) },
       );
       if (version !== generation.current) return;
+      if (!cursor && initialSecret && openedInitial.current !== initialSecret) {
+        if (result.items.some((secret) => secret.name === initialSecret)) {
+          openedInitial.current = initialSecret;
+          setMissingTarget(undefined);
+          setItems(result.items);
+          setNextCursor(result.nextCursor);
+          setLoading(false);
+          setForm({ mode: "edit", name: initialSecret, only: "value" });
+          return;
+        }
+        // Secrets are ordered by name ASC; walk later pages until we find `initialSecret` or pass it.
+        const trail: (string | undefined)[] = [undefined];
+        let pageCursor = result.nextCursor;
+        let last = result.items.at(-1)?.name ?? "";
+        for (let step = 0; step < 200 && pageCursor && last < initialSecret; step += 1) {
+          trail.push(pageCursor);
+          const page = await peer.call(
+            "secrets.list",
+            { limit: 50, cursor: pageCursor },
+            { signal: AbortSignal.timeout(15_000) },
+          );
+          if (version !== generation.current) return;
+          if (page.items.some((secret) => secret.name === initialSecret)) {
+            openedInitial.current = initialSecret;
+            skipNextLoad.current = true;
+            setMissingTarget(undefined);
+            setCursors(trail);
+            setItems(page.items);
+            setNextCursor(page.nextCursor);
+            setLoading(false);
+            setForm({ mode: "edit", name: initialSecret, only: "value" });
+            return;
+          }
+          pageCursor = page.nextCursor;
+          last = page.items.at(-1)?.name ?? last;
+        }
+        openedInitial.current = initialSecret;
+        setMissingTarget(initialSecret);
+      }
       setItems(result.items);
       setNextCursor(result.nextCursor);
       setLoading(false);
@@ -111,7 +160,7 @@ export function SecretsPage({
       setError(isSecretsUnavailable(failure) ? "unavailable" : "loadError");
       setLoading(false);
     }
-  }, [peer, cursor]);
+  }, [peer, cursor, initialSecret]);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => {
     void load();
@@ -144,9 +193,13 @@ export function SecretsPage({
       : assignment.bots
           .map((id) => botNames.get(id) ?? t("connectors.unknownBot", { id }))
           .join(t("connectors.secrets.listSeparator"));
-  const upsert = useCallback(() => {
-    void load();
-  }, [load]);
+  const upsert = useCallback(
+    (saved: UserSecretMeta) => {
+      if (saved.name === missingTarget) setMissingTarget(undefined);
+      void load();
+    },
+    [load, missingTarget],
+  );
   const remove = useCallback((name: string) => {
     setItems((prev) => prev.filter((secret) => secret.name !== name));
   }, []);
@@ -190,8 +243,9 @@ export function SecretsPage({
   if (form)
     return (
       <SecretPanel
-        key={form.mode === "edit" ? form.name : "create"}
+        key={form.mode === "edit" ? form.name : `create:${form.initialName ?? ""}`}
         secret={form.mode === "edit" ? target : undefined}
+        initialName={form.mode === "create" ? form.initialName : undefined}
         only={form.mode === "edit" ? form.only : undefined}
         unavailable={unavailable}
         existing={items}
@@ -206,6 +260,18 @@ export function SecretsPage({
         <p role="alert" className={styles.warn}>
           {t("connectors.secrets.unavailable")}
         </p>
+      )}
+      {missingTarget && !unavailable && (
+        <div role="status" className={styles.warn}>
+          <p>{t("connectors.secrets.missingTarget", { name: missingTarget })}</p>
+          <Button
+            variant="secondary"
+            disabled={!peer}
+            onClick={() => setForm({ mode: "create", initialName: missingTarget })}
+          >
+            {t("connectors.secrets.createNamed", { name: missingTarget })}
+          </Button>
+        </div>
       )}
       <SecretFeedback
         loading={loading && !items.length}
@@ -341,6 +407,7 @@ export function RowMenu({
 /** Add/replace panel (S5 right side): the value is typed once and never echoed. */
 function SecretPanel({
   secret,
+  initialName,
   only,
   unavailable,
   existing,
@@ -349,6 +416,7 @@ function SecretPanel({
   close,
 }: {
   secret?: UserSecretMeta;
+  initialName?: string;
   /** 更换值 shows only the value; 改说明和谁能用 shows everything but the value. */
   only?: "value" | "meta";
   unavailable: boolean;
@@ -364,7 +432,7 @@ function SecretPanel({
   const valueId = useId();
   const descriptionId = useId();
   const assignId = useId();
-  const [name, setName] = useState(secret?.name ?? "");
+  const [name, setName] = useState(secret?.name ?? initialName ?? "");
   // The draft value lives only in this state; it is cleared on submit and never rendered back.
   const [value, setValue] = useState("");
   const [description, setDescription] = useState(secret?.description ?? "");

@@ -21,6 +21,7 @@ export type {
   CommandPauseState,
 } from "./command/background.ts";
 export { createExec } from "./command/command.ts";
+export { commandHomePath, commandLogRoot } from "./command/command-home.ts";
 export { commandPaths, discoverCommandPaths } from "./command/command-paths.ts";
 export type { DenialSignal } from "./command/output-notices.ts";
 export {
@@ -35,7 +36,11 @@ export {
   secretOutputRedactor,
 } from "./command/secret-output.ts";
 export {
+  SKILL_NODE_DOMAINS,
   SKILL_PYTHON_DOMAINS,
+  SKILL_PYTHON_MIRROR,
+  skillNodeDirectory,
+  skillPythonDomains,
   skillPythonPaths,
   skillPythonWriteRoots,
 } from "./command/skill-python.ts";
@@ -53,7 +58,13 @@ export {
   type UnisolatedServerOptions,
 } from "./connectors/connector-unisolated.ts";
 export * from "./core/file-identity.ts";
-export { canonicalPath, owningWriteRoot } from "./core/paths.ts";
+export {
+  canonicalExistingPathSync,
+  canonicalPath,
+  matchesPathSpelling,
+  owningWriteRoot,
+  samePathSpelling,
+} from "./core/paths.ts";
 export * from "./core/types.ts";
 export {
   windowsProgramFiles,
@@ -63,7 +74,9 @@ export {
 } from "./core/windows-environment.ts";
 export {
   type WindowsPathName,
+  windowsDisplayPath,
   windowsHostNames,
+  windowsMappedPath,
   windowsPathName,
   windowsReservedRoot,
   windowsWithin,
@@ -91,7 +104,8 @@ export {
 } from "./files/patch-format.ts";
 export { PatchRecoveryError } from "./files/patch-publish.ts";
 export type { TextEdit } from "./files/replace-text.ts";
-export { boundDiff as boundFileDiff } from "./files/text-diff.ts";
+export { applyEdits } from "./files/replace-text.ts";
+export { boundDiff as boundFileDiff, textDiff } from "./files/text-diff.ts";
 export type { WorkspacePage, WorkspaceStat } from "./files/workspace-metadata.ts";
 export * from "./git/git-config-candidate.ts";
 export * from "./git/git-config-facts.ts";
@@ -139,6 +153,8 @@ export {
   gitInstallPlan,
   gitVersion,
   runGitInstaller,
+  runSystemInstaller,
+  systemPackageInstallPlan,
   waitForGit,
 } from "./git/git-install.ts";
 export * from "./git/git-network.ts";
@@ -162,12 +178,15 @@ export * from "./managed/managed-folder.ts";
 export * from "./managed/managed-git.ts";
 export * from "./managed/managed-git-target.ts";
 export * from "./managed/managed-project.ts";
-export { libreOfficeInstalled, probeOfficeConverter } from "./native-apps/office-convert.ts";
 export {
-  convertOfficeDocument,
-  type OfficeConvertSource,
-  type OfficeConvertTarget,
-  type OfficeLibreOfficeResult,
+  libreOfficeInstalled,
+  libreOfficePlatformSupported,
+  probeOfficeConverter,
+} from "./native-apps/office-convert.ts";
+export type {
+  OfficeConvertSource,
+  OfficeConvertTarget,
+  OfficeLibreOfficeResult,
 } from "./native-apps/office-convert-recipe.ts";
 export { pingLocalHost, readLocalNetworkState } from "./network/local-network.ts";
 export {
@@ -178,6 +197,15 @@ export {
   unpackedPath,
 } from "./runtime/child-node.ts";
 export { aiConfigReadBoundary } from "./sandbox/ai-config-paths.ts";
+export type {
+  ConnectorNetworkAttempt,
+  ConnectorNetworkFilter,
+} from "./sandbox/connector-network.ts";
+export {
+  CONNECTOR_NETWORK_WAIT_MS,
+  connectorNetworkRefusal,
+  connectorNetworkSite,
+} from "./sandbox/connector-network.ts";
 export { type IsolationRemedy, linuxIsolationRemedy } from "./sandbox/isolation-remedy.ts";
 export { sensitiveReadBoundary } from "./sandbox/sensitive-paths.ts";
 export { rememberableSystemService } from "./sandbox/system-services.ts";

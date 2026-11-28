@@ -1,13 +1,14 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { appArmorExecutable } from "@pibot/execution/isolation-remedy";
 import {
   linuxUserNamespaceRestriction,
   linuxUserNamespaceSettings,
 } from "@pibot/execution/linux-userns";
 import { type TranslationKey, t } from "@pibot/i18n";
+import { installedFromDeb } from "./package-type.ts";
 
 /**
  * This check runs on the bundled helper Node (Pi Bot's executable has RunAsNode off);
@@ -30,7 +31,7 @@ function command(
   signal: AbortSignal,
   timeout: number,
   input?: string,
-): Promise<{ ok: boolean; output: string }> {
+): Promise<{ ok: boolean; output: string; exitCode?: number | null }> {
   return new Promise((resolve) => {
     if (signal.aborted) return resolve({ ok: false, output: "" });
     const child = spawn(file, args, { env, detached: true, stdio: ["pipe", "pipe", "ignore"] });
@@ -69,7 +70,7 @@ function command(
       clearTimeout(timer);
       signal.removeEventListener("abort", abort);
       kill();
-      resolve({ ok: !failed && code === 0, output });
+      resolve({ ok: !failed && code === 0, output, exitCode: failed ? undefined : code });
     });
   });
 }
@@ -94,17 +95,6 @@ async function chromiumWorks(signal: AbortSignal): Promise<boolean> {
   }
 }
 
-/**
- * electron-builder marks the .deb's resources with its package type. Only that package installs
- * the AppArmor profile, so its refusal names the profile instead of sending the user to the .deb.
- */
-async function installedFromDeb(): Promise<boolean> {
-  const marker = join(dirname(appBinary()), "resources", "package-type");
-  // The AppImage and the tarball have no marker; a missing file only means "not the .deb".
-  const type = await readFile(marker, "utf8").catch(() => "");
-  return type.trim() === "deb";
-}
-
 async function failure(signal: AbortSignal): Promise<TranslationKey | undefined> {
   if (
     process.env.ELECTRON_DISABLE_SANDBOX ||
@@ -122,33 +112,42 @@ async function failure(signal: AbortSignal): Promise<TranslationKey | undefined>
   if (await chromiumWorks(signal)) return undefined;
   // A profile may allow userns with the sysctl still set. Only explain it after a real failure.
   if (settings.apparmor !== 1) return "linuxStartup.runtime";
-  return (await installedFromDeb()) ? "linuxStartup.apparmorDeb" : "linuxStartup.apparmor";
+  return (await installedFromDeb(appBinary()))
+    ? "linuxStartup.apparmorDeb"
+    : "linuxStartup.apparmor";
+}
+
+function startupLanguage() {
+  // The gate runs before user preferences can be loaded. Follow the desktop locale.
+  const locale = process.env.LC_ALL || process.env.LC_MESSAGES || process.env.LANG;
+  return /^zh(?:[-_.]|$)/i.test(locale ?? "") ? "zh" : "en";
 }
 
 async function explain(key: TranslationKey, signal: AbortSignal) {
-  // No preferences/database can be opened before the gate. Both languages remain available.
-  const title = `${t("linuxStartup.title", undefined, "zh")} / ${t("linuxStartup.title")}`;
-  const message = (["zh", "en"] as const)
-    .map((language) =>
-      [
-        "linuxStartup.intro",
-        // The AppImage and tarball cannot carry a profile; the .deb installs one.
-        ...(key === "linuxStartup.apparmor" ? ["linuxStartup.useDeb"] : []),
-        key,
-        ...(["linuxStartup.clone", "linuxStartup.max"].includes(key)
-          ? ["linuxStartup.persistence"]
-          : []),
-      ]
-        .map((item) =>
-          t(
-            item as TranslationKey,
-            { appImagePath: appArmorExecutable(process.env.APPIMAGE) },
-            language,
-          ),
-        )
-        .join("\n\n"),
-    )
-    .join("\n\n-----\n\n");
+  const language = startupLanguage();
+  const title = t("linuxStartup.title", undefined, language);
+  const message = [
+    t("linuxStartup.intro", undefined, language),
+    t(key, undefined, language),
+    ...(key === "linuxStartup.apparmor" ? [t("linuxStartup.useDeb", undefined, language)] : []),
+  ].join("\n\n");
+  const detailKeys: Partial<Record<TranslationKey, TranslationKey>> = {
+    "linuxStartup.apparmor": "linuxStartup.apparmorDetails",
+    "linuxStartup.apparmorDeb": "linuxStartup.apparmorDebDetails",
+    "linuxStartup.flags": "linuxStartup.flagsDetails",
+    "linuxStartup.clone": "linuxStartup.cloneDetails",
+    "linuxStartup.max": "linuxStartup.maxDetails",
+  };
+  const detailKey = detailKeys[key];
+  const advanced = t("linuxStartup.advanced", undefined, language);
+  const details =
+    detailKey &&
+    t(
+      detailKey,
+      { appImagePath: appArmorExecutable(process.env.APPIMAGE ?? process.env.PIBOT_APP_BINARY) },
+      language,
+    );
+  const fullMessage = details ? `${message}\n\n${advanced}\n${details}` : message;
   process.stderr.write(
     `${JSON.stringify({
       module: "linux-startup",
@@ -162,13 +161,54 @@ async function explain(key: TranslationKey, signal: AbortSignal) {
               ? "linux_userns_restricted"
               : "sandbox_dependencies_or_runtime_unavailable",
       detail: key,
-    })}\n${title}\n\n${message}\n`,
+    })}\n${title}\n\n${fullMessage}\n`,
   );
   const dialogEnv = { ...process.env };
   // AppImage's bundled libraries/schemas are for Electron, not the system's GTK/Qt dialog.
   delete dialogEnv.LD_LIBRARY_PATH;
   delete dialogEnv.GSETTINGS_SCHEMA_DIR;
-  // Native system dialogs work even when Chromium cannot start; no shell interpolation.
+  const close = t("linuxStartup.close", undefined, language);
+  // Native dialogs work even when the app's window cannot start.
+  if (details) {
+    for (const [file, args] of [
+      [
+        "/usr/bin/zenity",
+        [
+          "--question",
+          `--title=${title}`,
+          `--text=${message}`,
+          "--no-markup",
+          `--ok-label=${advanced}`,
+          `--cancel-label=${close}`,
+        ],
+      ],
+      [
+        "/usr/bin/kdialog",
+        ["--title", title, "--yes-label", advanced, "--no-label", close, "--yesno", message],
+      ],
+      [
+        "/usr/bin/xmessage",
+        ["-center", "-title", title, "-buttons", `${close}:1,${advanced}:0`, message],
+      ],
+    ] as const) {
+      if (signal.aborted) return;
+      const choice = await command(file, [...args], dialogEnv, signal, 60_000);
+      if (choice.exitCode === 1) return;
+      if (choice.ok) {
+        await showExplanation(title, details, dialogEnv, signal);
+        return;
+      }
+    }
+  }
+  await showExplanation(title, fullMessage, dialogEnv, signal);
+}
+
+async function showExplanation(
+  title: string,
+  message: string,
+  dialogEnv: NodeJS.ProcessEnv,
+  signal: AbortSignal,
+) {
   for (const [file, args] of [
     ["/usr/bin/zenity", ["--text-info", "--width=800", "--height=600", `--title=${title}`]],
     ["/usr/bin/kdialog", ["--title", title, "--error", message]],
@@ -213,8 +253,6 @@ async function main() {
 
 void main().catch(() => {
   // No raw probe stderr, filesystem paths, environment values or exceptions cross this boundary.
-  process.stderr.write(
-    `${t("linuxStartup.runtime", undefined, "zh")}\n${t("linuxStartup.runtime")}\n`,
-  );
+  process.stderr.write(`${t("linuxStartup.runtime", undefined, startupLanguage())}\n`);
   process.exitCode = 1;
 });

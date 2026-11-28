@@ -1,8 +1,12 @@
 // Owns committed group topic selection and its workspace bindings.
+
+import { randomUUID } from "node:crypto";
 import {
   abortable,
+  type DispatchTopicOptions,
   GroupTopicFolderChoices,
   groupWorkplace,
+  verifyDispatchFolder,
   workspaceBoundary,
 } from "@pibot/brain/orchestration-kit";
 import { type Group, type KernelMethodParams, RpcError } from "@pibot/protocol-base";
@@ -70,6 +74,7 @@ export class GroupTopicsService {
       this.audit(groupId, topicId, "group.topic.renamed");
       return value;
     });
+    this.invalidateList(groupId);
     this.service.changed(groupId, "updated");
     return result;
   }
@@ -80,6 +85,7 @@ export class GroupTopicsService {
       this.audit(groupId, topicId, "group.topic.restored");
       return value;
     });
+    this.invalidateList(groupId);
     this.service.changed(groupId, "updated");
     return result;
   }
@@ -155,8 +161,12 @@ export class GroupTopicsService {
       false,
       true,
     );
+    this.invalidateList(groupId);
     await this.service.purge.sweep();
     return this.service.folders.present(this.required(groupId));
+  }
+  private invalidateList(groupId: string) {
+    this.service.deps.peer.emit("sidebar.topicsChanged", { conversationKey: `group:${groupId}` });
   }
   pickFolder(
     { groupId, location, path }: KernelMethodParams["groups.topics.pickFolder"],
@@ -165,7 +175,11 @@ export class GroupTopicsService {
     this.required(groupId);
     return this.choices.pick(groupId, { location, path }, signal);
   }
-  async create(params: KernelMethodParams["groups.topics.create"], parent?: AbortSignal) {
+  async create(
+    params: KernelMethodParams["groups.topics.create"],
+    parent?: AbortSignal,
+    dispatch?: DispatchTopicOptions,
+  ) {
     const signal = this.requestSignal(parent);
     signal.throwIfAborted();
     const { groupId, requestId } = params;
@@ -187,7 +201,7 @@ export class GroupTopicsService {
       throw new RpcError(-32602, "group_topic_folder_expired");
     if (choice) await this.choices.verify(choice, signal);
     let selectionFolders:
-        | Pick<NonNullable<Group["folders"]>[number], "id" | "path" | "location">[]
+        | Pick<NonNullable<Group["folders"]>[number], "id" | "path" | "location" | "displayPath">[]
         | undefined,
       primary: string | null = null;
     if (params.selection) {
@@ -205,10 +219,20 @@ export class GroupTopicsService {
         const existing = previous.folders?.find((folder) => folder.id === id),
           picked = this.choices.get(id);
         if (existing)
-          selectionFolders.push({ id, path: existing.path, location: existing.location });
+          selectionFolders.push({
+            id,
+            path: existing.path,
+            location: existing.location,
+            displayPath: existing.displayPath,
+          });
         else if (picked?.groupId === groupId && picked.expires >= Date.now()) {
           await this.choices.verify(picked, signal);
-          selectionFolders.push({ id, path: picked.path, location: picked.location });
+          selectionFolders.push({
+            id,
+            path: picked.path,
+            location: picked.location,
+            displayPath: picked.displayPath,
+          });
         } else throw new RpcError(-32602, "group_topic_folder_expired");
       }
       primary = params.selection.primary === "home" ? null : params.selection.primary;
@@ -227,10 +251,31 @@ export class GroupTopicsService {
         if (boundary.conflict !== "none") throw new RpcError(-32602, "workspace_conflict");
       }
     }
+    if (dispatch?.folder) {
+      const folder = dispatch.folder;
+      const existing = previous.folders?.find(
+        (entry) => !entry.location && entry.path === folder.path,
+      );
+      primary = existing?.id ?? randomUUID();
+      selectionFolders = [
+        {
+          id: primary,
+          path: folder.path,
+          displayPath: existing?.displayPath ?? folder.path,
+        },
+      ];
+    }
     const finalFolders =
       selectionFolders ??
       (choice
-        ? [{ id: choiceId as string, path: choice.path, location: choice.location }]
+        ? [
+            {
+              id: choiceId as string,
+              path: choice.path,
+              location: choice.location,
+              displayPath: choice.displayPath,
+            },
+          ]
         : params.inheritWorkspace === false
           ? []
           : (previous.folders ?? []));
@@ -243,6 +288,13 @@ export class GroupTopicsService {
           : (previous.primaryFolderId ?? null);
     await this.validateRemote(previous, finalFolders, finalPrimary, signal);
     const binding = await this.binding(previous, finalFolders, finalPrimary);
+    if (dispatch?.folder)
+      await verifyDispatchFolder(
+        this.service.deps.local,
+        previous.coordinatorBotId,
+        dispatch.folder,
+        signal,
+      );
     this.idle(groupId);
     this.assertSource(groupId, previous);
     const created = (await this.service.mutate(
@@ -250,12 +302,18 @@ export class GroupTopicsService {
       () =>
         transaction(this.service.deps.db, () => {
           this.assertSource(groupId, previous);
+          dispatch?.assertCurrent();
           signal.throwIfAborted();
           this.repo.snapshot(groupId, previous.conversationId);
           if (selectionFolders || choice)
             this.repo.setWorkspace(groupId, finalFolders, finalPrimary);
           else if (choice || params.inheritWorkspace === false) this.repo.resetWorkspace(groupId);
           const topic = new ConversationsRepo(this.service.deps.db).createGroup(groupId);
+          if (dispatch) {
+            this.repo.rename(groupId, topic.id, dispatch.title);
+            dispatch.recordWorkplace?.(topic.id);
+            dispatch.recordModels?.(topic.id);
+          }
           if (requestId) this.repo.recordCreation(groupId, requestId, topic.id);
           this.service.cycles.reset(groupId);
           this.bind(groupId, binding);

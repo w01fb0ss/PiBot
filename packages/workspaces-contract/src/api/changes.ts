@@ -44,13 +44,13 @@ const shortText = z.string().min(1).max(200);
 export const GitSetupStatusSchema = z.strictObject({
   state: z.enum(["available", "missing", "installing", "failed", "unsupported"]),
   version: z.string().max(100).optional(),
-  /** xcode: Apple's Command Line Tools; package: the system package manager; manual: neither found. */
+  /** xcode: Apple's Command Line Tools; package: the system installer; manual: no in-app installer. */
   installer: z.enum(["xcode", "package", "manual"]).optional(),
   /** What Pi Bot runs, e.g. "dnf install -y git". */
   command: shortText.optional(),
   /** What the user can run in a terminal instead, e.g. "sudo dnf install -y git". */
   manualCommand: shortText.optional(),
-  /** Why the last attempt did not end with Git. */
+  /** Why installation requires manual action or the last attempt did not end with Git. */
   reason: z.enum(["denied", "failed", "no_elevation", "timeout", "cancelled"]).optional(),
 });
 export type GitSetupStatus = z.infer<typeof GitSetupStatusSchema>;

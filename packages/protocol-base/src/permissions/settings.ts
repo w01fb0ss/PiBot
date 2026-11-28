@@ -19,12 +19,21 @@ export const CategorySchema = z.enum([
   "bot_management",
   // The default Pi only: send a message or task to another Bot or a group.
   "work_dispatch",
+  // The default Pi only: repair stuck Bots and groups through the services' own paths.
+  "pi_repair",
+  // The default Pi only: propose changes to Settings.
+  "settings_change",
 ]);
 /**
- * Owner decision 2026-11-24: these two levels exist only on the default Pi. The global value stays
- * at its "ask" default and is never shown or set; Pi's own override is the one switch.
+ * Owner decisions 2026-11-24 / 2026-11-25: these levels exist only on the default Pi. The global
+ * value stays at its "ask" default and is never shown or set; Pi's own override is the one switch.
  */
-export const PI_MANAGER_CATEGORIES = ["bot_management", "work_dispatch"] as const;
+export const PI_MANAGER_CATEGORIES = [
+  "bot_management",
+  "work_dispatch",
+  "pi_repair",
+  "settings_change",
+] as const;
 export type PiManagerCategory = (typeof PI_MANAGER_CATEGORIES)[number];
 export function isPiManagerCategory(value: string): value is PiManagerCategory {
   return (PI_MANAGER_CATEGORIES as readonly string[]).includes(value);
@@ -47,12 +56,16 @@ export const PermissionLevelsSchema = z.strictObject({
   agent_delegation: LevelSchema.default("ask"),
   bot_management: LevelSchema.default("ask"),
   work_dispatch: LevelSchema.default("ask"),
+  pi_repair: LevelSchema.default("ask"),
+  settings_change: LevelSchema.default("ask"),
 });
 export const PermissionOverridesSchema = PermissionLevelsSchema.omit({
   connector: true,
   agent_delegation: true,
   bot_management: true,
   work_dispatch: true,
+  pi_repair: true,
+  settings_change: true,
 })
   .partial()
   .extend({
@@ -60,6 +73,8 @@ export const PermissionOverridesSchema = PermissionLevelsSchema.omit({
     agent_delegation: LevelSchema.optional(),
     bot_management: LevelSchema.optional(),
     work_dispatch: LevelSchema.optional(),
+    pi_repair: LevelSchema.optional(),
+    settings_change: LevelSchema.optional(),
   });
 export const DomainSchema = z
   .string()
@@ -81,7 +96,11 @@ export const BotPermissionOverridesSchema = PermissionOverridesSchema.extend({
    */
   confirmEverySend: z.literal(true).optional(),
 });
-export const IsolationSchema = z.strictObject({ available: z.boolean(), reason: text.optional() });
+export const IsolationSchema = z.strictObject({
+  available: z.boolean(),
+  reason: text.optional(),
+  windowsYoloConsent: z.boolean().optional(),
+});
 export const DockerRuntimeSchema = z.enum(["disabled", "orbstack", "desktop", "engine"]);
 /**
  * Mirrors the alias rule of the SSH intent parser in `execution/src/ssh/ssh-intent.ts`; the two
@@ -165,6 +184,8 @@ const levelPatch = {
   agent_delegation: LevelSchema,
   bot_management: LevelSchema,
   work_dispatch: LevelSchema,
+  pi_repair: LevelSchema,
+  settings_change: LevelSchema,
 };
 export const PermissionsSetSchema = z
   .strictObject({
@@ -189,7 +210,22 @@ export const PermissionEvents = {
   "permissions.changed": PermissionsSchema,
 } as const;
 const _botId = z.strictObject({ botId: IdSchema });
+export const ProtectionPackageSchema = z.enum(["bubblewrap", "socat"]);
 export const PermissionMethods = {
+  "permissions.commandProtection": {
+    params: z.discriminatedUnion("action", [
+      z.strictObject({ action: z.literal("check") }),
+      z.strictObject({ action: z.literal("install"), dependency: ProtectionPackageSchema }),
+    ]),
+    result: z.strictObject({
+      available: z.boolean(),
+      reason: z.string().max(100).optional(),
+      dependency: ProtectionPackageSchema.optional(),
+      manualCommand: z.string().max(160).optional(),
+      canInstall: z.boolean().optional(),
+      outcome: z.enum(["installed", "denied", "failed", "busy"]).optional(),
+    }),
+  },
   "permissions.get": {
     params: z.union([
       z.undefined(),
@@ -201,18 +237,22 @@ export const PermissionMethods = {
   },
   "permissions.set": { params: PermissionsSetSchema, result: PermissionsSchema },
   "permissions.allowBlockedWebsite": {
-    params: z.strictObject({ noticeId: IdSchema, scope: z.enum(["bot", "group", "global"]) }),
-    result: PermissionsSchema,
+    params: z.strictObject({
+      noticeId: IdSchema,
+      scope: z.enum(["bot", "group", "global"]),
+      retry: z.union([z.literal(true), z.literal("dismiss")]).optional(),
+    }),
+    result: PermissionsSchema.extend({ retryStarted: z.literal(true).optional() }),
   },
   "permissions.sshHosts.list": {
     params: z.union([z.undefined(), z.strictObject({})]),
     result: SshHostListSchema,
   },
   "permissions.paths.discover": {
-    params: z.strictObject({ source: z.enum(["process", "terminal"]) }),
+    params: z.strictObject({ source: z.enum(["process", "terminal", "windows"]) }),
     result: z.strictObject({
       paths: z.array(text).max(200),
-      source: z.enum(["process", "terminal"]),
+      source: z.enum(["process", "terminal", "windows"]),
       shell: text.optional(),
     }),
   },

@@ -93,7 +93,7 @@ export function auditToolFields(
   redactor: Pick<Redactor, "redact">,
   result?: Pick<PolicyResult, "analysis" | "facts" | "path" | "domain" | "url"> & {
     category?: AuditDetail["category"];
-  } & Partial<Pick<PolicyResult, "explanation" | "commandHome">>,
+  } & Partial<Pick<PolicyResult, "explanation" | "commandHome" | "videoModel">>,
   registry: CapabilityToolRegistry = { specs: {}, groups: [] },
 ): AuditDetail {
   const detail: AuditDetail = result
@@ -132,6 +132,10 @@ export function auditToolFields(
       /^(?:readable_conversations|[a-f0-9-]{36})$/i.test(target)
     )
       detail.target = target;
+  } else if (tool === "generate_video" && result?.videoModel) {
+    detail.providerId = auditText(result.videoModel.provider, redactor);
+    detail.modelId = auditText(result.videoModel.id, redactor);
+    if (result.domain) detail.target = auditText(result.domain, redactor);
   } else if (tool === "image_generation") {
     if (typeof input.provider === "string") detail.providerId = auditText(input.provider, redactor);
     if (typeof input.model === "string") detail.modelId = auditText(input.model, redactor);

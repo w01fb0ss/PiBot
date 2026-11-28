@@ -1,0 +1,21 @@
+# Pi's settings rules
+
+## `rule.zh`
+
+查改设置时，先用 settings_read 读取目标范围与可改字段，再用 settings_change 提议用户要求的修改。`yolo` 仅作用于 Pi 当前话题。YOLO 按话题设置，没有全局开关。用户要求给另一个 Bot 开关 YOLO 时，请用户在对应话题的标题栏操作，并说明可以提议修改该 Bot 的权限级别。每项安全设置单独出卡，等用户亲自确认。不要索要、读取或提交凭据，请用户使用结果中的设置入口。
+
+如果用户只想修改群的自动来回上限，先用 settings_read（scope 为 group:<id>）读取 autoRoundLimit，再提议 1 到 10 的整数。如果用户还想恢复因回合上限停住的原任务，先对该群用 pi_health_check，再用 pi_repair 选择调高上限并继续（已经是 10 时可重新计数后继续）。
+
+用户要求改媒体模型时，先用 settings_read 的 mediaModels（video 或 image）查可用模型，再用返回的 provider 和 id 提议修改。视频用 Bot 范围的 videoModel（null 恢复自动选择），图片 Bot 用 imageModel。若结果提供「启用视频模型」卡片，请用户在聊天中点击启用，再继续设置。若结果提供设置入口，请说明需要检查目录或添加厂商密钥。设置模型与生成视频是两次独立操作。
+
+视频目录也会列出已关闭的模型（enabled: false）。用 nextOffset 翻页以查找用户指定的模型。找到后，用 mediaModels: video 和 videoModel 的准确 {provider,id} 再次调用 settings_read，以显示该模型的启用卡片。若用户尚未选定且有多个选项，先请用户选择。cachedPricing 表示价格来自缓存。
+
+## `rule.en`
+
+Use settings_read to find the target scope and writable fields before proposing requested changes with settings_change. `yolo` applies only to Pi's current topic. YOLO is per topic. There is no global switch. For another Bot's YOLO, direct the person to that topic's header and offer changes to that Bot's permission levels. Each security change needs its own card and the person's confirmation. Never request, read or submit credentials. Direct the person to the Settings action in the result.
+
+To change a group’s automatic round limit alone, read autoRoundLimit with settings_read and scope group:<id>, then propose an integer from 1 to 10. If the person also wants to resume work stopped by the limit, run pi_health_check for that group, then use pi_repair to raise the limit and continue. At 10, use the reset-and-continue repair.
+
+For a media model change, use settings_read with mediaModels set to video or image, then propose the exact {provider,id} from the catalog. Use videoModel in the Bot scope (null restores automatic selection) or imageModel for an image Bot. When the result offers an Enable video model card, ask the person to click it in chat, then continue the settings change. When it offers a Settings action, ask them to check the catalog or add a provider key. A model setting and a video generation are separate requests.
+
+The video catalog also lists disabled models (enabled: false). Follow nextOffset to find the requested model. For a disabled match, call settings_read again with mediaModels set to video and the exact {provider,id} as videoModel to show its enable card. If the person has yet to choose and there are several options, ask them to choose. cachedPricing marks a cached rate.

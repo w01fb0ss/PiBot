@@ -81,6 +81,43 @@ export function windowsWithin(root: WindowsPathName, path: WindowsPathName): boo
   return part === "" || (!win32.isAbsolute(part) && part !== ".." && !part.startsWith("..\\"));
 }
 
+/** Project an already canonical path into the most specific selected folder's display spelling. */
+export function windowsDisplayPath(
+  path: string,
+  folders: readonly { path: string; displayPath?: string }[],
+): string {
+  const name = windowsPathName(path);
+  let display = path;
+  let matched = 0;
+  for (const folder of folders) {
+    if (!folder.displayPath || folder.displayPath === folder.path) continue;
+    if (
+      !win32.isAbsolute(folder.displayPath) ||
+      windowsPathName(folder.displayPath).kind === "device"
+    )
+      continue;
+    const root = windowsPathName(folder.path);
+    if (root.key.length <= matched || !windowsWithin(root, name)) continue;
+    const suffix = win32.relative(root.path, name.path);
+    display = suffix ? win32.join(folder.displayPath, suffix) : folder.displayPath;
+    matched = root.key.length;
+  }
+  return display;
+}
+
+/** Translate a drive mapping without taking any link below the drive root as authority. */
+export async function windowsMappedPath(
+  path: string,
+  realpath: (path: string) => Promise<string>,
+): Promise<string> {
+  if (!/^[a-z]:[\\/]/i.test(path)) return path;
+  const absolute = windowsPathName(path).path;
+  const root = win32.parse(absolute).root;
+  const mapped = windowsPathName(await realpath(root));
+  if (mapped.kind === "device") return absolute;
+  return win32.join(mapped.path, absolute.slice(root.length));
+}
+
 /**
  * A root no folder may use as a workplace: a drive root and the Windows install trees, matching the
  * Linux refusal of `/`. A workplace there hands the Bot writes to the whole system.

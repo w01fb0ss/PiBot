@@ -1,8 +1,9 @@
 // Gives the existing memory surfaces the same warning and model-settings action.
-import type { MemoryMaintenanceStatus } from "@pibot/protocol";
+import { type MemoryMaintenanceStatus, memoryFailureNeedsSettings } from "@pibot/protocol";
 import { useNavigation, useT } from "@pibot/renderer-kit";
 import { Button, Icon } from "@pibot/ui";
 import styles from "./memory-maintenance.module.css";
+import { useOpenMemoryBudget } from "./use-open-memory.ts";
 
 export function MemoryMaintenanceNotice({
   issue,
@@ -11,6 +12,7 @@ export function MemoryMaintenanceNotice({
 }) {
   const t = useT();
   const { dialog, closeDialog, openSettings } = useNavigation();
+  const openBudget = useOpenMemoryBudget();
   const budget = issue.reason === "budget_exhausted";
   return (
     <div className={styles.bannerWarn} role="status">
@@ -24,8 +26,10 @@ export function MemoryMaintenanceNotice({
             })}
       </span>
       {budget ? (
-        <small>{t("memorySettings.maintenance.budgetNext")}</small>
-      ) : (
+        <Button variant="pill" onClick={openBudget}>
+          {t("memorySettings.maintenance.raiseLimit")}
+        </Button>
+      ) : memoryFailureNeedsSettings(issue.reason) ? (
         <Button
           variant="pill"
           onClick={() => {
@@ -35,7 +39,7 @@ export function MemoryMaintenanceNotice({
         >
           {t("workspace.backgroundTaskModels")}
         </Button>
-      )}
+      ) : null}
     </div>
   );
 }

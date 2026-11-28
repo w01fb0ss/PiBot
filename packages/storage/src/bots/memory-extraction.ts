@@ -1,6 +1,8 @@
 // Persists the extraction queue, including interrupted attempts and their usage.
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import type { MemoryModelFallback } from "@pibot/protocol-base";
+import { visibleImportedRows } from "../conversations/conversations.ts";
 import { transaction } from "../database/database.ts";
 import { nonNegativeCost } from "./memory-dream.ts";
 import { legacyDueTopics, memoryExtractionCadence } from "./memory-extraction-boundaries.ts";
@@ -87,7 +89,8 @@ export class MemoryExtractionsRepo {
         `INSERT INTO memory_extractions
         (id, bot_id, conversation_id, group_id, status, reason, priority, source_message_id, created_at)
       SELECT ?,?,?,?, 'queued', ?,?,?,?
-      WHERE NOT EXISTS (SELECT 1 FROM conversations WHERE id=? AND import_id IS NOT NULL)
+      WHERE EXISTS (SELECT 1 FROM conversations c WHERE id=? AND ${visibleImportedRows("c.import_id")})
+        AND NOT EXISTS (SELECT 1 FROM messages WHERE id=? AND import_id IS NOT NULL)
         AND NOT EXISTS (
         SELECT 1 FROM memory_extractions
         WHERE conversation_id=? AND status='running'
@@ -114,6 +117,7 @@ export class MemoryExtractionsRepo {
         source,
         at,
         input.conversationId,
+        source,
         input.conversationId,
         priority,
         input.reason,
@@ -249,13 +253,14 @@ export class MemoryExtractionsRepo {
       tokens?: number;
       costUsd?: number;
       candidates?: number;
+      fallback?: MemoryModelFallback;
       error?: string | null;
     },
   ): void {
     this.db
       .prepare(
         `UPDATE memory_extractions SET status=?, coverage_message_id=?, model_provider=COALESCE(?,model_provider),
-        model_id=COALESCE(?,model_id), tokens=COALESCE(?,tokens), cost_usd=COALESCE(?,cost_usd), candidates=?, error=?, finished_at=?
+        model_id=COALESCE(?,model_id), tokens=COALESCE(?,tokens), cost_usd=COALESCE(?,cost_usd), candidates=?, error=?, finished_at=?, model_fallback=?
         WHERE id=? AND status='running'`,
       )
       .run(
@@ -268,6 +273,7 @@ export class MemoryExtractionsRepo {
         patch.candidates ?? 0,
         patch.error ?? null,
         new Date().toISOString(),
+        patch.fallback ? JSON.stringify(patch.fallback) : null,
         id,
       );
   }

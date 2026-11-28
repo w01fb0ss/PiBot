@@ -23,7 +23,7 @@ export const changesZh = {
   "changes.error.changes_remote_unsupported":
     "当前仅支持单一、无嵌入凭据的 HTTPS 地址；SSH、需要交互登录或带重写配置的远端，请在终端操作。Windows 暂不支持这里的推拉。",
   "changes.error.changes_remote_no_upstream":
-    "所选远端还不是当前分支的上游。请先在终端设置 upstream，再拉取。",
+    "当前分支还没有关联这个远端分支，请先在终端关联远端分支后再拉取。",
   "changes.error.changes_remote_dirty": "请先提交或撤回工作树及暂存区的改动，再同步远端。",
   "changes.error.changes_remote_auth": "远端需要认证或当前账号没有权限。请在终端完成认证后操作。",
   "changes.error.changes_remote_rejected":
@@ -34,26 +34,27 @@ export const changesZh = {
   "changes.error.changes_remote_policy":
     "当前会话权限未允许访问该远端。请检查本会话的网络和命令权限。",
 
-  "changes.refs.title": "分支与 Tag",
+  "changes.refs.title": "分支与标签",
   "changes.refs.branches": "分支",
-  "changes.refs.tags": "Tag",
+  "changes.refs.tags": "标签",
   "changes.refs.localOnly":
-    "仅管理本地引用。切换分支前请提交或撤回改动。Tag 指向创建时的提交，不随之后的改动移动。",
-  "changes.refs.readonly": "这里仅可查看。请在普通主项目中管理分支和 Tag；Windows 请使用终端操作。",
+    "这里只管理本地的分支和标签。切换分支前请提交或撤回改动。标签始终指向创建时选定的提交。",
+  "changes.refs.readonly":
+    "这里仅可查看。请在主项目的改动面板管理分支和标签，也可以用 Git 图形客户端打开主项目。",
   "changes.refs.current": "当前分支：{name}",
   "changes.refs.newBranch": "新分支名称",
-  "changes.refs.newTag": "新 Tag 名称",
+  "changes.refs.newTag": "新标签名称",
   "changes.refs.nameHelp": "使用英文字母、数字、下划线、横线或 / 分组；pibot/ 为保留前缀。",
   "changes.refs.fromCommit": "基于提交 {oid}",
   "changes.refs.createBranch": "新建分支",
-  "changes.refs.createTag": "新建 Tag",
+  "changes.refs.createTag": "新建标签",
   "changes.refs.done": "操作已完成",
-  "changes.refs.empty": "还没有本地引用。",
+  "changes.refs.empty": "还没有本地分支或标签。",
   "changes.refs.occupied": "工作区正在使用",
   "changes.refs.switch": "切换",
   "changes.refs.more": "加载更多",
   "changes.error.changes_ref_unavailable":
-    "当前 Git 或工作区不支持此操作。分页读取需要支持 --start-after 的 Git；请更新 Git，或在主项目的终端操作。",
+    "这里未能读取或修改分支与标签。请从主项目的改动面板重试；如果仍不可用，可用 Git 图形客户端打开主项目。",
   "changes.error.changes_ref_dirty": "请先提交或撤回工作树及暂存区的改动，再切换分支。",
   "changes.error.changes_ref_exists": "这个名称已经存在，请换一个。",
 
@@ -88,8 +89,14 @@ export const changesZh = {
   "changes.repo.notRepo": "不是 Git 仓库",
   "changes.repo.noGit": "Git 未安装",
   "changes.repo.noGitBody":
-    "这台电脑上没找到 Git，所以只能看每一轮改了什么。装好 Git 后就能看全部未提交的改动、撤回和提交。",
+    "Pi Bot 无法使用这台电脑上的 Git。安装 Git 后可以查看所有未提交的改动、撤回或提交。",
   "changes.repo.installGit": "下载 Git",
+  "changes.git.whyCommand": "这一步需要 Git，但 macOS 没能启动它。",
+  "changes.git.commandRepairMac":
+    "如果系统提示开发者工具已经安装，请让管理员检查 macOS 当前选用的开发者工具位置，然后让 Bot 重试。",
+  "changes.git.commandAvailable":
+    "macOS 没能启动这一步选中的 Git。Pi Bot 找到了另一个 Git，请让 Bot 改用已安装的 Git 再试。",
+  "changes.git.advanced": "高级",
   "changes.git.title": "Pi Bot 需要安装 Git",
   "changes.git.why": "为什么",
   "changes.git.what": "会做什么",
@@ -101,7 +108,7 @@ export const changesZh = {
   "changes.git.whatLinux": "用系统包管理器安装（这台电脑：{command}），系统会要你输入管理员密码",
   "changes.git.whatLinuxGeneric": "用系统包管理器安装 Git",
   "changes.git.whereValue": "系统位置，所有程序都能用",
-  "changes.git.note": "这一步在沙箱外运行系统安装程序，只在你点「安装」后执行，并记入「记录」。",
+  "changes.git.note": "点「安装」后会打开系统安装程序。安装程序使用系统权限，操作会记入「记录」。",
   "changes.git.later": "以后再说（先轮流做）",
   "changes.git.laterPlain": "以后再说",
   "changes.git.install": "安装",
@@ -115,16 +122,21 @@ export const changesZh = {
   "changes.git.failed": "可以点「重新安装」再试，或在终端里运行 {command}，装好后点「再检查」。",
   "changes.git.failedGeneric":
     "可以点「重新安装」再试，或用系统包管理器安装 Git，装好后点「再检查」。",
+  "changes.git.manualAuthorization":
+    "这台电脑无法弹出管理员授权窗口。请把安装命令复制给管理员，装好后点「再检查」。",
+  "changes.git.manualInstall":
+    "Pi Bot 找不到可用的系统安装程序。请按 Git 的安装说明操作，装好后点「再检查」。",
   "changes.git.notInstalled": "没装上。",
   "changes.git.notInstalledReason": "没装上：{reason}。",
   "changes.git.reason.denied": "密码窗口被关掉，或没有得到授权",
-  "changes.git.reason.no_elevation": "这台电脑上没有请求管理员密码的工具（pkexec）",
+  "changes.git.reason.no_elevation": "这台电脑无法弹出管理员授权窗口",
   "changes.git.reason.failed": "安装程序出错退出",
   "changes.git.reason.timeout": "等了一段时间仍没找到 Git",
   "changes.git.reason.cancelled": "安装被中止",
   "changes.git.recheck": "再检查",
   "changes.git.retry": "重新安装",
   "changes.git.error": "没能开始安装，请再试一次。",
+  "changes.git.checkError": "无法确认 Git 是否可用，请再检查一次。",
   "changes.repo.readonly": "只读",
   "changes.repo.running": "{name}正在运行",
   "changes.repo.subdirectory":
@@ -148,7 +160,7 @@ export const changesZh = {
   "changes.error.changes_office_unrestorable": "这一处改动的原来内容找不到了，只能撤回整个文件。",
   "changes.error.changes_draft_unavailable": "没有可用的模型来起草提交说明，可以自己写。",
   "changes.error.changes_draft_invalid":
-    "生成的提交说明格式不符合规范。请重试，或按 feat:、fix:、docs: 等格式填写。",
+    "生成的提交说明格式不符合规范。请重试，或自己填写一句简短说明。",
   "changes.error.changes_repo_above_folder": "仓库在这个文件夹的上层，这里不能撤回或提交。",
   "changes.error.changes_readonly_root": "这是只读文件夹，不能撤回或提交。",
   "changes.error.changes_not_repo": "这个文件夹不是 Git 仓库。",
@@ -430,7 +442,7 @@ export const changesEn: { [K in keyof typeof changesZh]: string } = {
   "changes.error.changes_remote_unsupported":
     "Only a single HTTPS URL without embedded credentials is supported. Use a terminal for SSH, interactive authentication or URL rewrites. Sync is not supported here on Windows yet.",
   "changes.error.changes_remote_no_upstream":
-    "The selected remote is not this branch’s upstream. Set its upstream in a terminal before pulling.",
+    "This branch is not linked to that remote branch yet. Link it in a terminal before pulling.",
   "changes.error.changes_remote_dirty":
     "Commit or discard working tree and index changes before syncing.",
   "changes.error.changes_remote_auth":
@@ -448,9 +460,9 @@ export const changesEn: { [K in keyof typeof changesZh]: string } = {
   "changes.refs.branches": "Branches",
   "changes.refs.tags": "Tags",
   "changes.refs.localOnly":
-    "Local refs only. Commit or discard changes before switching branches. Tags point to a fixed commit.",
+    "This panel manages local branches and tags. Commit or discard changes before switching branches. Tags stay on the commit you choose when creating them.",
   "changes.refs.readonly":
-    "View only here. Manage refs in the primary project repository; on Windows, use a terminal.",
+    "View only here. Manage branches and tags in the main project’s Changes panel, or open the main project in a Git app.",
   "changes.refs.current": "Current branch: {name}",
   "changes.refs.newBranch": "New branch name",
   "changes.refs.newTag": "New tag name",
@@ -460,12 +472,12 @@ export const changesEn: { [K in keyof typeof changesZh]: string } = {
   "changes.refs.createBranch": "Create branch",
   "changes.refs.createTag": "Create tag",
   "changes.refs.done": "Action completed",
-  "changes.refs.empty": "No local refs yet.",
+  "changes.refs.empty": "No local branches or tags yet.",
   "changes.refs.occupied": "In use by a worktree",
   "changes.refs.switch": "Switch",
   "changes.refs.more": "Load more",
   "changes.error.changes_ref_unavailable":
-    "This Git version or workspace does not support this action. Ref pagination needs Git with --start-after support. Update Git or use the primary project terminal.",
+    "Could not read or change branches and tags here. Try again from the main project’s Changes panel. If it is still unavailable, open the main project in a Git app.",
   "changes.error.changes_ref_dirty":
     "Commit or discard working tree and index changes before switching branches.",
   "changes.error.changes_ref_exists": "This name already exists. Choose another name.",
@@ -503,8 +515,14 @@ export const changesEn: { [K in keyof typeof changesZh]: string } = {
   "changes.repo.notRepo": "Not a Git repository",
   "changes.repo.noGit": "Git is not installed",
   "changes.repo.noGitBody":
-    "Git isn't installed on this computer, so only each turn's changes are shown. Install Git to see all uncommitted changes, discard and commit.",
+    "Pi Bot couldn’t use Git on this computer. Install Git to see all uncommitted changes, discard changes or commit.",
   "changes.repo.installGit": "Get Git",
+  "changes.git.whyCommand": "This step needs Git, but macOS couldn’t start it.",
+  "changes.git.commandRepairMac":
+    "If macOS says the developer tools are already installed, ask an administrator to check which developer tools macOS is using, then ask the Bot to retry.",
+  "changes.git.commandAvailable":
+    "macOS couldn’t start the Git selected for this step. Pi Bot found another installation. Ask your Bot to retry using the installed Git.",
+  "changes.git.advanced": "Advanced",
   "changes.git.title": "Pi Bot needs to install Git",
   "changes.git.why": "Why",
   "changes.git.what": "What it does",
@@ -519,7 +537,7 @@ export const changesEn: { [K in keyof typeof changesZh]: string } = {
   "changes.git.whatLinuxGeneric": "Installs Git with the system package manager",
   "changes.git.whereValue": "A system location every program can use",
   "changes.git.note":
-    "This runs the system installer outside the sandbox, only after you click Install, and is written to the Log.",
+    "Click Install to start the system installer. It uses system permissions and the action appears in Records.",
   "changes.git.later": "Not now (take turns)",
   "changes.git.laterPlain": "Not now",
   "changes.git.install": "Install",
@@ -534,17 +552,22 @@ export const changesEn: { [K in keyof typeof changesZh]: string } = {
     "Click Try again, or run {command} in a terminal and then click Check again.",
   "changes.git.failedGeneric":
     "Click Try again, or install Git with the system package manager and then click Check again.",
+  "changes.git.manualAuthorization":
+    "This computer can’t open an administrator approval window. Copy the install command for your administrator, then check again after they install Git.",
+  "changes.git.manualInstall":
+    "Pi Bot couldn’t find a system installer. Follow Git’s installation instructions, then check again.",
   "changes.git.notInstalled": "Not installed. ",
   "changes.git.notInstalledReason": "Not installed: {reason}. ",
   "changes.git.reason.denied": "the password prompt was closed or not authorized",
   "changes.git.reason.no_elevation":
-    "this computer has no tool to ask for the administrator password (pkexec)",
+    "this computer couldn’t show an administrator authorization window",
   "changes.git.reason.failed": "the installer exited with an error",
   "changes.git.reason.timeout": "Git still wasn't found after waiting",
   "changes.git.reason.cancelled": "the install was stopped",
   "changes.git.recheck": "Check again",
   "changes.git.retry": "Try again",
   "changes.git.error": "Couldn't start the install. Try again.",
+  "changes.git.checkError": "Pi Bot couldn’t check whether Git is available. Check again.",
   "changes.repo.readonly": "Read-only",
   "changes.repo.running": "{name} is running",
   "changes.repo.subdirectory":
@@ -575,7 +598,7 @@ export const changesEn: { [K in keyof typeof changesZh]: string } = {
   "changes.error.changes_draft_unavailable":
     "No model is available to draft a message. You can write it yourself.",
   "changes.error.changes_draft_invalid":
-    "The generated message has an invalid format. Retry, or write one using feat:, fix:, docs:, or another Conventional Commits type.",
+    "The generated commit message format was invalid. Retry, or write a short description yourself.",
   "changes.error.changes_repo_above_folder":
     "The repository starts above this folder, so discard and commit are off here.",
   "changes.error.changes_readonly_root": "This folder is read-only; discard and commit are off.",

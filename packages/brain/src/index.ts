@@ -87,12 +87,13 @@ import type { ModelProvidersPort } from "./runtime/models/port.ts";
 import { registerUserQuestionRpc } from "./runtime/questions/user-questions.ts";
 import { createActiveRunStatus } from "./runtime/queue/active-runs.ts";
 import { resumeApproval } from "./runtime/queue/approval-resume.ts";
+import { settleStalePauses } from "./runtime/queue/approval-supersede.ts";
 import { BrainSleep } from "./runtime/queue/brain-sleep.ts";
 import { createLiveActivity } from "./runtime/queue/live-activity.ts";
 import { reconcileSessionTails, snapshotSessionTails } from "./runtime/queue/session-tail.ts";
 import { registerReceiptRpc } from "./runtime/receipts/run-receipt.ts";
 import { registerAgentReviewRpc } from "./runtime/review/agent-review-rpc.ts";
-import { registerBusinessRpc } from "./runtime/startup/business-rpc.ts";
+import { piSettingsRpc, registerBusinessRpc } from "./runtime/startup/business-rpc.ts";
 import { startChatSearchBackfill } from "./runtime/startup/chat-search-backfill.ts";
 import { gateAgentContent } from "./runtime/startup/content-readiness.ts";
 import { createBrainController } from "./runtime/startup/create-brain-controller.ts";
@@ -159,7 +160,13 @@ export interface BrainHost {
     options?: { create?: boolean; defaultPath?: string },
   ): Promise<string | null>;
   /** Generic document picker used by contract workflow inputs. */
-  pickFile?(signal?: AbortSignal, options?: { defaultPath?: string }): Promise<string | null>;
+  pickFile?(
+    signal?: AbortSignal,
+    options?: {
+      defaultPath?: string;
+      filters?: { name: string; extensions: string[] }[];
+    },
+  ): Promise<string | null>;
   /**
    * A read-only look at whether this computer already has Obsidian / Notion, so the
    * Knowledge tab can offer what is here. Absent where no host scan exists (server brain, tests),
@@ -173,6 +180,10 @@ export interface BrainHost {
      * rebuilds the `obsidian://` URI itself. Absent where no desktop host exists, and the click
      * then answers "unsupported" instead of trying a file path or a command.
      */
+    trashNote?(
+      params: KernelHostParams["host.knowledge.trashNote"],
+      signal: AbortSignal,
+    ): Promise<KernelHostResults["host.knowledge.trashNote"]>;
     openNote?(
       params: KernelHostParams["host.knowledge.openNote"],
       signal: AbortSignal,
@@ -180,7 +191,10 @@ export interface BrainHost {
     ): Promise<KernelHostResults["host.knowledge.openNote"]>;
   };
   /** Skill import picker: a SKILL.md or a .zip; null when the user cancels. */
-  skills?: { pickFile(signal: AbortSignal): Promise<string | null> };
+  skills?: {
+    pickFile(signal: AbortSignal): Promise<string | null>;
+    takeDrop?(dropId: string, signal: AbortSignal): Promise<string[] | null>;
+  };
   memoryDreamActivity?(signal: AbortSignal): Promise<KernelHostResults["host.memoryDreamActivity"]>;
   notify?(
     params: KernelHostParams["host.notify"],
@@ -221,9 +235,12 @@ export async function startBrain(opts: {
   requestSource?: () => "acp" | "desktop-main" | undefined;
   /** True while the paired phone's own request is being handled (the remote kernel bridge). */
   isPhoneRequest?: () => boolean;
+  phoneRequestDeviceId?: () => string | undefined;
   acp?: import("@pibot/protocol-base").AcpAttachmentPort;
   host: BrainHost;
   dataDir: string;
+  /** The requested spelling for app.getInfo; internals use the canonical data directory. */
+  dataDirDisplayPath?: string;
   resourcesDir?: string;
   version: string;
   platform: NodeJS.Platform;
@@ -357,6 +374,7 @@ export async function startBrain(opts: {
     timing.mark("migrations");
     for (const capability of opts.capabilities ?? []) capability.recover?.(db);
     timing.mark("capability_recover");
+    const settingsRpc = piSettingsRpc(composition.methods);
     const startup: Parameters<typeof createKernelStorage>[0] &
       Parameters<typeof registerBusinessRpc>[0] &
       Parameters<typeof registerAppRpc>[0] &
@@ -367,6 +385,7 @@ export async function startBrain(opts: {
       get db() {
         return db;
       },
+      settingsRpc: settingsRpc.call,
       updateTerminalPath,
       get dataDir() {
         return dataDir;
@@ -766,6 +785,8 @@ export async function startBrain(opts: {
       new LiveActivityRepo(db),
       (value) => rpcPeer.emit("runtime.liveActivity", value),
       () => logger.warn(JSON.stringify({ module: "live-island", event: "read_failed" })),
+      { redact: redactor.redactProviderDetail },
+      (name) => Object.hasOwn(composition.tools.specs, name),
     );
     const offActiveRuns = opts.port.onClose?.(() => {
       activeRuns.dispose();
@@ -776,7 +797,11 @@ export async function startBrain(opts: {
       emit(event, payload) {
         rpcPeer.emit(event, payload);
         activeRuns.changed(event);
-        liveActivity.changed(event);
+        liveActivity.changed(event, payload);
+        if (event === "groups.changed") {
+          const { groupId } = payload as { groupId: string };
+          for (const capability of capabilityHandles) capability.onGroupChanged?.(groupId);
+        }
       },
       dispose() {
         activeRuns.dispose();
@@ -788,9 +813,12 @@ export async function startBrain(opts: {
     cleanup = () => peer.dispose();
     timing.mark("agent_runtime");
     local = new LocalService({
+      interactiveAttached: () => interactiveAttached,
       aliasFileSystem: opts.aliasFileSystem,
       executionTarget: opts.executionTarget,
       executionLocation: opts.executionLocation,
+      liveActivityChanged: liveActivity.schedule,
+      liveActivityReplying: liveActivity.replying,
       capabilityTools: composition.tools,
       orchestration: opts.orchestration,
       db,
@@ -810,6 +838,7 @@ export async function startBrain(opts: {
       proxy: () => network.proxy(),
       downloadImage: (input) => fetchImage({ ...input, proxy: network.proxy() }),
       extractPage: agent.extractPage,
+      transformToolInput: agent.transformMessage,
       fetchPage: opts.pageFetch,
       imageGenerationTimeoutMs: opts.imageGenerationTimeoutMs,
     });
@@ -871,6 +900,9 @@ export async function startBrain(opts: {
     });
     const groups = groupService;
     capabilities.approvals.pausedResolve = (id, decision) => resumeApproval(groups, id, decision);
+    // `approvals.recover()` keeps paused cards for their resume; the ones that can never resume
+    // (left by earlier versions) need the group state to judge, which exists only from here.
+    settleStalePauses(groups);
     timing.mark("group_service");
     const resources = workspaceResources(capabilities);
     managedResources = resources;
@@ -907,7 +939,7 @@ export async function startBrain(opts: {
         context: import("./core/business-rpc.ts").RpcRequestContext,
       ) => Promise<KernelMethodResults[K]>,
     ) {
-      return registerBusinessRpc(startup, method, action);
+      settingsRpc.register(method, registerBusinessRpc(startup, method, action));
     }
     registerLocalRpc(handle, capabilities);
     registerDiagnosticsRpc(handle, capabilities);

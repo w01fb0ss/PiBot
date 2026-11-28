@@ -10,6 +10,7 @@ import {
   skillPackagePathSafe,
 } from "@pibot/plugins-contract/full";
 import { type Entry, fromFd, type ZipFile } from "yauzl";
+import { rejectSymlink } from "./import-error.ts";
 
 function fdStat(fd: number): Promise<BigIntStats> {
   return new Promise((resolve, reject) =>
@@ -100,6 +101,7 @@ export async function extractPluginZip(
       if (!skillPackagePathSafe(name) || entry.generalPurposeBitFlag & 1) invalid();
       const mode =
         entry.versionMadeBy >>> 8 === 3 ? (entry.externalFileAttributes >>> 16) & 0o170000 : 0;
+      if (mode === 0o120000) rejectSymlink(entry.fileName);
       if (mode && mode !== (directory ? 0o040000 : 0o100000)) invalid();
       const parts = name.split("/");
       if (parts[0]) top.add(parts[0]);

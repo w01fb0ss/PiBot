@@ -1,14 +1,28 @@
 // What the default Pi's approval cards list: exactly what changes, field by field.
 import type { DatabaseSync } from "node:sqlite";
-import type { ToolCardDescriber } from "@pibot/brain/kit";
+import type { CapabilityContext, DispatchRecoveryCard, ToolCardDescriber } from "@pibot/brain/kit";
 import type { ApprovalFact } from "@pibot/protocol";
 import { BotsRepo } from "@pibot/storage";
 import { piManagerTools } from "@pibot/teams-contract";
-import { botName, findBot, findGroup, type Language, oneLine, parseModel, say } from "./lookup.ts";
+import { piManagerEn, piManagerZh } from "@pibot/teams-contract/i18n";
+import { dispatchModelError, dispatchModelFacts } from "./dispatch-models.ts";
+import type { DispatchApproval } from "./dispatch-policy.ts";
+import {
+  botName,
+  findBot,
+  findGroup,
+  groupCoordinatorRequired,
+  groupCreation,
+  type Language,
+  oneLine,
+  parseModel,
+  personaFollowsRole,
+  say,
+  shortDispatchTitle,
+} from "./lookup.ts";
 
 type BotArgs = ReturnType<typeof piManagerTools.bot_manage.schema.parse>;
 type GroupArgs = ReturnType<typeof piManagerTools.group_manage.schema.parse>;
-type SendArgs = ReturnType<typeof piManagerTools.send_to_bot.schema.parse>;
 
 const row = (label: string, value: string): ApprovalFact => ({
   kind: "write",
@@ -116,6 +130,16 @@ export function botCard(db: DatabaseSync): ToolCardDescriber {
             `${oneLine(bot.description ?? "", 120) || "—"} → ${oneLine(a.role, 200)}`,
           ),
         );
+      if (personaFollowsRole(bot, a.role, a.persona))
+        changes.push(
+          row(
+            label("人设", "Persona"),
+            label(
+              "按新角色重写（替换现在的人设）",
+              "Rewritten for the new role (replaces the current persona)",
+            ),
+          ),
+        );
       if (a.persona !== undefined)
         changes.push(
           row(
@@ -154,8 +178,8 @@ export function botCard(db: DatabaseSync): ToolCardDescriber {
         : label(`${pi} 想恢复 Bot「${bot.name}」`, `${pi} wants to restore the Bot "${bot.name}"`),
       lead: archive
         ? label(
-            "归档后它不在列表里出现，聊天和资料都保留，30 天内可以恢复。",
-            "It leaves the list; its chats and profile are kept and it can be restored within 30 days.",
+            "归档后它不在列表里出现，聊天和附件保留；30 天内可以恢复，超过 30 天会自动清理。",
+            "It leaves the list; its chats and attachments are kept. It can be restored within 30 days, after which it is cleaned up automatically.",
           )
         : label("恢复后它回到列表里，可以继续聊。", "It returns to the list and can chat again."),
       facts: [
@@ -189,34 +213,33 @@ export function groupCard(db: DatabaseSync): ToolCardDescriber {
         )
       : undefined;
     if (a.action === "create") {
-      const coordinator = a.coordinator ? findBot(db, a.coordinator) : findBot(db, a.members?.[0]);
-      const count = new Set((a.members ?? []).map((ref) => findBot(db, ref)?.id ?? ref)).size;
+      const { coordinator, coordinatorNotMember, members } = groupCreation(
+        db,
+        a.members,
+        a.coordinator,
+      );
       const createProblem =
         memberProblem ??
-        (!a.name || count < 2 || count > 6
+        (!a.name || members.length < 2
           ? invalid(
               language,
               "pi_group_shape",
               "建群需要群名和 2–6 个成员",
               "A group needs a name and 2–6 members",
             )
-          : a.coordinator &&
-              (!coordinator ||
-                !(a.members ?? []).some((ref) => findBot(db, ref)?.id === coordinator.id))
+          : coordinatorNotMember
             ? invalid(
                 language,
                 "pi_coordinator_not_member",
                 "协调者必须是成员之一",
                 "The coordinator must be one of the members",
               )
-            : undefined);
-      const members = (a.members ?? []).map((ref) => {
-        const bot = findBot(db, ref);
-        const name = bot?.name ?? `${ref}${label("（找不到）", " (not found)")}`;
-        return bot && coordinator?.id === bot.id
-          ? `${name}${label("（协调）", " (coordinator)")}`
-          : name;
-      });
+            : !coordinator
+              ? { code: "pi_coordinator_required", text: groupCoordinatorRequired(language) }
+              : undefined);
+      const roster = members.map((bot) =>
+        coordinator?.id === bot.id ? `${bot.name}${label("（协调）", " (coordinator)")}` : bot.name,
+      );
       return {
         title: label(`${pi} 想建一个群组`, `${pi} wants to create a group`),
         lead: label(
@@ -226,7 +249,7 @@ export function groupCard(db: DatabaseSync): ToolCardDescriber {
         ...(createProblem ? { invalid: createProblem } : {}),
         facts: [
           row(label("群名", "Name"), a.name ?? ""),
-          row(label("成员", "Members"), members.join(label("、", ", "))),
+          row(label("成员", "Members"), roster.join(label("、", ", "))),
           ...(a.rules ? [row(label("群规", "Rules"), oneLine(a.rules, 200))] : []),
           row(
             label("工作位置", "Work folder"),
@@ -310,8 +333,30 @@ export function groupCard(db: DatabaseSync): ToolCardDescriber {
   };
 }
 
-export function sendCard(db: DatabaseSync, kind: "bot" | "group"): ToolCardDescriber {
-  return (_context, input, language) => {
+export function sendCard(
+  ctx: Pick<CapabilityContext, "db" | "redactor">,
+  kind: "bot" | "group",
+): ToolCardDescriber {
+  return (_context, input, language, prepared) => {
+    const { db, redactor } = ctx;
+    if (prepared && typeof prepared === "object" && "dispatchRecovery" in prepared) {
+      const { title, step, bot, from, to, reason } = prepared as DispatchRecoveryCard;
+      const copy = language === "zh" ? piManagerZh : piManagerEn;
+      return {
+        title: copy["dispatch.modelApproval.title"],
+        lead: copy["dispatch.modelApproval.lead"].replace(
+          "{reason}",
+          copy[`dispatch.modelReason.${reason}`],
+        ),
+        facts: [
+          row(copy["dispatch.modelApproval.task"], title),
+          ...(step ? [row(copy["dispatch.modelApproval.step"], step)] : []),
+          row(copy["dispatch.modelApproval.bot"], bot),
+          row(copy["dispatch.modelApproval.from"], `${from.provider}/${from.id}`),
+          row(copy["dispatch.modelApproval.to"], `${to.name} (${to.provider}/${to.id})`),
+        ],
+      };
+    }
     const label = (zh: string, en: string) => say(language, zh, en);
     const pi = piName(db);
     const schema =
@@ -319,21 +364,34 @@ export function sendCard(db: DatabaseSync, kind: "bot" | "group"): ToolCardDescr
     const args = schema.safeParse(input);
     if (!args.success)
       return { title: label(`${pi} 想派一项工作`, `${pi} wants to assign a task`), facts: [] };
-    const a = args.data as SendArgs & { group?: string };
-    const ref = kind === "bot" ? a.bot : (a as unknown as { group: string }).group;
+    const a = args.data;
+    const ref = "bot" in a ? a.bot : a.group;
     const target = kind === "bot" ? findBot(db, ref) : findGroup(db, ref);
     const name = target?.name ?? ref;
+    const { folder, models } = (prepared as DispatchApproval | undefined) ?? {};
+    const problem = dispatchModelError(models, language);
     return {
-      ...(!target || target.archivedAt
+      ...(target && ("isMain" in target ? target.isMain : target.paused)
         ? {
             invalid: invalid(
               language,
-              kind === "bot" ? "pi_bot_unknown" : "pi_group_unknown",
-              `没有叫「${ref}」的${kind === "bot" ? " Bot" : "群组"}（或已归档）；先用 team_list 看名字`,
-              `No active ${kind === "bot" ? "Bot" : "group"} named "${ref}"; check team_list for names`,
+              "pi_target_unavailable",
+              "请选择其他接手对象，或请用户继续已暂停的群组",
+              "Choose another recipient or ask the person to resume the paused group",
             ),
           }
-        : {}),
+        : !target || target.archivedAt
+          ? {
+              invalid: invalid(
+                language,
+                kind === "bot" ? "pi_bot_unknown" : "pi_group_unknown",
+                `没有叫「${ref}」的${kind === "bot" ? " Bot" : "群组"}（或已归档）；先用 team_list 看名字`,
+                `No active ${kind === "bot" ? "Bot" : "group"} named "${ref}"; check team_list for names`,
+              ),
+            }
+          : problem
+            ? { invalid: { code: "pi_dispatch_model_unavailable", text: redactor.redact(problem) } }
+            : {}),
       title: label(`${pi} 想给 ${name} 派一个任务`, `${pi} wants to send ${name} a task`),
       lead:
         kind === "bot"
@@ -348,8 +406,15 @@ export function sendCard(db: DatabaseSync, kind: "bot" | "group"): ToolCardDescr
       facts: [
         ...(target ? [] : [missing(language, ref, kind === "group")]),
         row(label("发给", "To"), `${name} · ${label("新话题", "new topic")}`),
-        row(label("标题", "Title"), a.title),
-        row(label("任务", "Task"), oneLine(a.task, 400)),
+        row(label("标题", "Title"), shortDispatchTitle(redactor.redact(a.title))),
+        ...(folder
+          ? [row(label("工作目录", "Working folder"), redactor.redact(folder.source))]
+          : []),
+        ...(a.reason
+          ? [row(label("派发理由", "Routing reason"), oneLine(redactor.redact(a.reason), 200))]
+          : []),
+        ...dispatchModelFacts(ctx, models, language, a.task, a.reason),
+        row(label("任务", "Task"), oneLine(redactor.redact(a.task), 400)),
         row(
           label("回来", "Back"),
           label(

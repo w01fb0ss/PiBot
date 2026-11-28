@@ -3,7 +3,7 @@
 // danger rules, the approval card and the audit all apply unchanged. Pi Bot only answers; the
 // agent performs the action itself, inside its outer sandbox (none on Windows).
 import { isAbsolute } from "node:path";
-import type { RequestPermissionParams, ToolKind } from "@pibot/acp-schemas";
+import type { RequestPermissionParams, SessionUpdate, ToolKind } from "@pibot/acp-schemas";
 import type { LocalToolCall } from "@pibot/agent";
 import {
   askForUnmappedAction,
@@ -13,10 +13,14 @@ import {
   type LocalService,
   type ToolRunContext,
 } from "@pibot/brain/kit";
+import { externalAgentPermissionDenial } from "@pibot/policy";
 import { BRIDGE_TOOLS } from "../bridge/bridge-tools.ts";
 import { maskAccount } from "../privacy/account-mask.ts";
 
 type Requested = RequestPermissionParams["toolCall"];
+type CallUpdate = Extract<SessionUpdate, { sessionUpdate: "tool_call" | "tool_call_update" }>;
+const MAX_ANNOUNCED_CALLS = 500;
+const MAX_COMMAND_CHARS = 100_000;
 
 const string = (value: unknown) => (typeof value === "string" && value ? value : undefined);
 const field = (input: unknown, ...names: string[]) => {
@@ -65,12 +69,7 @@ const PIBOT_TITLE = /^mcp(?:\.|__)pibot(?:\.|__)([a-z_]{1,64})$/;
  * The Pi Bot bridge tool an agent's step is a call of, as agents name their MCP calls
  * (Codex: rawInput `{ server, tool }` and title `mcp.pibot.<tool>`; Claude: `mcp__pibot__<tool>`).
  */
-export function pibotTool(toolCall: {
-  title?: string | null;
-  kind?: ToolKind | null;
-  rawInput?: unknown;
-  _meta?: unknown;
-}) {
+function pibotTool(toolCall: Requested) {
   const raw = toolCall.rawInput as { server?: unknown; tool?: unknown } | null | undefined;
   const fromRaw =
     raw && typeof raw === "object" && raw.server === "pibot" && typeof raw.tool === "string"
@@ -91,13 +90,69 @@ function mcpMarked(meta: unknown, key: "is_mcp_tool_call" | "is_mcp_tool_approva
   return !!meta && typeof meta === "object" && (meta as Record<string, unknown>)[key] === true;
 }
 
+interface AnnouncedCall {
+  executes: boolean;
+  commandReported: boolean;
+  title?: string | null;
+  command?: string;
+}
+
+/** ACP permissions can refer to an earlier step by ID and omit its kind and input. */
+export class TurnPermissionCalls {
+  private readonly calls = new Map<string, AnnouncedCall>();
+  private readonly bridgeCalls = new Set<string>();
+  private capacityReached = false;
+
+  record(update: CallUpdate) {
+    const { toolCallId } = update;
+    const previous = this.calls.get(toolCallId);
+    // ACP may ask about an older call at any time in the turn. Preserve facts already stored.
+    if (!previous && this.calls.size >= MAX_ANNOUNCED_CALLS) {
+      this.capacityReached = true;
+      return false;
+    }
+    const command = update.rawInput == null ? previous?.command : commandOf(update);
+    const commandReported = previous?.commandReported === true || !!command;
+    const executes = previous?.executes === true || update.kind === "execute" || commandReported;
+    if (commandReported) this.bridgeCalls.delete(toolCallId);
+    else if (
+      update.sessionUpdate === "tool_call" &&
+      pibotTool({ ...update, kind: executes ? "execute" : update.kind })
+    )
+      this.bridgeCalls.add(toolCallId);
+    this.calls.delete(toolCallId);
+    this.calls.set(toolCallId, {
+      executes,
+      commandReported,
+      command: command && command.length <= MAX_COMMAND_CHARS ? command : undefined,
+      title: update.title ?? previous?.title,
+    });
+    return this.isBridge(toolCallId);
+  }
+
+  get(toolCallId: string) {
+    return this.calls.get(toolCallId);
+  }
+
+  historyIncomplete(toolCallId: string): boolean {
+    return this.capacityReached && !this.calls.has(toolCallId);
+  }
+
+  isBridge(toolCallId: string) {
+    return this.bridgeCalls.has(toolCallId);
+  }
+}
+
 /** Pi Bot tool calls that stand for this request; empty means "no policy to judge it by". */
-export function mappedCalls(toolCall: Requested, cwd: string): Omit<LocalToolCall, "id">[] {
+function mappedCalls(
+  toolCall: Requested,
+  cwd: string,
+  command: string | undefined,
+): Omit<LocalToolCall, "id">[] {
   const kind: ToolKind = toolCall.kind ?? "other";
   if (kind === "execute") {
-    const command = commandOf(toolCall);
-    return command
-      ? [{ tool: "run_command", input: { command: command.slice(0, 100_000), cwd } }]
+    return command && command.length <= MAX_COMMAND_CHARS
+      ? [{ tool: "run_command", input: { command, cwd } }]
       : [];
   }
   if (kind === "edit" || kind === "delete" || kind === "move")
@@ -123,21 +178,15 @@ export interface PermissionScope {
   unisolated: boolean;
   /** The run that handed this work over; its topic shows the cards. */
   cardContext?: ToolRunContext;
-  /** This turn's steps that call Pi Bot's own bridge tools, by tool call id. */
-  bridgeCalls?: ReadonlyMap<string, string>;
+  announcedCalls?: TurnPermissionCalls;
   beforeWrite?: (path: string) => Promise<void>;
   audit(decision: DelegatedDecision, kind: ToolKind, mapped: boolean): void;
 }
 
-/**
- * The agent's option for Pi Bot's answer. "Always" is picked only after a person approved a card
- * that said so (an agent offering no "once" option): Pi Bot never hands out lasting permission
- * inside the agent on its own.
- */
-export function chooseOption(params: RequestPermissionParams, allowed: boolean) {
-  const order = allowed
-    ? (["allow_once", "allow_always"] as const)
-    : (["reject_once", "reject_always"] as const);
+function chooseOption(
+  params: RequestPermissionParams,
+  order: readonly ("allow_once" | "reject_once" | "reject_always")[],
+) {
   for (const kind of order) {
     const option = params.options.find((item) => item.kind === kind);
     if (option) return { outcome: { outcome: "selected", optionId: option.optionId } };
@@ -151,32 +200,56 @@ export async function answerPermission(
   signal: AbortSignal,
 ) {
   const { local, context } = scope;
-  const toolCall = params.toolCall;
-  const kind: ToolKind = toolCall.kind ?? "other";
-  const title = auditText(maskAccount(toolCall.title ?? ""), local.deps.redactor, 300);
-  const id = `acp-${toolCall.toolCallId}`.slice(0, 200);
+  const requested = params.toolCall;
+  const announced = scope.announcedCalls?.get(requested.toolCallId);
+  const command = requested.rawInput == null ? announced?.command : commandOf(requested);
+  const reportedKind = requested.kind ?? "other";
+  // Some adapters label commands by what they do, such as reading a file or searching a folder.
+  const kind = announced?.executes || command ? "execute" : reportedKind;
+  const toolCall = { ...requested, kind };
+  const title = auditText(
+    maskAccount(requested.title ?? announced?.title ?? ""),
+    local.deps.redactor,
+    300,
+  );
+  const id = `acp-${requested.toolCallId}`.slice(0, 200);
   const cardTitle = (language: "zh" | "en") =>
     language === "zh"
       ? `${scope.agentName} 请求：${title || "执行一个操作"}`
       : `${scope.agentName} asks: ${title || "to perform an action"}`;
-  // The agent asks before calling one of Pi Bot's own tools (Codex asks for every MCP call).
-  // That call reaches Pi Bot's own gate in the bridge, which decides it with the same policy,
-  // card and audit as Pi Bot's Bots; asking here too would show the person two cards for one step.
-  if (
-    pibotTool(toolCall) ||
-    (scope.bridgeCalls?.has(toolCall.toolCallId) &&
-      // Codex's MCP approval names only the call id; its adapter's marker says it is one.
-      (mcpMarked(params._meta, "is_mcp_tool_approval") || !CHANGES.has(toolCall.kind ?? "other")))
-  ) {
-    scope.audit({ allowed: true, reason: PIBOT_BRIDGE_GATED }, kind, true);
-    return chooseOption(params, true);
+  // Pi Bot's bridge tools check their own policy before running.
+  const bridge =
+    !command &&
+    !announced?.commandReported &&
+    (!!pibotTool(toolCall) ||
+      (scope.announcedCalls?.isBridge(requested.toolCallId) === true &&
+        // Codex's MCP approval names only the call id; its adapter's marker says it is one.
+        (mcpMarked(params._meta, "is_mcp_tool_approval") || !CHANGES.has(kind))));
+  const calls = bridge ? [] : mappedCalls(toolCall, scope.cwd, command);
+  const denial = externalAgentPermissionDenial(params.options);
+  if (denial) {
+    scope.audit({ allowed: false, reason: denial }, kind, bridge || calls.length > 0);
+    return denial === "external_agent_ambiguous_options"
+      ? { outcome: { outcome: "cancelled" } }
+      : chooseOption(params, ["reject_once"]);
   }
-  const calls = mappedCalls(toolCall, scope.cwd);
-  // An agent offering only "always allow" asks for lasting permission inside itself: that is a
-  // person's decision, never Pi Bot's policy or YOLO.
-  const alwaysOnly =
-    !params.options.some((option) => option.kind === "allow_once") &&
-    params.options.some((option) => option.kind === "allow_always");
+  if (!command && scope.announcedCalls?.historyIncomplete(requested.toolCallId)) {
+    scope.audit({ allowed: false, reason: "authorization_failed" }, "other", false);
+    return chooseOption(params, ["reject_once", "reject_always"]);
+  }
+  if (bridge) {
+    scope.audit({ allowed: true, reason: PIBOT_BRIDGE_GATED }, kind, true);
+    return chooseOption(params, ["allow_once"]);
+  }
+  const conflictingKind =
+    kind === "execute" && reportedKind !== "execute" && reportedKind !== "other";
+  if (calls.length === 0 && (command || announced?.commandReported || conflictingKind)) {
+    // A command with missing or oversized input cannot be judged by command policy.
+    scope.audit({ allowed: false, reason: "authorization_failed" }, kind, false);
+    return chooseOption(params, ["reject_once", "reject_always"]);
+  }
+  // An unclassified action may also run a command outside the Windows sandbox.
+  const unisolatedCommand = scope.unisolated && (kind === "execute" || kind === "other");
   const ask = () =>
     askForUnmappedAction(
       local,
@@ -185,15 +258,15 @@ export async function answerPermission(
       {
         signal,
         title: cardTitle,
-        detail: alwaysOnly
-          ? `${title} · ${scope.agentName} will remember this permission itself`
-          : title,
+        cwd: scope.cwd,
+        detail: title,
+        unisolatedCommand,
         ...(scope.cardContext ? { cardContext: scope.cardContext } : {}),
       },
     );
   let decision: DelegatedDecision = { allowed: true, reason: "no_action" };
   try {
-    if (!calls.length || alwaysOnly) decision = await ask();
+    if (!calls.length) decision = await ask();
     else
       for (const [index, call] of calls.entries()) {
         decision = await authorizeDelegatedAction(
@@ -213,8 +286,8 @@ export async function answerPermission(
     // Fail closed: nothing below may leave an earlier "allowed" standing.
     decision = { allowed: false, reason: "authorization_failed" };
     try {
-      // An input Pi Bot's tool schema rejects (odd path, huge command) still reaches a person.
-      if (!signal.aborted) decision = await ask();
+      // Command preparation must succeed before command policy can allow the request.
+      if (!signal.aborted && kind !== "execute" && !unisolatedCommand) decision = await ask();
     } catch {
       // Stopped while the card was open: handled below.
     }
@@ -232,5 +305,5 @@ export async function answerPermission(
           local.deps.logger.warn("External agent before-image unavailable");
         });
   scope.audit(decision, kind, calls.length > 0);
-  return chooseOption(params, decision.allowed);
+  return chooseOption(params, decision.allowed ? ["allow_once"] : ["reject_once", "reject_always"]);
 }

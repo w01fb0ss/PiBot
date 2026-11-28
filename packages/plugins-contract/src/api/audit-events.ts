@@ -13,6 +13,7 @@ export const connectorAuditEvents = {
   failed: "Connector operation failed",
   access: "Connector access or tools updated",
   network: "Connector allowed websites updated",
+  startupTimeout: "Connector startup wait updated",
   confirmationRestored: "Connection confirmation restored to the default",
   windows: "Windows unisolated connector acknowledged",
   /** The person confirmed in the native dialog that this MCP runs as them. */
@@ -20,6 +21,8 @@ export const connectorAuditEvents = {
   outsideSandboxOff: "Local MCP returned to the sandbox",
   plugin: "Plugin imported",
   pluginLifecycle: "Plugin enabled or disabled",
+  /** Plain settings of an installed package changed (names only in the detail). */
+  settings: "Plugin settings changed",
   secretBackfill: "Plugin secret references backfilled during upgrade",
   secretBackfillFailed: "Plugin secret reference backfill requires reconfiguration",
   /** One item brought over from another AI tool (tool, kind, name and outcome only). */

@@ -1,5 +1,5 @@
 import type { TranslationKey } from "@pibot/i18n";
-import { RpcError, RpcErrorCodes } from "@pibot/plugins-contract/full";
+import { looksLikeCredentialValue, RpcError, RpcErrorCodes } from "@pibot/plugins-contract/full";
 import { type Peer, useRpc } from "@pibot/renderer-kit";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -15,6 +15,29 @@ export function connectorError(error: unknown) {
       return "connectors.nativeConfirmationTimedOut" as const;
     if (error.message === "gui_dialog_busy") return "connectors.nativeConfirmationWaiting" as const;
     const importReason = {
+      connector_paste_command: "connectors.paste.error.command",
+      connector_paste_url: "connectors.paste.error.url",
+      connector_paste_variables: "connectors.paste.error.variables",
+      connector_paste_timeout: "connectors.paste.error.timeout",
+      connector_paste_sites: "connectors.paste.error.sites",
+      connector_paste_json: "connectors.paste.error.json",
+      connector_paste_shape: "connectors.paste.error.shape",
+      connector_paste_unknownField: "connectors.paste.error.unknownField",
+      connector_paste_target: "connectors.paste.error.target",
+      connector_paste_transport: "connectors.paste.error.transport",
+      connector_paste_arguments: "connectors.paste.error.arguments",
+      connector_paste_workingDirectory: "connectors.paste.error.workingDirectory",
+      connector_paste_headers: "connectors.paste.error.headers",
+      connector_paste_moveCommandKey: "connectors.paste.error.moveCommandKey",
+      connector_knowledge_managed: "connectors.paste.error.knowledgeManaged",
+      connector_paste_duplicateNames: "connectors.paste.error.duplicateNames",
+      connector_bringOverSourceChanged: "connectors.paste.error.bringOverSourceChanged",
+      connector_paste_keyRequired: "connectors.paste.error.keyRequired",
+      connector_paste_savedKeysConsent: "connectors.paste.error.savedKeysConsent",
+      connector_paste_savedKeysChanged: "connectors.paste.error.savedKeysChanged",
+      connector_website_approval_required: "connectors.failure.website_approval_required",
+      connector_paste_keyConflict: "connectors.paste.error.keyConflict",
+      connector_paste_commandCredential: "connectors.paste.error.commandCredential",
       connector_import_manifest_not_found: "connectors.importReason.manifest_not_found",
       connector_import_mcp_duplicate: "connectors.importReason.mcp_duplicate",
       connector_import_path_outside_plugin: "connectors.importReason.path_outside_plugin",
@@ -23,7 +46,11 @@ export function connectorError(error: unknown) {
     } as const;
     if (Object.hasOwn(importReason, error.message))
       return importReason[error.message as keyof typeof importReason];
-    if (error.message === "connector_import_symlink") return "connectors.importSymlink" as const;
+    if (
+      error.message === "connector_import_symlink" ||
+      error.message.startsWith("connector_import_symlink:")
+    )
+      return "connectors.importSymlink" as const;
     if (error.message === "connector_confirmation_cancelled")
       return "connectors.confirmationCancelled" as const;
     if (error.message === "outside_sandbox_cancelled")
@@ -36,6 +63,12 @@ export function connectorError(error: unknown) {
       return "connectors.commandSubstitutionUnsupported" as const;
     if (error.message === "connector_plugin_secret_reference_unsupported")
       return "connectors.pluginSecretReferenceUnsupported" as const;
+    if (
+      error.message === "Plugin command path must stay inside its installation root" ||
+      error.message === "Plugin command path requires an installation root"
+    )
+      return "connectors.settingPathOutsideRoot" as const;
+    if (error.message === "source_changed") return "connectors.failure.source_changed" as const;
     // A skill deleted elsewhere is a changed snapshot, not a bad configuration or preview.
     if (error.code === RpcErrorCodes.connectorStale || error.message === "skill_not_found")
       return "connectors.stale" as const;
@@ -55,6 +88,16 @@ export function connectorError(error: unknown) {
   if (error instanceof DOMException && error.name === "TimeoutError")
     return "connectors.timeout" as const;
   return "connectors.failed" as const;
+}
+
+/** Extracts the offending relative/base name when a symlink aborted plugin import. */
+export function connectorSymlinkItem(error: unknown): string | undefined {
+  if (!(error instanceof RpcError)) return undefined;
+  if (!error.message.startsWith("connector_import_symlink:")) return undefined;
+  const item = error.message.slice("connector_import_symlink:".length).trim();
+  if (!item || looksLikeCredentialValue(item) || item.split("/").some(looksLikeCredentialValue))
+    return undefined;
+  return item;
 }
 
 export function useConnectorRead<T>(

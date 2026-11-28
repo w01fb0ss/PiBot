@@ -265,7 +265,12 @@ export class MobileRuntime {
         signal: current.signal,
         timeoutMs: 10_000,
       });
-      about = { computerId, version: answer.version, level: answer.phoneCompat };
+      about = {
+        computerId,
+        version: answer.version,
+        level: answer.phoneCompat,
+        platform: answer.platform,
+      };
     } catch {
       if (current.signal.aborted) return;
       // A desktop older than the handshake refuses the method: unknown, no notice. A known answer
@@ -573,25 +578,41 @@ export class MobileRuntime {
     return this.serial(async () => {
       await this.session.stop();
       await this.flushing;
-      const device = this.state.devices.find((d) => d.id === id);
-      if (!device || this.disposed) return;
-      const same = this.state.desktop?.computerId === id;
-      // What was skipped and what the handshake said belong to the computer they came from.
-      if (!same) this.skipped = 0;
-      this.patch({
-        selectedId: id,
-        desktop: same ? this.state.desktop : undefined,
-        skipped: this.skipped,
-        pending: (await this.storage.outbox(id)).length,
-        delivered: [],
-        uploads: {},
-        failed: undefined,
-      });
-      // Before the first screens render (the provider waits for initialize): they open with the
-      // last list and approvals instead of a blank state while the link comes up.
-      await this.warm(id);
-      if (this.foreground) await this.session.start(device);
+      await this.activateComputer(id);
     });
+  }
+  reconnect(id: string) {
+    return this.serial(async () => {
+      const device = this.state.devices.find((item) => item.id === id);
+      if (!device || this.disposed || !this.foreground) return;
+      if (id !== this.state.selectedId) {
+        await this.session.stop();
+        await this.flushing;
+        await this.activateComputer(id);
+      } else if (this.session.running() && this.state.error !== "unavailable")
+        this.session.reconnectNow();
+      else await this.session.start(device);
+    });
+  }
+  private async activateComputer(id: string) {
+    const device = this.state.devices.find((d) => d.id === id);
+    if (!device || this.disposed) return;
+    const same = this.state.desktop?.computerId === id;
+    // What was skipped and what the handshake said belong to the computer they came from.
+    if (!same) this.skipped = 0;
+    this.patch({
+      selectedId: id,
+      desktop: same ? this.state.desktop : undefined,
+      skipped: this.skipped,
+      pending: (await this.storage.outbox(id)).length,
+      delivered: [],
+      uploads: {},
+      failed: undefined,
+    });
+    // Before the first screens render (the provider waits for initialize): they open with the
+    // last list and approvals instead of a blank state while the link comes up.
+    await this.warm(id);
+    if (!this.disposed && this.foreground) await this.session.start(device);
   }
   /** Proposal 10: reads the copies the first screens show into the phone store's memory. */
   private async warm(id: string) {
@@ -725,7 +746,8 @@ export class MobileRuntime {
     }
     // reportGenerations stays: restarting the counter could let a stale report match again.
     return this.serial(async () => {
-      if (id === this.state.selectedId) {
+      const wasSelected = id === this.state.selectedId;
+      if (wasSelected) {
         try {
           await this.session.stop();
         } catch {
@@ -746,7 +768,11 @@ export class MobileRuntime {
       }
       await this.storage.forget(id);
       this.session.forget(id);
-      this.patch({ devices: await this.storage.computers() });
+      const devices = await this.storage.computers();
+      this.patch({ devices });
+      // Devices shows the first remaining computer after removal, so its link must own the tab
+      // immediately. Stay inside the same serialized switch while loading its local snapshot.
+      if (wasSelected && devices[0]) await this.activateComputer(devices[0].id);
     });
   }
   async call<K extends keyof typeof Methods>(

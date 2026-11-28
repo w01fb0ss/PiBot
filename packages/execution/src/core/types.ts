@@ -1,4 +1,8 @@
+import type { IsolationProbeStage } from "../sandbox/isolation-probe.ts";
 import type { NetworkProxy } from "../web/network-proxy.ts";
+
+export type { IsolationStatus } from "../sandbox/isolation-probe.ts";
+
 export interface ExecRedactor {
   redact(text: string): string;
   stream(): { push(text: string): string; finish(): string };
@@ -7,11 +11,6 @@ export interface ExecRedactor {
 export interface NetworkSettings {
   allowAll: boolean;
   domains: string[];
-}
-
-export interface IsolationStatus {
-  available: boolean;
-  reason?: string;
 }
 
 /** Physical metadata, without a host's virtual archive-directory view. */
@@ -30,6 +29,7 @@ export interface ProfileWriteRootDiagnostic {
 export interface CommandDiagnostic {
   /** Fixed recognized probe text only; never raw command output. */
   diagnostic?: string;
+  probeStage?: IsolationProbeStage;
   runId: string;
   stage: "workspace" | "isolation" | "environment" | "log" | "alias_scan" | "profile" | "dispatch";
   code: string;
@@ -40,10 +40,7 @@ export interface CommandDiagnostic {
 }
 export interface ExecOptions {
   onDiagnostic?(event: CommandDiagnostic): void;
-  /**
-   * Background cleanup health (paused / still blocked / recovered). A pause stops every new
-   * command, so the caller has to be able to log and explain it.
-   */
+  /** Report background cleanup health so callers can log and explain it. */
   onBackgroundDrain?(event: import("../command/background/types.ts").BackgroundDrainEvent): void;
   aliasFileSystem?: AliasFileSystem;
   proxy?: () => NetworkProxy | undefined;
@@ -78,6 +75,8 @@ export interface CommandPromotion {
 export interface ScriptPin {
   path: string;
   sha256: string;
+  /** An installed script must still resolve to this path inside its skill package at launch. */
+  canonicalPath?: string;
 }
 
 export interface RunCommandOptions {
@@ -117,6 +116,8 @@ export interface RunCommandOptions {
   skillEnv?: {
     id: string;
     dir: string;
+    /** The read-only skill source folder whose script is being invoked. */
+    sourceDir?: string;
     bin: string;
     python?: string;
     node?: string;
@@ -125,8 +126,12 @@ export interface RunCommandOptions {
   skillPythonPreparation?: {
     envId: string;
     uvVersion: string;
+    windowsConfirmed?: true;
+    useMirror?: true;
     phase: "create" | "dependencies" | "verify";
   };
+  /** Trusted npm setup of the exact skill environment directory. */
+  skillNodePreparation?: { envId: string; windowsConfirmed?: true };
   /** Compatibility alias; when supplied it must resolve to botHome. */
   homeDir?: string;
   runId: string;
@@ -165,6 +170,8 @@ export interface RunCommandOptions {
   timeoutSec?: number;
   /** A runner-held entry plan; only a runner host consumes it (and strips it). */
   gitEntryPlanId?: string;
+  /** Restrict lookups and Git helpers for a foreground Windows read approved by policy. */
+  windowsReadOnly?: true;
   signal: AbortSignal;
   onOutput?(text: string): void;
   // Brain must explicitly accept the status shown on the approval card.
@@ -181,13 +188,16 @@ export interface BackgroundStartOptions
     | "gitHook"
     | "hostSsh"
     | "gitOutput"
+    | "windowsReadOnly"
     | "skillPythonPreparation"
+    | "skillNodePreparation"
   > {
   skillPythonPreparation?: never;
+  skillNodePreparation?: never;
   gitOutput?: never;
   gitHook?: never;
   hostSsh?: never;
-  /** Names the log (`<botHome>/.pibot/background/<jobId>.log`) and the job. */
+  /** Names the log in the Bot's private command-log directory and the job. */
   jobId: string;
   /** Tracks pending startup retirement with its originating run, not the long-lived job. */
   runId?: string;
@@ -418,6 +428,7 @@ export class ExecError extends Error {
       /** ACP: the editor did not advertise fs read / write or terminal for this session. */
       | "editor_capability_missing"
       | "isolation_start_failed"
+      | "ripgrep_unavailable"
       | "seccomp_helper_unavailable"
       /** Windows runs commands unisolated; a proxy with credentials cannot reach them safely. */
       | "windows_proxy_credentials",

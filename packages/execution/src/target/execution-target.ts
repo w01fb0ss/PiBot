@@ -50,6 +50,7 @@ export interface ExecutionTarget {
   activitySnapshot?(): { runningCommands: number; backgroundTasks: number };
   /** Local only: commands are paused because a previous command was not confirmed stopped. */
   commandPause?: LocalExec["commandPause"];
+  windowsCommandCleanupPending?: LocalExec["windowsCommandCleanupPending"];
   recheckCommandPause?: LocalExec["recheckCommandPause"];
   readonly supportsCommandPromotion?: boolean;
   /**
@@ -69,6 +70,8 @@ export interface ExecutionTarget {
   ): Promise<{ path: string; device: string | null; inode: string | null }>;
   isolationStatus: LocalExec["isolationStatus"];
   runCommand(input: Parameters<LocalExec["runCommand"]>[0]): Promise<CommandResult>;
+  /** The local, fixed LibreOffice recipe owns its private input and output until it drains. */
+  convertOfficeDocument?: LocalExec["convertOfficeDocument"];
   releaseRun: LocalExec["releaseRun"];
   startBackground: LocalExec["startBackground"];
   writeBackground: LocalExec["writeBackground"];
@@ -152,9 +155,11 @@ export function createLocalExecutionTarget(options: LocalExecutionTargetOptions)
     },
     activitySnapshot: exec.activitySnapshot,
     commandPause: exec.commandPause,
+    windowsCommandCleanupPending: exec.windowsCommandCleanupPending,
     recheckCommandPause: exec.recheckCommandPause,
     isolationStatus: exec.isolationStatus,
     runCommand: exec.runCommand,
+    convertOfficeDocument: exec.convertOfficeDocument,
     releaseRun: exec.releaseRun,
     startBackground: exec.startBackground,
     writeBackground: exec.writeBackground,

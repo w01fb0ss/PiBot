@@ -11,6 +11,8 @@ import {
 import { fixture, until } from "../chat/harness.ts";
 
 const MARK = "IMAGE-NORMS-PROBE-PROMPT";
+const REQUEST = `${MARK} 1:1 应用图标草稿：一片绿色叶子，扁平矢量风格。叶子居中，轮廓简洁，用单一色块表现叶脉。背景纯白，四周留出均匀的空白，图案在小尺寸下也要清晰。整张图使用同一套线条风格，保留轮廓内的空白。`;
+const NORM = "保持边缘清晰。";
 // IMAGE-RUN-UX: the brain's image cap, shortened for the probe (production: 300 s).
 const IMAGE_TIMEOUT_MS = 3_000;
 // The fifth and seventh image requests are held past the cap (timeout, then a user stop).
@@ -77,15 +79,15 @@ export async function runImageNormsProbe(root: string) {
       botId: bot.id,
       modelProvider: provider,
       modelId: "fake-image",
+      norms: NORM,
     });
     await f.client.call("permissions.set", { levels: { web: "always" } });
-    const firstNorm = (bot.norms ?? "").split("\n")[0]?.replace(/^-\s*/, "").trim() ?? "";
 
     const seen: Approval[] = [];
     const send = async (decide: "allow" | "deny" | "none", topic?: string, remember = false) => {
       const sent = await f.client.call("chat.send", {
         botId: bot.id,
-        text: `${MARK} 1:1 应用图标草稿：一片绿色叶子，扁平矢量风格`,
+        text: REQUEST,
         ...(topic ? { topicId: topic } : { newTopic: true }),
       });
       let asked = 0;
@@ -124,10 +126,20 @@ export async function runImageNormsProbe(root: string) {
     assert(card, "有付费确认卡");
     const zhFacts = card.localized?.zh.facts.map((fact) => fact.value).join("\n") ?? "";
     const enFacts = card.localized?.en.facts.map((fact) => fact.value).join("\n") ?? "";
-    for (const expected of [provider, "fake-image", "尺寸", "数量 1 张", "预计费用", "收费"])
+    // The card names a custom provider by the name it was given; its id is a UUID.
+    for (const expected of ["fake image service", "fake-image", "尺寸", "数量 1 张", "预计费用", "收费"])
       assert(zhFacts.includes(expected), `中文卡片含 ${expected}`);
-    for (const expected of [provider, "fake-image", "Size", "1 image", "Estimated cost", "bills"])
+    for (const expected of [
+      "fake image service",
+      "fake-image",
+      "Size",
+      "1 image",
+      "Estimated cost",
+      "bills",
+    ])
       assert(enFacts.includes(expected), `英文卡片含 ${expected}`);
+    assert(!zhFacts.includes(provider) && !enFacts.includes(provider), "卡片不显示服务商 id");
+    assert.equal(card.grantScopeProviderName, "fake image service");
     // Owner decision 2026-10-23 (was canRemember=false before): the card offers this Bot + model.
     assert.equal(card.canRemember, true, "付费确认可以按 Bot + 模型记住");
     assert.deepEqual(
@@ -136,7 +148,7 @@ export async function runImageNormsProbe(root: string) {
       "记住的范围是这个 Bot 的这个模型",
     );
 
-    // 2. Allowed: exactly one request, with norms and brief before the labelled request.
+    // 2. Allowed: exactly one request, with the exact request first and compact guidance after it.
     const allowed = await send("allow");
     assert.equal(allowed.asked, 1);
     assert.equal(
@@ -146,22 +158,17 @@ export async function runImageNormsProbe(root: string) {
     );
     assert.equal(bodies.length, 1, "允许后只发一次请求");
     const prompt = String(bodies[0]?.prompt ?? "");
-    const at = (text: string) => prompt.indexOf(text);
     const sections = {
-      norms: at("设计规范（来自这个 Bot 的工作规范）："),
-      firstNorm: firstNorm ? at(firstNorm) : -1,
-      brief: at("出图规格"),
-      purposeRatio: at("用途与比例"),
-      composition: at("场景与构图"),
-      style: at("风格、色彩与光线"),
-      text: at("画面文字"),
-      avoid: at("不要出现"),
-      request: at("用户请求："),
-      mark: at(MARK),
+      request: prompt.indexOf(REQUEST),
+      guidance: prompt.indexOf("以请求为准。", REQUEST.length),
+      norms: prompt.indexOf(NORM, REQUEST.length),
     };
-    for (const [name, index] of Object.entries(sections)) assert(index >= 0, `生成提示含 ${name}`);
-    assert(sections.norms < sections.brief && sections.brief < sections.request);
-    assert(sections.request < sections.mark, "用户请求在最后、单独标注");
+    assert(prompt.startsWith(`${REQUEST}\n\n`), "用户请求原样放在最前面");
+    assert(
+      sections.guidance > REQUEST.length && sections.norms > sections.guidance,
+      "请求后附简短指导和规范",
+    );
+    assert(prompt.length - REQUEST.length < REQUEST.length, "用户请求长于附加指导");
     assert.equal(bodies[0]?.n, 1);
     assert.equal(bodies[0]?.size, "auto");
 
@@ -322,7 +329,7 @@ export async function runImageNormsProbe(root: string) {
       )
     ).join("\n");
     assert(!logs.includes(MARK), "日志不含提示词");
-    assert(!firstNorm || !logs.includes(firstNorm), "日志不含规范正文");
+    assert(!logs.includes(NORM), "日志不含规范正文");
     const generationLines = logs
       .split("\n")
       .filter(Boolean)
@@ -337,8 +344,9 @@ export async function runImageNormsProbe(root: string) {
     assert(timeoutLine, "超时那次有诊断日志");
     assert.equal(timeoutLine.outcome, "image_timeout");
     assert.equal(timeoutLine.mode, "text-to-image");
-    for (const key of ["promptChars", "requestChars", "normsChars", "briefChars", "durationMs"])
+    for (const key of ["promptChars", "requestChars", "guidanceChars", "durationMs"])
       assert(Number(timeoutLine[key]) > 0, `诊断日志含 ${key}`);
+    assert(Number(timeoutLine.normsChars) >= 0, "诊断日志含 normsChars");
     assert(Number(timeoutLine.durationMs) >= IMAGE_TIMEOUT_MS - 50, "耗时到达上限");
     const stopLine = generationLines.map(fields).find((line) => line.run === stopped?.runId);
     assert.equal(stopLine?.outcome, "aborted");
@@ -357,7 +365,7 @@ export async function runImageNormsProbe(root: string) {
     );
     const auditText = JSON.stringify(audit);
     assert(!auditText.includes(MARK), "审计不含提示词");
-    assert(!auditText.includes(firstNorm), "审计不含规范正文");
+    assert(!auditText.includes(NORM), "审计不含规范正文");
     assert(!JSON.stringify(seen).includes(MARK), "审批卡不含提示词");
     const kinds = audit.map((entry) => entry.kind);
     const reasons = audit

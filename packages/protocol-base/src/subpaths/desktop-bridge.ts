@@ -9,4 +9,5 @@ export {
   ProviderImportDecisionSchema,
   ProviderImportResultSchema,
 } from "../providers/import-link.ts";
+export * from "../skills/skill-drop.ts";
 export * from "./background.ts";

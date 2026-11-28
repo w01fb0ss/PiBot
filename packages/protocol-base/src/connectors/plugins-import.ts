@@ -6,6 +6,12 @@ const kind = z.enum(["file", "directory"]);
 const ok = z.strictObject({ ok: z.literal(true) });
 const selection = z.strictObject({ selectionId: IdSchema });
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
+const bringOver = z.strictObject({
+  tool: z.enum(["claude-code", "codex", "cursor", "pi", "opencode"]),
+  key: z.string().regex(/^(?:claude-code|codex|cursor|pi|opencode):plugin:[a-f0-9]{24}$/),
+});
+const bringOverOrigin = bringOver.extend({ sourcePath: z.string().min(1).max(4096) });
+export type ConnectorImportOrigin = z.output<typeof bringOverOrigin>;
 const safeText = z
   .string()
   .max(4096)
@@ -110,6 +116,7 @@ export const ConnectorImportHostMethods = {
       sourceDigest: digest,
       sourceKind: z.enum(["json", "plugin"]),
       fileChanges: ConnectorImportFileChangesSchema.optional(),
+      bringOver: bringOverOrigin.optional(),
     }),
   },
   "host.materializeConnectorImport": {
@@ -124,6 +131,7 @@ export const ConnectorImportHostMethods = {
   "host.adoptConnectorImport": {
     params: z.strictObject({
       temporary: z.boolean().optional(),
+      bringOver: bringOver.optional(),
       path: z
         .string()
         .min(1)
@@ -160,12 +168,17 @@ export interface ConnectorImportHost {
     kind: "file" | "directory";
   }): Promise<{ selectionId: string | null; canceled: boolean }>;
   /** A plugin folder the brain discovered; absent where no host can read it. */
-  adopt?(input: { path: string; temporary?: boolean }): Promise<{ selectionId: string }>;
+  adopt?(input: {
+    path: string;
+    temporary?: boolean;
+    bringOver?: z.output<typeof bringOver>;
+  }): Promise<{ selectionId: string }>;
   read(input: { selectionId: string; installationId: string }): Promise<{
     text: string;
     sourceDigest: string;
     sourceKind: "json" | "plugin";
     fileChanges?: ConnectorImportFileChanges;
+    bringOver?: ConnectorImportOrigin;
   }>;
   materialize(input: {
     selectionId: string;

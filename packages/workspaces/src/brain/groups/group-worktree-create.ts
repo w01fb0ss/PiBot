@@ -35,6 +35,7 @@ export async function createMemberWorktree(
   group: Group,
   baseline: Place,
   signal: AbortSignal,
+  options?: { planStep: true },
 ) {
   const local = owner.service.deps.local;
   const { join } = host.paths;
@@ -63,6 +64,7 @@ export async function createMemberWorktree(
     [host.remote ? original : parentPath, source.common.path],
     signal,
     "create",
+    options,
   );
   return owner.exclusive(
     `workspace:${id}`,

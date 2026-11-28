@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { MAX_GENERATED_IMAGES } from "@pibot/protocol-base";
 import { AttachmentsRepo } from "../conversations/attachments.ts";
 import { RunsRepo } from "../runs/runs.ts";
 import { MessagesRepo } from "../workspace/repositories.ts";
@@ -34,7 +35,7 @@ export function markArtifactGenerated(
     Array.isArray(usage) ||
     usage.imageGeneration !== true ||
     !images.length ||
-    images.length > 5 ||
+    images.length > MAX_GENERATED_IMAGES ||
     (usage.imageMode !== undefined && usage.imageMode !== artifact.model.mode) ||
     (usage.imageCount !== undefined && usage.imageCount !== images.length)
   )

@@ -1,8 +1,10 @@
+import { isolationReasonText, yoloScopeUnavailable } from "@pibot/client-core";
 import { useRouter } from "expo-router";
+import { useState } from "react";
 import { Text, View } from "react-native";
 import { useSharedText, useText } from "../../../runtime/context.tsx";
 import { monoFont, onFill, useColors } from "../../../theme/use-theme.ts";
-import { Button, ListCard, Separator } from "../../../ui/controls.tsx";
+import { Button, ErrorLine, ListCard, Separator } from "../../../ui/controls.tsx";
 import { OfflineBanner } from "../../../ui/headers.tsx";
 import { Icon } from "../../../ui/icons.tsx";
 import { OptionRow, Radio, SheetIcon, SheetText, SheetTitle } from "../../../ui/sheet.tsx";
@@ -10,6 +12,7 @@ import { useToast } from "../../../ui/toast.tsx";
 import { diffHref } from "../../changes/calls.ts";
 import { FileTag, LineCounts } from "../../changes/FileTag.tsx";
 import { changesTarget } from "../controls/scope.ts";
+import { useYolo } from "../controls/use-yolo.ts";
 import type { ChatPage } from "../use-chat-page.ts";
 import { RunnerFolderSheet } from "./RunnerFolderSheet.tsx";
 
@@ -241,36 +244,141 @@ export function RestoreSheet({
 }
 export function YoloSheet({ page, onClose }: { page: ChatPage; onClose: () => void }) {
   const t = useText(),
+    shared = useSharedText(),
+    colors = useColors(),
     toast = useToast();
+  const [details, setDetails] = useState(false);
+  // The disclosure needs its own fresh read when it opens, independent of the chat badge.
+  const yolo = useYolo(page.scope, page.workplace.value?.folderId);
   const change = async (on: boolean) => {
-    const result = await (on ? page.yolo.turnOn() : page.yolo.turnOff());
+    const result = await (on ? yolo.turnOn() : yolo.turnOff());
     if (result === undefined) return;
     onClose();
     toast(t(result ? "yoloEnabled" : "yoloDisabled"));
   };
-  const disabled = !page.online || page.yolo.write.busy || !page.yolo.value;
-  if (page.yolo.enabled)
+  const readError = yolo.action.error;
+  const scopeUnavailable = yolo.value && yoloScopeUnavailable(yolo.value);
+  const disabled =
+    !page.online || !!readError || yolo.action.busy || yolo.write.busy || !yolo.value;
+  const status = (
+    <>
+      <OfflineNote page={page} />
+      <ErrorLine text={yolo.write.error && t(yolo.write.error)} />
+      {page.online && (readError || scopeUnavailable) && (
+        <>
+          <ErrorLine
+            text={scopeUnavailable ? shared("yolo.scopeUnavailable") : t("yoloScopeFailed")}
+          />
+          <Button
+            title={t("retry")}
+            disabled={yolo.action.busy || yolo.write.busy}
+            onPress={() => void yolo.load()}
+          />
+        </>
+      )}
+    </>
+  );
+  if (!yolo.value || (!yolo.enabled && (readError || scopeUnavailable)))
+    return (
+      <>
+        <SheetTitle text={t("yoloAskTitle")} />
+        {page.online && !readError && !scopeUnavailable && (
+          <SheetText text={shared("common.loading")} />
+        )}
+        {status}
+        <CloseButton onClose={onClose} />
+      </>
+    );
+  const isolation = yolo.value.isolation;
+  const windowsDirectRun = yolo.value.windowsDirectRun;
+  const windows = !isolation.available && isolation.reason === "windows_unisolated";
+  const commandNote =
+    scopeUnavailable || readError
+      ? undefined
+      : windows
+        ? windowsDirectRun === "consented"
+          ? shared("yolo.windowsReminder")
+          : windowsDirectRun === undefined
+            ? shared("yolo.windowsConsentUnknown")
+            : shared("yolo.windowsWithoutConsent")
+        : !isolation.available
+          ? t("yoloAskIsolation")
+          : undefined;
+  if (yolo.enabled)
     return (
       <>
         <SheetTitle text={t("yoloOnTitle")} />
         <SheetText text={t("yoloOnHint")} />
-        <OfflineNote page={page} />
+        {commandNote && <SheetText text={commandNote} />}
+        {status}
         <Button
           size="lg"
           variant="prim"
           title={t("yoloTurnOff")}
-          disabled={disabled}
+          disabled={!page.online || yolo.write.busy}
           onPress={() => void change(false)}
         />
         <CloseButton onClose={onClose} />
       </>
     );
+  const isolationDetail = !isolation.available && isolationReasonText(isolation.reason, shared);
+  const skips = [
+    isolation.available
+      ? t("yoloAskFilesAndCommands")
+      : windowsDirectRun === "consented"
+        ? shared("yolo.filesAndCommands.windows")
+        : t("yoloAskFilesOnly"),
+    ...t("yoloAskSkipsList").split("\n"),
+  ];
+  const keeps = shared(windows ? "yolo.keepsList.windows" : "yolo.keepsList").split("\n");
   return (
     <>
       <SheetIcon name="warning" tone="warn" />
       <SheetTitle center text={t("yoloAskTitle")} />
-      <SheetText text={t("yoloAskHint")} />
-      <OfflineNote page={page} />
+      {page.scope?.kind === "group" && <SheetText text={t("yoloAskGroup")} />}
+      <SheetText text={t("yoloAskPrivacy")} />
+      {isolation.available && <SheetText text={shared("yolo.savedDirectRuns")} />}
+      <ListCard flush style={{ paddingVertical: 10, paddingHorizontal: 14, gap: 6 }}>
+        <Text style={{ fontSize: 13.5, fontWeight: "600", color: colors.ok }}>
+          {t("yoloAskSkipsTitle")}
+        </Text>
+        {skips.map((line) => (
+          <Text key={line} style={{ fontSize: 13.5, lineHeight: 20, color: colors.text }}>
+            · {line}
+          </Text>
+        ))}
+        <Separator />
+        <Text style={{ fontSize: 13.5, fontWeight: "600", color: colors.danger, marginTop: 2 }}>
+          {t("yoloAskKeepsTitle")}
+        </Text>
+        {keeps.map((line) => (
+          <Text key={line} style={{ fontSize: 13.5, lineHeight: 20, color: colors.text }}>
+            · {line}
+          </Text>
+        ))}
+      </ListCard>
+      {commandNote && <SheetText text={commandNote} />}
+      <SheetText small text={t("yoloAskHint")} />
+      <SheetText
+        small
+        text={shared(
+          windowsDirectRun === "consented"
+            ? "yolo.nothingRemembered.windows"
+            : "yolo.nothingRemembered",
+        )}
+      />
+      <Button
+        variant="ghost"
+        title={t(details ? "yoloHideDetails" : "yoloShowDetails")}
+        onPress={() => setDetails((open) => !open)}
+      />
+      {details && (
+        <>
+          <SheetText small text={shared(windows ? "yolo.details.windows" : "yolo.details")} />
+          {!windows && isolationDetail && <SheetText small text={isolationDetail} />}
+        </>
+      )}
+      {status}
       <Button
         size="lg"
         variant="prim"

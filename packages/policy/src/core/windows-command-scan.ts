@@ -1,7 +1,9 @@
 // Retain Windows danger hints and verify known targets before the stored Windows consent can release the call.
 
+import { win32 } from "node:path";
 import type { ApprovalFact } from "@pibot/protocol-base";
 import { powershellDirectoryWrites } from "../commands/powershell-directories.ts";
+import { windowsReadShape } from "../commands/windows-approval-shape.ts";
 import { canonicalPath, expandHome } from "../paths/paths.ts";
 import { windowsProtectedPathNames } from "../paths/protected-paths.ts";
 import {
@@ -31,7 +33,7 @@ export function scanWindowsCommand(
   protectedRoots: readonly string[] = [],
   scope: CommandPathScope = { writeRoots: [], denyWriteRoots: [] },
   verifiedPaths: ReadonlySet<string> = new Set(),
-  directoryWrites?: ReturnType<typeof powershellDirectoryWrites>,
+  directoryWrites?: Awaited<ReturnType<typeof powershellDirectoryWrites>>,
   verifiedDelete = false,
   ownRoots: readonly string[] = [],
 ) {
@@ -120,7 +122,25 @@ export async function prepareWindowsCommandScan(
     (cwd !== undefined && windowsNetworkOrDevicePath(cwd)) ||
     options.writePaths?.some(windowsNetworkOrDevicePath) === true ||
     windowsObfuscatedCommand(command);
-  const directoryWrites = cwd ? powershellDirectoryWrites(command, cwd) : undefined;
+  const pathContext = context && !needsConfirmation && cwd ? { ...context, cwd } : undefined;
+  const readShape = !needsConfirmation ? windowsReadShape(command) : undefined;
+  const directoryChecks = new Map<string, Promise<boolean>>();
+  const directoryWrites =
+    cwd && !readShape
+      ? await powershellDirectoryWrites(command, cwd, (path) => {
+          const pending = directoryChecks.get(path);
+          if (pending) return pending;
+          const checked = verifyWindowsDirectory(
+            path,
+            scope,
+            protectedRoots,
+            ownRoots,
+            pathContext,
+          );
+          directoryChecks.set(path, checked);
+          return checked;
+        })
+      : undefined;
   const declaredWrites = options.writePaths?.map((path) =>
     expandHome(path, context?.home ?? cwd ?? ""),
   );
@@ -134,8 +154,12 @@ export async function prepareWindowsCommandScan(
     protectedRoots,
     ownRoots,
     scope,
-    context: context && !needsConfirmation && cwd ? { ...context, cwd } : undefined,
+    context: pathContext,
   });
+  const mappedDrive =
+    context && !context.fs.canonicalize && !needsConfirmation
+      ? await usesMappedDrive(command, cwd, declaredWrites, context)
+      : false;
   const scan = scanWindowsCommand(
     command,
     protectedRoots,
@@ -149,8 +173,67 @@ export async function prepareWindowsCommandScan(
     privilegeEscalation: scan.privilegeEscalation,
     fragments: [...new Set([...scan.fragments, ...confirmed.fragments])].slice(0, MAX_FRAGMENTS),
     needsConfirmation,
+    mappedDrive,
     facts: confirmed.facts,
+    readShape,
   };
+}
+
+async function verifyWindowsDirectory(
+  path: string,
+  scope: CommandPathScope,
+  protectedRoots: readonly string[],
+  ownRoots: readonly string[],
+  context: PathContext | undefined,
+) {
+  if (!context || !/^[a-z]:[\\/]/i.test(path)) return false;
+  const normalized = win32.normalize(path);
+  const writable = (value: string) =>
+    isWritableCommandPath(value, "win32", scope) &&
+    !windowsProtectedCommandPath(value, protectedRoots, ownRoots);
+  if (!writable(normalized)) return false;
+  try {
+    const resolved = await canonicalPath(path, context);
+    // Check the raw spelling before using the normalized path for later relative operands.
+    // A parent traversal through a junction can land somewhere other than its lexical target.
+    return (
+      resolved.exists &&
+      /^[a-z]:[\\/]/i.test(resolved.path) &&
+      writable(resolved.path) &&
+      (!path.split(/[\\/]/).includes("..") || win32.relative(normalized, resolved.path) === "")
+    );
+  } catch {
+    context.signal.throwIfAborted();
+    // A directory whose identity could not be checked still needs per-call confirmation.
+    return false;
+  }
+}
+
+/** A command runs the drive spelling it was given, so a mapped drive needs the network-drive gate. */
+async function usesMappedDrive(
+  command: string,
+  cwd: string | undefined,
+  writes: readonly string[] | undefined,
+  context: PathContext,
+) {
+  const drives = new Set(
+    [...commandLiteralPaths(command).map((entry) => entry.path), cwd, ...(writes ?? [])]
+      .filter((path): path is string => typeof path === "string" && /^[a-z]:[\\/]/i.test(path))
+      .map((path) => win32.parse(win32.normalize(path)).root.toUpperCase()),
+  );
+  const mapped = await Promise.all(
+    [...drives].map(async (drive) => {
+      try {
+        const target = await canonicalPath(drive, context);
+        return !target.exists || win32.normalize(target.path).toUpperCase() !== drive;
+      } catch {
+        // Without a real drive identity the command keeps its per-call confirmation.
+        context.signal.throwIfAborted();
+        return true;
+      }
+    }),
+  );
+  return mapped.some(Boolean);
 }
 
 async function checkWindowsWrites(
@@ -190,8 +273,10 @@ async function checkWindowsWrites(
       facts.push({ kind: "write", value: resolved.path });
       if (path === deleteTarget)
         verifiedDelete =
-          safeWindowsDeletePath(path, protectedRoots, scope, ownRoots) &&
-          safeWindowsDeletePath(resolved.path, protectedRoots, scope, ownRoots);
+          // The Bot's workspace exception covers ordinary writes. Deletion in Pi Bot
+          // data still requires confirmation, including through a canonical alias.
+          safeWindowsDeletePath(path, protectedRoots, scope) &&
+          safeWindowsDeletePath(resolved.path, protectedRoots, scope);
     } catch {
       // An unreadable target cannot rule out a junction into a protected directory.
       context.signal.throwIfAborted();

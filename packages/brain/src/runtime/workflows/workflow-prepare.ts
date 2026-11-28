@@ -1,5 +1,7 @@
-import { opendir, stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, opendir, stat } from "node:fs/promises";
 import type { SkillProvenance } from "@pibot/agent";
+import type { Logger } from "@pibot/observability";
 import {
   AbsolutePathSchema,
   RpcError,
@@ -84,6 +86,7 @@ export async function prepareWorkflow(
   },
   signal: AbortSignal,
   files?: WorkspaceFileAccess,
+  logger?: Pick<Logger, "warn">,
 ): Promise<PreparedWorkflow> {
   const { contract: declaredContract } = skillContract(skill.document);
   if (!skill.document.contract) throw invalid("workflow_not_contract");
@@ -97,7 +100,13 @@ export async function prepareWorkflow(
   for (const name of Object.keys(request.params))
     if (!params.has(name)) throw invalid("workflow_param_unknown");
 
-  const { inputs, failures } = await checkWorkflowInputs(contract, request.inputs, signal, files);
+  const { inputs, failures } = await checkWorkflowInputs(
+    contract,
+    request.inputs,
+    signal,
+    files,
+    logger,
+  );
   if (failures.length) return { ok: false, failures };
   return {
     ok: true,
@@ -124,6 +133,7 @@ export async function checkWorkflowInputs(
   values: Readonly<Record<string, string>>,
   signal: AbortSignal,
   files?: WorkspaceFileAccess,
+  logger?: Pick<Logger, "warn">,
 ): Promise<{ inputs: WorkflowRun["inputs"]; failures: WorkflowPrecheckFailure[] }> {
   const failures: WorkflowPrecheckFailure[] = [];
   const inputs: WorkflowRun["inputs"] = [];
@@ -136,8 +146,9 @@ export async function checkWorkflowInputs(
     signal.throwIfAborted();
     if (input.kind === "previous") continue;
     const value = values[input.name]?.trim() ?? "";
+    const needsContent = nonEmpty.has(input.name);
     if (!value) {
-      if (input.required || nonEmpty.has(input.name))
+      if (input.required || (input.kind === "text" && needsContent))
         failures.push({ input: input.name, reason: "required" });
       continue;
     }
@@ -149,14 +160,40 @@ export async function checkWorkflowInputs(
       failures.push({ input: input.name, reason: "invalid" });
       continue;
     }
-    // A given path is always checked for existence: a run on a missing folder only wastes turns.
-    const reason = files?.remote
-      ? await remoteCheck(value, input.kind, nonEmpty.has(input.name), signal, files)
-      : await checkPath(value, input.kind, nonEmpty.has(input.name), signal);
+    // A supplied optional path that has disappeared is the same as no supplied value.
+    let reason: WorkflowPrecheckFailure["reason"] | undefined;
+    try {
+      reason = files?.remote
+        ? await remoteCheck(value, input.kind, needsContent, signal, files, !input.required)
+        : await checkPath(value, input.kind, needsContent, signal, !input.required);
+    } catch (error) {
+      signal.throwIfAborted();
+      if (!input.required && omitUnavailableWorkflowInput(error, logger)) continue;
+      throw error;
+    }
+    if (reason === "missing" && !input.required) continue;
     if (reason) failures.push({ input: input.name, reason });
     else inputs.push({ name: input.name, kind: input.kind, value });
   }
   return { inputs, failures };
+}
+
+/** Log only allowlisted codes. OS error messages can include private paths. */
+export function omitUnavailableWorkflowInput(error: unknown, logger?: Pick<Logger, "warn">) {
+  const code = (error as { code?: unknown } | null)?.code;
+  if (
+    code === "ENOENT" ||
+    code === "ENOTDIR" ||
+    code === "file_not_found" ||
+    code === "file_not_directory" ||
+    (error instanceof RpcError && error.message === "workspace_path_missing")
+  )
+    return true;
+  if (code !== "EACCES" && code !== "EPERM" && code !== "file_access_denied") return false;
+  logger?.warn(
+    JSON.stringify({ module: "workflow", event: "optional_input_omitted", reasonCode: code }),
+  );
+  return true;
 }
 
 /**
@@ -175,6 +212,7 @@ async function checkPath(
   kind: "folder" | "file",
   nonEmpty: boolean,
   parent: AbortSignal,
+  optional: boolean,
 ): Promise<WorkflowPrecheckFailure["reason"] | undefined> {
   const signal = AbortSignal.any([parent, AbortSignal.timeout(CHECK_MS)]);
   let info: Awaited<ReturnType<typeof stat>>;
@@ -182,35 +220,54 @@ async function checkPath(
     info = await abortable(stat(path), signal);
   } catch (error) {
     parent.throwIfAborted();
-    if (signal.aborted) return "missing";
+    if (signal.aborted) return optional ? "invalid" : "missing";
     const code = (error as NodeJS.ErrnoException).code;
+    if (optional && omitUnavailableWorkflowInput(error)) throw error;
     return code === "ENOENT" || code === "ENOTDIR" ? "missing" : "invalid";
   }
   if (kind === "folder" && !info.isDirectory()) return "not_folder";
   if (kind === "file" && !info.isFile()) return "not_file";
+  if (optional) {
+    try {
+      await abortable(
+        access(path, constants.R_OK | (kind === "folder" ? constants.X_OK : 0)),
+        signal,
+      );
+    } catch (error) {
+      parent.throwIfAborted();
+      if (!signal.aborted && omitUnavailableWorkflowInput(error)) throw error;
+      return "invalid";
+    }
+  }
   if (!nonEmpty) return undefined;
   if (kind === "file") return info.size > 0 ? undefined : "empty";
-  const found = await hasEntry(path, signal);
+  const found = await hasEntry(path, signal, optional);
   parent.throwIfAborted();
   return found ? undefined : "empty";
 }
 
 /** True once one visible entry is found; hidden files (.DS_Store, desktop.ini-like) do not count. */
-async function hasEntry(path: string, signal: AbortSignal): Promise<boolean> {
-  const dir = await abortable(opendir(path), signal).catch(() => undefined);
-  if (!dir) return false;
+async function hasEntry(path: string, signal: AbortSignal, optional: boolean): Promise<boolean> {
+  let dir: Awaited<ReturnType<typeof opendir>> | undefined;
+  const opened = opendir(path);
   try {
+    dir = await abortable(opened, signal);
     for (let i = 0; i < 1000; i++) {
       const entry = await abortable(dir.read(), signal);
       if (!entry) return false;
       if (!entry.name.startsWith(".") && entry.name.toLowerCase() !== "desktop.ini") return true;
     }
     return true;
-  } catch {
+  } catch (error) {
+    if (optional && omitUnavailableWorkflowInput(error)) throw error;
     // Unreadable or too slow to list counts as empty; the caller rechecks its own cancellation.
     return false;
   } finally {
-    await dir.close().catch(() => undefined);
+    if (dir) await dir.close().catch(() => undefined);
+    else if (signal.aborted) {
+      // A directory opened after the deadline still belongs to this check.
+      void opened.then((pending) => pending.close()).catch(() => undefined);
+    }
   }
 }
 
@@ -220,13 +277,17 @@ async function remoteCheck(
   nonEmpty: boolean,
   signal: AbortSignal,
   files: WorkspaceFileAccess,
+  optional: boolean,
 ): Promise<WorkflowPrecheckFailure["reason"] | undefined> {
   if (!files.paths.isAbsolute(path)) return "invalid";
   const info = await files.inspect(path, signal);
   if (!info) return "missing";
   if (kind === "folder" && info.kind !== "directory") return "not_folder";
   if (kind === "file" && (info.kind !== "file" || info.links !== "1")) return "not_file";
-  if (!nonEmpty) return;
+  if (!nonEmpty) {
+    if (optional && kind === "folder") await files.page(path, signal, 0, info.version, 1);
+    return;
+  }
   if (kind === "file") return info.size ? undefined : "empty";
   return (await files.entries(path, signal)).some(
     (e) => !e.name.startsWith(".") && e.name.toLowerCase() !== "desktop.ini",

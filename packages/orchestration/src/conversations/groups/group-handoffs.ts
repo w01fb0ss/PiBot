@@ -252,6 +252,7 @@ export class GroupHandoffs {
         { params: request.params ?? {}, inputs: { ...inherited, ...(request.inputs ?? {}) } },
         signal,
         access,
+        this.service.deps.logger,
       );
     } catch (error) {
       parent.throwIfAborted();

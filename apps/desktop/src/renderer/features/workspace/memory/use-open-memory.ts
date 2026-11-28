@@ -4,6 +4,19 @@ import { projectMemoryDialog } from "./project/project-memory-dialog.ts";
 
 export const ABOUT_YOU_DIALOG = "about-you";
 
+export function useOpenMemoryBudget() {
+  const { showDialog, closeSettings } = useNavigation();
+  return () => {
+    closeSettings();
+    const state = { budgetFocus: crypto.randomUUID() };
+    showDialog((current) =>
+      current?.owner === ABOUT_YOU_DIALOG
+        ? { ...current, state }
+        : { owner: ABOUT_YOU_DIALOG, key: crypto.randomUUID(), state },
+    );
+  };
+}
+
 export function useOpenMemory() {
   const { showDialog, openBotPanel, navigate, closeSettings } = useNavigation();
   return (owner: MemoryOwner) => {

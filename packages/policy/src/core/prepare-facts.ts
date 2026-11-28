@@ -27,16 +27,19 @@ export async function preparePolicyFacts(
   };
   const context: PathContext = {
     platform,
-    // `~` is the workplace home for every tool, as for commands (execution injects it as their
-    // HOME) and the UI. A file tool that expanded it to the computer user's home wrote outside
-    // the workplace, where no file or changes card follows; that home stays reachable only by an
-    // absolute path, and its credential folders stay protected through protectionHome.
-    home: input.workplace.home,
+    // The shell HOME can sit beside the workspace; it is only used to resolve shell paths.
+    home:
+      input.request.category === "run_command"
+        ? (input.commandHome ?? input.workplace.home)
+        : input.workplace.home,
     protectionHome: remoteTarget ? input.workplace.home : options.userHome,
     ...(platform === "win32" && !remoteTarget
       ? {
           windowsSystemDrive: options.windowsSystemDrive,
           windowsSystemTrees: options.windowsSystemTrees,
+          ...((input.boundary?.location?.target ?? "local") === "local"
+            ? { windowsUserPaths: options.windowsUserPaths ?? {} }
+            : {}),
         }
       : {}),
     cwd: input.workplace.home,

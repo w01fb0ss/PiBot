@@ -97,7 +97,7 @@ export async function flushHistoryRefresh(this: ChatSession, initial = false) {
   )
     return;
   this.historyRefreshPending = false;
-  await this.refreshHistory(initial);
+  await this.refreshHistory(initial, false, initial || this.historyReplacePending);
 }
 
 export async function refreshHistory(
@@ -112,9 +112,12 @@ export async function refreshHistory(
   }
   if (this.historyRead) {
     this.historyRefreshPending = true;
+    this.historyReplacePending ||= replaceWindow;
     return this.historyRead;
   }
-  this.historyRead = this.readHistory(initial, recoverSend, replaceWindow);
+  const replace = replaceWindow || this.historyReplacePending;
+  this.historyReplacePending = false;
+  this.historyRead = this.readHistory(initial, recoverSend, replace);
   try {
     await this.historyRead;
   } finally {
@@ -134,6 +137,7 @@ export async function readHistory(
   // A failed send instead recovers history and discards deltas with no sequence cutoff.
   if ((!initial && this.state.loading) || (this.state.pending && !recoverSend)) {
     this.historyRefreshPending = true;
+    this.historyReplacePending ||= replaceWindow;
     return;
   }
   const botId = this.state.bot?.id ?? this.target.botId;

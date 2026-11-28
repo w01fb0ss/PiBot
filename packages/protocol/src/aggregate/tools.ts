@@ -8,7 +8,9 @@ import {
 import { phoneToolGroup, phoneTools, runnerToolGroup, runnerTools } from "@pibot/remote-contract";
 import { routineToolGroup, routineTools } from "@pibot/routines-contract";
 import { skillReferenceTools } from "@pibot/skills-contract";
-import { piManagerTools } from "@pibot/teams-contract";
+import { piHealthTools, piManagerTools, piSettingsTools } from "@pibot/teams-contract";
+
+import { videoToolGroup, videoTools } from "@pibot/videos-contract";
 
 /**
  * Model-facing tools the enabled capabilities contribute, composed here at the
@@ -25,6 +27,9 @@ export const capabilityTools = {
   ...agentDelegationTools,
   ...skillReferenceTools,
   ...piManagerTools,
+  ...piHealthTools,
+  ...piSettingsTools,
+  ...videoTools,
 } as const satisfies Record<string, CapabilityToolSpec>;
 
 export const capabilityToolGroups = [
@@ -33,6 +38,7 @@ export const capabilityToolGroups = [
   runnerToolGroup,
   knowledgeToolGroup,
   agentDelegationToolGroup,
+  videoToolGroup,
 ] as const satisfies readonly CapabilityToolGroup[];
 
 export type CapabilityToolName = keyof typeof capabilityTools;

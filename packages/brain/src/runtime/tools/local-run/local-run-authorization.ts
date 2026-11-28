@@ -1,14 +1,18 @@
 import type { LocalToolCall } from "@pibot/agent";
-import { ExecError, type ExecutionTarget, linuxIsolationRemedy } from "@pibot/execution";
+import { ExecError, type ExecutionTarget } from "@pibot/execution";
 import {
   applyEditorTerminal,
   applyWindowsCommandConsent,
   applyYolo,
+  automaticOutsidePatterns,
+  automaticOutsideShape,
   browserSecretPolicy,
   EDITOR_TERMINAL_UNISOLATED,
   editorTerminalReadonly,
   explainPolicyResult,
+  LISTED_OUTSIDE_SANDBOX_REASON,
   mustAskNow,
+  OUTSIDE_SANDBOX_REASON,
   OUTSIDE_WRITE_REASON,
   type PolicyResult,
   REVEAL_CONFIRMATION_REASON,
@@ -17,7 +21,7 @@ import {
   WINDOWS_READ_ONLY,
 } from "@pibot/policy";
 import { BrowserNetworkConsentText, RpcError } from "@pibot/protocol-base";
-import { BotsRepo, SettingsRepo } from "@pibot/storage";
+import { BotsRepo, ChatNoticesRepo, SettingsRepo } from "@pibot/storage";
 import { BROWSER_RESOURCE_BUSY, loginChoiceText } from "@pibot/tools/browser";
 import type { ConnectorCardDisplay } from "../../../core/approvals.ts";
 import { collaborationRefusal } from "../../../core/assignment-refusal.ts";
@@ -37,6 +41,7 @@ import { isComputerTool } from "../../computer/computer-grants-policy.ts";
 import { loginNeedsChoice, loginTitle } from "../browser/browser-login.ts";
 import { CommandInputError } from "../command-input.ts";
 import { connectionRuled } from "../connectors/capability-adapter.ts";
+import { noteDependency } from "../dependency-notices.ts";
 import { executionPaused } from "../execution-paused.ts";
 import {
   approvedUnchanged,
@@ -50,6 +55,7 @@ import { linkSandboxApproval } from "../sandbox-notices.ts";
 import { RunnerToolUnsupportedError, runnerFailure } from "../target-tools.ts";
 import { authorizationCheckText } from "../tool-error-text.ts";
 import { blockedReason, isCollaboration, toolInputFailure } from "../tools.ts";
+import { approvalPathFacts } from "./approval-paths.ts";
 import {
   approvalContext,
   approvalResult,
@@ -105,6 +111,7 @@ export async function authorizeStep(
   signal: AbortSignal,
   confirmation = false,
   recipient?: SearchRecipient,
+  retriedWebsite = false,
 ): Promise<{ allow: boolean; reason?: string }> {
   if (this.closed) return { allow: false, reason: "已停止 / Stopped" };
   const state = this.state(call);
@@ -161,6 +168,7 @@ export async function authorizeStep(
   state.preauthWriteRoot = undefined;
   // A retry of the same call id is a new call; what was opened before is not reused.
   state.outsideWriteRoots = undefined;
+  state.modelCallInput = undefined;
   const failure = toolInputFailure(call.tool, call.input, this.local.deps.capabilityTools);
   if (failure) {
     const reported =
@@ -255,14 +263,48 @@ export async function authorizeStep(
     ...(this.context.routineRunId ? { routineRunId: this.context.routineRunId } : {}),
     ...(prepared.result.decision === "deny" ? { reasonCode: prepared.result.reason } : {}),
   };
-  if (prepared.result.decision === "deny")
+  if (prepared.result.decision === "deny") {
+    state.settingsAction = prepared.settingsAction;
+    const website = policyWebsiteGuidance(
+      this.local,
+      this.context,
+      prepared,
+      retriedWebsite || state.synthetic ? undefined : signal,
+    );
+    if (website.retry) {
+      this.context.executionClock?.pause("website_approval");
+      let confirmed: boolean;
+      try {
+        confirmed = await website.retry;
+      } finally {
+        this.context.executionClock?.resume("website_approval");
+      }
+      if (confirmed) return authorizeStep.call(this, call, signal, confirmation, recipient, true);
+    }
     return refuse(
       prepared.result.reason,
-      prepared.result.reason === "browser_login_choose"
-        ? loginChoiceText(prepared.login?.accounts.map((account) => account.label) ?? [])
-        : blockedReason(prepared.result.reason, prepared.result.category) +
-            policyWebsiteGuidance(this.local, this.context, prepared),
+      prepared.refusalText ??
+        (prepared.result.reason === "browser_login_choose"
+          ? loginChoiceText(prepared.login?.accounts.map((account) => account.label) ?? [])
+          : blockedReason(prepared.result.reason, prepared.result.category) + website.help),
     );
+  }
+  if (prepared.commandSkill?.missing) {
+    const skill = prepared.commandSkill.missing;
+    if (this.context.conversationId && !this.context.routineSource) {
+      const notice = new ChatNoticesRepo(this.local.deps.db).addAgentWarning({
+        runId: this.context.runId,
+        botId: this.context.botId,
+        conversationId: this.context.conversationId,
+        text: `Skill runtime required (${this.context.runId} ${skill.skillId} ${skill.runtime ?? ""})`,
+        skillRuntime: { ...skill, name: this.local.deps.redactor.redact(skill.name).slice(0, 80) },
+      });
+      if (notice) this.local.deps.peer.emit("chat.notice", notice);
+    }
+    const message =
+      "技能需要先准备运行环境。请用户使用准备按钮后再运行。 / This skill needs its runtime prepared. Ask the user to use the preparation button before running it again.";
+    return refuse("skill_runtime_required", message);
+  }
   if (needsSearchDisclosure(prepared.result.reason) && !confirmation && this.local.deps.search)
     return this.local.deps.search.confirmation(
       signal,
@@ -293,21 +335,20 @@ export async function authorizeStep(
     !prepared.docker &&
     isolation.reason === EDITOR_TERMINAL_UNISOLATED &&
     editorTerminalReadonly(prepared.result, editorScope.roots, editorScope.platform);
-  if (readonlyRoots && !editorReadonly && (this.owner.platform !== "darwin" || prepared.docker))
-    return refuse(
-      "readonly_isolation_required",
-      "当前平台或 Docker 运行时尚不支持带只读参考目录的命令；请用文件工具并写入主目录 / This platform or Docker runtime cannot isolate commands with readonly references; use file tools and write into the primary folder",
-    );
   if (
     authorizationSnapshot(this.local, this.context.botId, this.context) !== prepared.authorization
   )
     return refuse("changed", blockedReason("changed"));
   if (isCommandCall(call.tool) && !isolation.available && !prepared.docker) {
-    if (readonlyRoots && !editorReadonly)
-      return refuse(
-        "readonly_isolation_required",
-        "附加目录只读，当前系统无法隔离命令 / Readonly roots require command isolation",
-      );
+    if (
+      this.local.deps.platform === "linux" &&
+      !this.local.deps.executionLocation &&
+      !this.context.runWorkplace?.boundary.location?.target.startsWith("runner:") &&
+      (isolation.reason === "linux_bubblewrap_missing" ||
+        isolation.reason === "linux_socat_missing" ||
+        isolation.reason === "linux_userns_restricted")
+    )
+      noteDependency(this.local, this.context, isolation.reason);
     // Windows and an ACP editor terminal are explicit execution targets that cannot attest to
     // Pi Bot's local sandbox. Both stay on the unisolated approval path; an arbitrary local
     // sandbox failure is still a hard stop that no approval or YOLO may bypass.
@@ -319,13 +360,38 @@ export async function authorizeStep(
     ) {
       // A Linux host that cannot isolate looks identical to a broken one unless the cause
       // and the fix travel with the refusal; the caller cannot see the runner's log.
-      const remedy = linuxIsolationRemedy(isolation.reason);
-      const cause = isolation.reason ? ` (${isolation.reason})` : "";
+      const remote =
+        this.local.deps.executionLocation ||
+        this.context.runWorkplace?.boundary.location?.target.startsWith("runner:");
+      if (!remote)
+        return refuse(
+          "isolation_unavailable",
+          this.context.language === "zh"
+            ? "系统保护没有启动，命令没有运行。请在「设置 › 权限」检查原因。"
+            : "System protection could not start, so the command did not run. Check Settings → Permissions for the cause.",
+        );
+      const dependency =
+        isolation.reason === "linux_bubblewrap_missing"
+          ? "bubblewrap"
+          : isolation.reason === "linux_socat_missing"
+            ? "socat"
+            : undefined;
+      const name = this.context.executionDevice?.name;
+      const computer = name && auditText(name, this.local.deps.redactor);
       return refuse(
         "isolation_unavailable",
-        `命令隔离当前不可用${cause}，不能在没有隔离的情况下运行。${remedy?.zh ?? ""} / Command isolation is unavailable${cause}; commands never run unisolated here. ${remedy?.en ?? ""}`,
+        this.context.language === "zh"
+          ? `${computer ? `「${computer}」` : "运行这项任务的电脑"}未能启动系统保护，命令没有运行。${dependency ? `请让管理员在那台电脑上安装 ${dependency}，再重试。` : "请让管理员在那台电脑上恢复系统保护，再重试。"}`
+          : `System protection couldn’t start on ${computer || "the computer running this task"}, so the command did not run. ${dependency ? `Ask an administrator to install ${dependency} on that computer, then retry.` : "Ask an administrator to restore system protection on that computer, then retry."}`,
       );
     }
+    if (readonlyRoots && !editorReadonly)
+      return refuse(
+        "readonly_isolation_required",
+        this.context.language === "zh"
+          ? "这个命令需要保护附加的只读文件夹。请用文件工具读取资料，并把结果写入主文件夹。"
+          : "This command needs protection for the additional read-only folder. Use file tools to read it and write results into the main folder.",
+      );
     const unisolatedReason =
       isolation.reason === "acp_editor_terminal_unisolated"
         ? "acp_editor_terminal_unisolated"
@@ -339,6 +405,13 @@ export async function authorizeStep(
     )
       state.unisolatedApproved = true;
   }
+  if (readonlyRoots && !editorReadonly && (this.owner.platform !== "darwin" || prepared.docker))
+    return refuse(
+      "readonly_isolation_required",
+      this.context.language === "zh"
+        ? "当前运行方式无法保护附加的只读文件夹。请用文件工具读取资料，并把结果写入主文件夹。"
+        : "This execution mode can’t protect the additional read-only folder. Use file tools to read it and write results into the main folder.",
+    );
   // Isolation inspection may yield while the user enables YOLO. Re-check immediately before
   // creating a card, otherwise the newly created card would miss releasePending().
   // Naming a saved display name settles the choice; only an unnamed call still stops here.
@@ -452,21 +525,77 @@ export async function authorizeStep(
       this.context,
       call.input,
       this.context.language,
+      prepared.capabilityPolicyData,
     ).invalid;
     if (invalid) return refuse(invalid.code, invalid.text);
-    const original = prepared;
-    const approvedFingerprint = fingerprint(original);
+    let original = prepared;
+    let approvedFingerprint = fingerprint(original);
+    const originalInput = JSON.stringify(original.call.input);
+    const modelOptions = original.capabilityModelOptions?.();
+    const shownModel = modelOptions?.find(
+      (option) => option.binding === original.capabilityPolicyBinding,
+    );
+    const alternatives = modelOptions?.filter((option) => option !== shownModel) ?? [];
     let receipt: SearchConsentReceipt | undefined;
     let folderAdded = false;
+    let approvalId: string | undefined;
     let windowsYoloCard = false;
+    let rememberDirectRun = false;
+    const directRunPattern =
+      original.result.reason === OUTSIDE_SANDBOX_REASON &&
+      !this.context.routineRunId &&
+      !this.context.permissionGroupId &&
+      !this.context.groupId &&
+      !this.context.approvalCardContext &&
+      !original.secretUses?.length &&
+      this.context.runWorkplace?.cwd === original.cwd
+        ? availableDirectRunPattern.call(this, original)
+        : undefined;
     const lifecycle = this.local.unattended?.approvalLifecycle(
       this.context,
       call,
       prepared,
       isolation,
     );
+    const card = shownModel
+      ? {
+          text: (language: "zh" | "en") => shownModel.localized[language],
+          modelOptions: alternatives.map(({ id, label, localized }) => ({ id, label, localized })),
+          pauseBinding: shownModel.id,
+          evaluateModel: async (id: string) => {
+            const option = alternatives.find((candidate) => candidate.id === id);
+            if (!option) throw new RpcError(-32602, "video_approval_changed");
+            const current = await this.prepare({ ...call, input: option.input }, signal, recipient);
+            if (
+              current.capabilityPolicyBinding !== option.binding ||
+              current.authorization !== original.authorization ||
+              current.result.reason !== "video_generation_confirmation" ||
+              current.result.decision !== "ask"
+            )
+              throw new RpcError(-32602, "video_approval_changed");
+            return {
+              result: current.result,
+              commit: () => {
+                original = current;
+                approvedFingerprint = fingerprint(current);
+                state.modelCallInput = originalInput;
+              },
+            };
+          },
+        }
+      : this.consentCard(original);
+    const pathFacts =
+      this.local.deps.platform === "win32" && original.boundary?.location?.target === "local"
+        ? await approvalPathFacts(original, signal)
+        : undefined;
     const status = await this.local.approvals.request(
-      approvalContext(this.context, signal),
+      // Settings recheck the live diff; an interrupted card must be proposed again.
+      approvalContext(
+        prepared.result.category === "settings_change"
+          ? { ...this.context, pauseForApproval: undefined }
+          : this.context,
+        signal,
+      ),
       call,
       approvalResult(this.context, prepared.result),
       isolation,
@@ -523,7 +652,11 @@ export async function authorizeStep(
             if (runYolo(this.local, this.context)) return;
             receipt = acceptSearch(this.owner, original, approvedFingerprint);
           }
-        : undefined,
+        : directRunPattern
+          ? (remember) => {
+              rememberDirectRun = remember === true;
+            }
+          : undefined,
       {
         ...lifecycle,
         requested: (approval) => {
@@ -531,6 +664,9 @@ export async function authorizeStep(
           linkSandboxApproval(this.local, this.context, original, approval);
         },
         resolved: (approval, by) => {
+          if (approval.status === "allowed") approvalId = approval.id;
+          if (approval.status === "allowed" && rememberDirectRun)
+            state.directRunSaveRequested = approval.id;
           windowsYoloCard =
             by === "yolo" &&
             isolation.reason === "windows_unisolated" &&
@@ -551,7 +687,18 @@ export async function authorizeStep(
             isolation.available,
           ),
       },
-      this.consentCard(original),
+      {
+        ...card,
+        ...(pathFacts ? { facts: pathFacts } : {}),
+        ...(original.result.reason === OUTSIDE_SANDBOX_REASON ||
+        original.result.reason === LISTED_OUTSIDE_SANDBOX_REASON
+          ? {
+              directRunRemember: directRunPattern
+                ? { folder: original.cwd, program: directRunPattern.slice(0, -2) }
+                : (false as const),
+            }
+          : {}),
+      },
       this.owner.folderChange(original, () => {
         folderAdded = true;
       }),
@@ -580,7 +727,7 @@ export async function authorizeStep(
               ? "已停止 / Stopped"
               : status === "expired" || status === "auto_denied"
                 ? "用户未响应，请换办法，不要重复请求 / The user did not respond; use another approach rather than repeating the request"
-                : "用户拒绝，请换办法，不要重复请求 / The user denied permission; use another approach rather than repeating the request",
+                : "用户拒绝了这次请求。不要自行重试；只有用户之后明确再次请求时，才提交新的审批。 / The user denied this request. Do not retry automatically. Submit a fresh request only if the person explicitly asks again in a later turn.",
       );
     state.unisolatedApproved = isCommandCall(call.tool) && !isolation.available;
     if (prepared.result.domain) state.onceDomains.add(prepared.result.domain);
@@ -596,7 +743,7 @@ export async function authorizeStep(
       if (fingerprint(prepared, original.authorization) !== approvedFingerprint)
         return refuse("changed", blockedReason("changed"));
     } else {
-      prepared = await this.prepare(call, signal, recipient);
+      prepared = await this.prepare(original.call, signal, recipient);
       if (!isolation.available)
         applyExplicitUnisolatedTarget.call(this, prepared, isolation.reason);
       prepared.result = applyYolo(prepared.result, runYolo(this.local, this.context));
@@ -627,7 +774,10 @@ export async function authorizeStep(
           !allowedByYolo(prepared.result))
       )
         prepared.confirmedNow = true;
+      if (rememberDirectRun && directRunPattern && prepared.confirmedNow)
+        prepared.rememberDirectRun = directRunPattern;
     }
+    if (approvalId) prepared.approvalId = approvalId;
   }
   // Card/connector finalization may re-prepare the call. Restore the execution-target fact before
   // binding the value used by the final side-effect dispatch; otherwise the same safe transform
@@ -643,6 +793,14 @@ export async function authorizeStep(
   if (call.tool === "web_fetch" && state.yolo) state.initialPageYolo = prepared.result.url;
   state.auditFacts = {
     ...state.auditFacts,
+    ...(state.modelCallInput
+      ? auditToolFields(
+          prepared.call,
+          this.local.deps.redactor,
+          prepared.result,
+          this.local.deps.capabilityTools,
+        )
+      : {}),
     policySteps: prepared.result.explanation.map((step) => step.code),
   };
   state.prepared = prepared;
@@ -650,6 +808,32 @@ export async function authorizeStep(
   state.fingerprint = fingerprint(prepared);
   if (state.startSeen) this.start(state);
   return { allow: true };
+}
+
+function availableDirectRunPattern(this: LocalRunOperations, prepared: PreparedTool) {
+  const entries = new SettingsRepo(this.local.deps.db).get().sandboxAutoOutsideCommands ?? [];
+  if (
+    automaticOutsidePatterns(entries, prepared.cwd).length >= 32 ||
+    !prepared.cwd ||
+    prepared.cwd.length > 4096 ||
+    /[\p{Cc}\p{Cf}]/u.test(prepared.cwd) ||
+    this.local.deps.redactor.redact(prepared.cwd) !== prepared.cwd
+  )
+    return undefined;
+  const command = prepared.call.input.command;
+  if (typeof command !== "string") return undefined;
+  const pattern = automaticOutsideShape(
+    command,
+    prepared.result.analysis,
+    this.local.deps.platform,
+  );
+  return entries.length < 256 ||
+    entries.some(
+      (entry) =>
+        entry.source === "auto" && entry.folder === prepared.cwd && entry.pattern === pattern,
+    )
+    ? pattern
+    : undefined;
 }
 
 /** The folders a person's answer to an outside-write card opens for that one call. */
@@ -734,7 +918,21 @@ export function consentCardStep(this: LocalRunOperations, prepared: PreparedTool
   if (describe) {
     const context = this.context;
     const input = prepared.call.input;
-    return { text: (language: "zh" | "en") => describe(context, input, language) };
+    return {
+      text: (language: "zh" | "en") =>
+        describe(context, input, language, prepared.capabilityPolicyData),
+    };
+  }
+  const skillBinding = prepared.commandSkill?.secretBindings;
+  if (prepared.skillSecretUses?.length && skillBinding) {
+    const name = this.local.deps.redactor.redact(skillBinding.name);
+    const variables = prepared.skillSecretUses.map(({ variable }) => variable).join(", ");
+    return {
+      title: (language: "zh" | "en") =>
+        skillBinding.consent[language]
+          .replace("{name}", () => name)
+          .replace("{variables}", () => variables),
+    };
   }
   if (prepared.browserSecretUses?.length) {
     const sources = prepared.browserSecretUses

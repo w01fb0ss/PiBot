@@ -6,6 +6,7 @@ import { AgentError, mapAgentError } from "../../core/errors.ts";
 import type { AgentRuntime } from "../../core/types.ts";
 import { type CompactionState, claimOverflowRecovery } from "../../extensions/compaction.ts";
 import { compactBeforePrompt } from "../../extensions/compaction-preflight.ts";
+import { seedImportedHistory } from "../../extensions/imported-history.ts";
 import type { PromptState } from "../../extensions/prompt-context.ts";
 import { fitRequest } from "../../extensions/request-budget.ts";
 import { collapseRecentToolResults } from "../../extensions/tool-result-trim.ts";
@@ -15,7 +16,7 @@ import { staticResourceLoader, wrapSession } from "../../session/session.ts";
 import { SessionAdditions } from "../../session/session-additions.ts";
 import { storedSessionFile } from "../../session/session-files.ts";
 import { CacheDiagnostics } from "../cache-diagnostic.ts";
-import { contextBudget, responseMaxTokens } from "../context-budget.ts";
+import { contextBudget, responseMaxTokens, UNKNOWN_WINDOW_FOR_SUMMARY } from "../context-budget.ts";
 import { historyTokens, referenceTokens, textTokens } from "../context-estimate.ts";
 import { providerDetail } from "../provider-diagnostic.ts";
 import { RequestAccounting } from "../request-observer.ts";
@@ -72,6 +73,12 @@ export function createSessionOperations({
                 (entry) => entry.id === opts.model.id,
               );
         if (!model) throw new AgentError("no_model");
+        const assertModelRecipient = (provider: string) =>
+          opts.assertModelRecipient?.(
+            provider,
+            custom.find((config) => config.id === provider)?.baseUrl,
+          );
+        assertModelRecipient(model.provider);
         await injectKey(runtime, model.provider);
         opts.signal?.throwIfAborted();
         const sessionFile = await sessionPaths(dataDir, opts);
@@ -124,7 +131,8 @@ export function createSessionOperations({
         const compaction: CompactionState | undefined = opts.localTools
           ? {
               signal: opts.signal,
-              summaryModel: (signal) => summaryModel(runtime, model, signal),
+              summaryModel: async (signal) =>
+                opts.compactWithSelectedModel ? model : summaryModel(runtime, model, signal),
               cache: checkpointCache,
               contextWindow: model.contextWindow,
               selfRetainingBoundary: () =>
@@ -345,6 +353,7 @@ export function createSessionOperations({
         let providerMaxTokens = model.maxTokens;
         session.agent.streamFunction = async (model, request, options) => {
           opts.signal?.throwIfAborted();
+          assertModelRecipient(model.provider);
           if (compaction?.failure) throw new AgentError(compaction.failure);
           if (promptState.failure) throw new AgentError(promptState.failure);
           if (accounting.blocked) throw new AgentError(accounting.blocked);
@@ -474,13 +483,6 @@ export function createSessionOperations({
             );
           },
           async (text, images) => {
-            if (opts.retryBoundary && !retryBound) {
-              const entry = manager.appendCustomEntry("pibot_retry_boundary", {
-                messageId: opts.retryBoundary.messageId,
-              });
-              opts.retryBoundary.record(entry, manager.getSessionFile() as string);
-              retryBound = true;
-            }
             if (compaction) compaction.failure = undefined;
             promptState.failure = undefined;
             if (context) {
@@ -491,6 +493,46 @@ export function createSessionOperations({
               signal.throwIfAborted();
               promptState.failure = undefined;
               promptState.current = safeContext(snapshot);
+            }
+            if (
+              opts.initialHistory &&
+              !manager
+                .getBranch()
+                .some((entry) => entry.type === "message" || entry.type === "custom_message")
+            ) {
+              const history = await opts.initialHistory();
+              opts.signal?.throwIfAborted();
+              if (history.length) {
+                const available =
+                  (Number.isFinite(budget.triggerTokens)
+                    ? budget.triggerTokens
+                    : contextBudget(UNKNOWN_WINDOW_FOR_SUMMARY).triggerTokens) -
+                  textTokens(text) -
+                  textTokens(systemPrompt) -
+                  referenceTokens(promptState.current, Math.floor(budget.triggerTokens * 0.2)) -
+                  (images?.length ?? 0) * 1200;
+                await seedImportedHistory(
+                  manager,
+                  history,
+                  available,
+                  new pi.ModelRegistry(runtime),
+                  model,
+                  compaction ?? {
+                    signal: opts.signal,
+                    redact: opts.redactProviderDetail ?? ((value) => value),
+                    activity: opts.onCompaction,
+                    accounting,
+                  },
+                );
+                session.refreshContext();
+              }
+            }
+            if (opts.retryBoundary && !retryBound) {
+              const entry = manager.appendCustomEntry("pibot_retry_boundary", {
+                messageId: opts.retryBoundary.messageId,
+              });
+              opts.retryBoundary.record(entry, manager.getSessionFile() as string);
+              retryBound = true;
             }
             if (compaction)
               compaction.estimateScale =

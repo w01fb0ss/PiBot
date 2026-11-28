@@ -1,6 +1,6 @@
 // Applies one automatic organization draft as proposals and records its actual model route.
 
-import type { MemoryDraftUsage } from "@pibot/agent";
+import { memoryFailureNeedsSettings, memoryFailureReason } from "@pibot/protocol-base";
 import {
   AuditRepo,
   BackgroundTaskHealthRepo,
@@ -11,9 +11,10 @@ import {
   SettingsRepo,
 } from "@pibot/storage";
 import { dayStart } from "./memory-extraction-attempt.ts";
+import { logMemoryFallback } from "./memory-maintenance-log.ts";
 import { organizationInstruction, parseOrganizationDraft } from "./memory-organization.ts";
 import { organizationErrorDetails } from "./memory-organization-errors.ts";
-import { organizationModel } from "./memory-organization-model.ts";
+import { memoryModelRoute } from "./memory-organization-model.ts";
 import type { OrganizationDeps } from "./memory-organization-queue.ts";
 
 interface Model {
@@ -43,18 +44,14 @@ export class MemoryOrganizationAttempt {
     };
   }
 
-  private model(botId: string): Model | undefined {
-    return organizationModel(this.deps.db, botId);
-  }
-
   async process(row: MemoryOrganization, signal: AbortSignal) {
     const bot = this.bots.get(row.botId);
     if (!bot || bot.archivedAt) {
       this.repo.finish(row.id, { status: "skipped" });
       return;
     }
-    const model = this.model(row.botId);
-    if (!model || !this.deps.draftMemories) {
+    const route = memoryModelRoute(this.deps.db, row.botId);
+    if (!route || !this.deps.draftMemories) {
       // Keep the job retryable while exposing the configuration problem in health.
       this.health.fail("memory_organization", row.botId, "no_model");
       this.repo.finish(row.id, { status: "skipped", error: "no_model" });
@@ -76,7 +73,7 @@ export class MemoryOrganizationAttempt {
       const { result, actualModel } = await this.draft(
         row,
         catalog.text,
-        model,
+        route,
         this.deps.draftMemories,
         signal,
       );
@@ -90,6 +87,9 @@ export class MemoryOrganizationAttempt {
             row.scope,
             row.ownerId,
             proposal,
+            // A note Dream (or another Bot's pass over the shared user notes) already asked
+            // about keeps that one card; acceptance 2026-11-25 showed both sets side by side.
+            true,
           );
         } catch {
           // One note that vanished or changed under us must not discard the other proposals.
@@ -103,24 +103,17 @@ export class MemoryOrganizationAttempt {
         tokens: result.tokens,
         costUsd: result.costUsd ?? 0,
         proposals: created,
+        fallback: result.fallback,
         memoryCount: catalog.ids.length,
       });
       this.health.recover("memory_organization", row.botId);
     } catch (error) {
       const code = signal.aborted ? "aborted" : organizationErrorDetails(error).error;
-      // Missing model or refused credentials are configuration states; they must not burn the day.
-      if (code === "no_model" || code === "auth_failed") {
-        if (!signal.aborted) this.health.fail("memory_organization", row.botId, code);
-        this.repo.finish(row.id, {
-          status: "skipped",
-          memoryCount: catalog.ids.length,
-          error: code,
-        });
-        return;
-      }
-      if (!signal.aborted) this.health.fail("memory_organization", row.botId, code);
+      const reason = memoryFailureReason(code);
+      if (!signal.aborted) this.health.fail("memory_organization", row.botId, reason);
+      if (reason === "budget_exhausted" && this.repo.deferForBudget(row.id)) return "deferred";
       this.repo.finish(row.id, {
-        status: "failed",
+        status: memoryFailureNeedsSettings(reason) ? "skipped" : "failed",
         memoryCount: catalog.ids.length,
         error: code,
       });
@@ -130,47 +123,28 @@ export class MemoryOrganizationAttempt {
   private async draft(
     row: MemoryOrganization,
     text: string,
-    model: Model,
+    route: NonNullable<ReturnType<typeof memoryModelRoute>>,
     draftMemories: NonNullable<OrganizationDeps["draftMemories"]>,
     signal: AbortSignal,
   ) {
     const used = memoryMaintenanceUsage(this.deps.db, dayStart());
     const limit = this.limit();
-    let usage: MemoryDraftUsage | undefined;
-    const draft = (chosen: Model) =>
-      draftMemories({
-        model: chosen,
-        text: this.deps.redactor.redact(text),
-        instruction: organizationInstruction(),
-        signal,
-        budget: {
-          tokens: Math.max(0, limit.tokens - used.tokens),
-          costUsd: Math.max(0, limit.costUsd - used.costUsd),
-        },
-        onUsage: (receipt: MemoryDraftUsage) => {
-          this.repo.recordUsage(row.id, receipt);
-          usage = receipt;
-        },
-      });
-    // Like extraction: a Bot model that is gone or refused falls back once to the main model in
-    // Settings only before a reservation, which is the dispatch boundary.
-    const fallback = this.settings.get().defaultModel ?? undefined;
-    let usedModel = model;
-    const result = await draft(model).catch((error: unknown) => {
-      const { error: code } = organizationErrorDetails(error);
-      if (
-        (code !== "no_model" && code !== "auth_failed") ||
-        usage ||
-        !fallback ||
-        (fallback.provider === model.provider && fallback.id === model.id) ||
-        signal.aborted
-      )
-        throw error;
-      usedModel = { provider: fallback.provider, id: fallback.id };
-      return draft(usedModel);
+    let actualModel = route.model;
+    const result = await draftMemories({
+      ...route,
+      text: this.deps.redactor.redact(text),
+      instruction: organizationInstruction(),
+      signal,
+      budget: {
+        tokens: Math.max(0, limit.tokens - used.tokens),
+        costUsd: Math.max(0, limit.costUsd - used.costUsd),
+      },
+      onUsage: (receipt) => {
+        this.repo.recordUsage(row.id, receipt);
+        actualModel = { provider: receipt.modelProvider, id: receipt.modelId };
+      },
+      onFallback: logMemoryFallback(this.deps, row.botId),
     });
-
-    const actualModel = usage ? { provider: usage.modelProvider, id: usage.modelId } : usedModel;
     return { result, actualModel };
   }
 

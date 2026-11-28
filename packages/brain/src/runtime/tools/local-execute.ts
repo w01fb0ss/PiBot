@@ -29,6 +29,7 @@ import { businessConfirmation } from "./business-confirmation.ts";
 import { executeCapabilityConnector } from "./connectors/capability-execute.ts";
 import { unavailableConnectionSummary } from "./connectors/connection-summary.ts";
 import { executeConnector } from "./connectors/connector-tools.ts";
+import { noteDependency } from "./dependency-notices.ts";
 import { approveDerived } from "./derived-approval.ts";
 import { executeGitConfiguration } from "./git-configuration-dispatch.ts";
 import { assertGitEntriesConfirmed } from "./git-entry-prepare.ts";
@@ -129,8 +130,8 @@ export async function executeTool(
         text: `${result.text}\n${boundFileDiff(local.deps.redactor.redact(edit.diff))}`,
       };
     }
-    if (isOfficeInput(input))
-      return await local.office.execute(
+    if (isOfficeInput(input)) {
+      const result = await local.office.execute(
         {
           local,
           context,
@@ -145,6 +146,18 @@ export async function executeTool(
         input,
         signal,
       );
+      const reason = result.details?.errorCode;
+      if (
+        reason === "libreoffice_missing" ||
+        reason === "libreoffice_platform_unsupported" ||
+        reason === "libreoffice_isolation_unavailable" ||
+        reason === "libreoffice_cleanup_unconfirmed" ||
+        reason === "libreoffice_timeout" ||
+        reason === "libreoffice_failed"
+      )
+        noteDependency(local, context, reason);
+      return result;
+    }
     if (input.tool === "connection_needed") {
       signal.throwIfAborted();
       run.assertDispatch(prepared);
@@ -292,7 +305,9 @@ export async function executeTool(
       run.assertDispatch(prepared);
       return await contributed(context, prepared.call, signal, {
         confirmedNow: prepared.confirmedNow === true,
+        approvalId: prepared.approvalId,
         assertCurrent: () => run.assertDispatch(prepared),
+        recordInputTranslation: (text) => run.recordInputTranslation(prepared.call.id, text),
         // The capability's own prepare result for this exact call (never shared state).
         data: prepared.capabilityPolicyData,
       });

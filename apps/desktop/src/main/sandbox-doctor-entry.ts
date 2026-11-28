@@ -1,8 +1,9 @@
 import { homedir, tmpdir } from "node:os";
+import { linuxIsolationRemedy } from "@pibot/execution";
 import { sandboxDiagnosticMarkdown, sandboxDoctor } from "@pibot/execution/sandbox-doctor";
 import { createTranslator, isolationReasonText, resolveLanguage } from "@pibot/i18n";
 
-/** The CLI prints the same fixed repair text as the in-app isolation explanation. */
+/** Print the host-side remedy because the doctor also runs without a graphical session. */
 function sandboxRepairText(
   rows: Awaited<ReturnType<typeof sandboxDoctor>>,
   env: Readonly<NodeJS.ProcessEnv>,
@@ -16,7 +17,11 @@ function sandboxRepairText(
     ...new Set(rows.filter((row) => row.status === "failed").map((row) => row.reason)),
   ];
   const repairs = reasons.flatMap((reason) => {
-    const text = isolationReasonText(reason, translate);
+    const remedy =
+      process.platform === "linux" && reason !== "sandbox_dependencies_or_runtime_unavailable"
+        ? linuxIsolationRemedy(reason)
+        : undefined;
+    const text = remedy?.[language] ?? isolationReasonText(reason, translate);
     return text ? [`\n${language === "zh" ? "修复办法" : "Fix"} (${reason})\n${text}`] : [];
   });
   return repairs.length ? `${repairs.join("\n")}\n` : "";

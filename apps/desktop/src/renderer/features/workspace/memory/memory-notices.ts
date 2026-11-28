@@ -29,8 +29,11 @@ export interface MemoryNoticeState {
   busy: boolean;
   error?: TranslationKey;
   feedback?: { proposal: MemoryProposal; key: TranslationKey };
+  /** Notice keys (proposal@message): a note moved under another reply is shown there again. */
   dismissed?: ReadonlySet<string>;
 }
+export const noticeKey = (proposal: Pick<MemoryProposal, "id" | "messageId">) =>
+  `${proposal.id}@${proposal.messageId ?? ""}`;
 export const AUTO_NOTICE_MS = 8_000;
 
 // This instance belongs to one peer/Bot/topic mount, never to a mutable global target.
@@ -42,6 +45,7 @@ export class MemoryNoticesController {
   private readVersion = 0;
   private unsubscribe?: () => void;
   private timer?: ReturnType<typeof setTimeout>;
+  /** Notice keys already judged for the restart age check in this view's lifetime. */
   private seenNotices = new Set<string>();
   /** Where each notice was last shown; the brain moves a turn's own note under its reply. */
   private anchors = new Map<string, string | null>();
@@ -98,29 +102,32 @@ export class MemoryNoticesController {
         this.botId,
       );
       if (current()) {
-        const ids = new Set((profile.undoable ?? []).map((proposal) => proposal.id));
-        const dismissed = new Set(
-          [...(this.state.dismissed ?? []), ...(this.noticeStorage?.read() ?? [])].filter((id) =>
-            ids.has(id),
-          ),
+        const undoable = profile.undoable ?? [];
+        const live = new Set(undoable.map(noticeKey));
+        const stored = [...(this.state.dismissed ?? []), ...(this.noticeStorage?.read() ?? [])];
+        // Dismissal belongs to one place: a note the brain later moves under the finished reply
+        // is a new notice there, even when it faded above or this view was remounted meanwhile.
+        const dismissedElsewhere = new Set(
+          stored.filter((key) => !live.has(key)).map((key) => key.split("@")[0]),
         );
-        for (const proposal of profile.undoable ?? []) {
+        const dismissed = new Set(stored.filter((key) => live.has(key)));
+        for (const proposal of undoable) {
+          const key = noticeKey(proposal);
           const anchor = this.anchors.get(proposal.id);
           this.anchors.set(proposal.id, proposal.messageId);
-          // Moved under the finished reply: show it there once more, even if it faded above.
-          if (anchor !== undefined && anchor !== proposal.messageId) {
-            dismissed.delete(proposal.id);
-            continue;
-          }
-          if (this.seenNotices.has(proposal.id)) continue;
-          this.seenNotices.add(proposal.id);
+          if (this.seenNotices.has(key)) continue;
+          this.seenNotices.add(key);
+          const moved =
+            (anchor !== undefined && anchor !== proposal.messageId) ||
+            dismissedElsewhere.has(proposal.id);
+          if (moved) continue;
           // The durable proposal timestamp suppresses old notices after topic/app restart.
           // Do not delete private undo snapshots: dismissing a hint must not alter memory or Undo.
-          if (Date.now() - Date.parse(proposal.createdAt) >= AUTO_NOTICE_MS)
-            dismissed.add(proposal.id);
+          if (Date.now() - Date.parse(proposal.createdAt) >= AUTO_NOTICE_MS) dismissed.add(key);
         }
+        const ids = new Set(undoable.map((proposal) => proposal.id));
         for (const id of this.anchors.keys()) if (!ids.has(id)) this.anchors.delete(id);
-        this.seenNotices = ids;
+        this.seenNotices = live;
         this.noticeStorage?.write(dismissed);
         this.patch({ profile, dismissed });
       }
@@ -135,11 +142,13 @@ export class MemoryNoticesController {
     return proposal ? this.resolveProposal(proposal, false, true) : Promise.resolve();
   };
   dismissNotice = (proposalId: string) => {
+    const proposal = this.state.profile?.undoable?.find((p) => p.id === proposalId);
+    if (!proposal) return;
     const dismissed = new Set([
       ...(this.state.dismissed ?? []),
       ...(this.noticeStorage?.read() ?? []),
     ]);
-    dismissed.add(proposalId);
+    dismissed.add(noticeKey(proposal));
     this.noticeStorage?.write(dismissed);
     this.patch({ dismissed });
   };
@@ -157,13 +166,18 @@ export class MemoryNoticesController {
     try {
       const result = await this.peer.call("memory.resolve", { proposalId: proposal.id, accept });
       if (!current()) return;
+      const scope = proposal.scope ?? "bot";
+      const owner = proposal.ownerId ?? (scope === "user" ? "user" : proposal.botId);
+      const memory = result.memory;
       if (
         result.proposal.id !== proposal.id ||
         result.proposal.botId !== this.botId ||
         result.proposal.action !== proposal.action ||
         result.proposal.messageId !== proposal.messageId ||
         result.proposal.memoryId !== proposal.memoryId ||
-        (result.memory && result.memory.scope !== "user" && result.memory.botId !== this.botId)
+        (memory &&
+          ((memory.scope ?? "bot") !== scope ||
+            (memory.ownerId ?? (scope === "user" ? "user" : memory.botId)) !== owner))
       )
         throw new Error("Memory resolution target mismatch");
       if (undo)
@@ -230,7 +244,7 @@ export function memoryNoticesByMessage(state: MemoryNoticeState) {
     return entry;
   };
   for (const proposal of state.profile?.undoable ?? [])
-    if (!state.dismissed?.has(proposal.id)) group(proposal.messageId)?.undoable.push(proposal);
+    group(proposal.messageId)?.undoable.push(proposal);
   for (const proposal of state.profile?.proposals ?? [])
     if (proposal.status === "pending") group(proposal.messageId)?.pending.push(proposal);
   const feedback = state.feedback && group(state.feedback.proposal.messageId);

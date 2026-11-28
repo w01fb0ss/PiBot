@@ -1,6 +1,7 @@
 import { basename, dirname, isAbsolute, join } from "node:path";
-import { skillPythonPaths } from "../command/skill-python.ts";
-import { denyTargets, within } from "../core/paths.ts";
+import { commandHomePath, verifyBotHomeLayout } from "../command/command-home.ts";
+import { skillNodeDirectory, skillPythonPaths } from "../command/skill-python.ts";
+import { createDenyTargetResolver, within } from "../core/paths.ts";
 import { ExecError } from "../core/types.ts";
 import { aiConfigReadBoundary } from "./ai-config-paths.ts";
 import { profilePath, profileRoot } from "./profile-paths.ts";
@@ -119,22 +120,27 @@ export const SENSITIVE_PATHS = {
 export interface BotReadContext {
   dataDir: string;
   botHome: string;
+  commandHome?: boolean;
   skillGroupId?: string;
   skillPackageIds?: readonly string[];
   /** Prepared skill runtimes readable (and executable) but never writable. */
   skillEnvIds?: readonly string[];
   managedSkillPython?: boolean;
   skillPythonPreparation?: Parameters<typeof skillPythonPaths>[1];
+  skillNodePreparation?: string;
 }
+
+/** A fixed recipe may protect app data without inheriting the Bot's app-data read grants. */
+export type SandboxReadContext = BotReadContext | { dataDir: string; botHome?: never };
 
 export async function sensitiveReadBoundary(
   platform: NodeJS.Platform,
   homes: string[],
   env: Readonly<NodeJS.ProcessEnv>,
-  bot?: BotReadContext,
+  context?: SandboxReadContext,
 ) {
   const entries = SENSITIVE_PATHS[platform as keyof typeof SENSITIVE_PATHS] ?? common;
-  const aiConfig = await aiConfigReadBoundary(platform, homes, env);
+  const resolveDenyTargets = createDenyTargetResolver();
   const names = homes.flatMap((home) => entries.map((entry) => join(home, ...entry.split("/"))));
   const extra = (key: string, paths: string[]) => {
     const root = Object.entries(env).find(([name]) => name.toUpperCase() === key)?.[1];
@@ -171,19 +177,20 @@ export async function sensitiveReadBoundary(
     ]);
     extra("XDG_DATA_HOME", ["keyrings", "fish/fish_history"]);
   }
-  const protectedRoots = [
-    ...new Set((await Promise.all(names.map((path) => denyTargets(path)))).flat()),
-  ];
+  const [aiConfig, credentialTargets] = await Promise.all([
+    aiConfigReadBoundary(platform, homes, env, resolveDenyTargets),
+    Promise.all([...new Set(names)].map(resolveDenyTargets)),
+  ]);
+  const protectedRoots = [...new Set(credentialTargets.flat())];
   const credentialReadRoots = [...protectedRoots];
   protectedRoots.push(...aiConfig.roots.filter((path) => !protectedRoots.includes(path)));
-  let dataRoot: string | undefined;
+  const dataRoot = context ? await profileRoot(context.dataDir, "profile_data_root") : undefined;
   const allowRead: string[] = [];
   const readOnly: string[] = [];
-  if (bot) {
-    dataRoot = await profileRoot(bot.dataDir, "profile_data_root");
+  if (dataRoot && context?.botHome !== undefined) {
+    const bot = context;
     const home = await profileRoot(bot.botHome, "profile_bot_home");
-    if (basename(home) !== "home" || dirname(dirname(home)) !== join(dataRoot, "bots"))
-      throw new ExecError("invalid_input");
+    verifyBotHomeLayout(dataRoot, home);
     const sibling = async (name: "skills" | "attachments") => {
       const lexical = join(dirname(home), name);
       return profilePath(
@@ -207,6 +214,15 @@ export async function sensitiveReadBoundary(
       readOnly.push(uv);
       if (bot.skillPythonPreparation.phase !== "create") readOnly.push(paths.python, paths.cache);
       if (bot.skillPythonPreparation.phase === "verify") readOnly.push(paths.env);
+    } else if (bot.skillNodePreparation) {
+      allowRead.push(
+        home,
+        await profilePath(
+          skillNodeDirectory(dataRoot, bot.skillNodePreparation),
+          dataRoot,
+          "profile_skill_env",
+        ),
+      );
     } else {
       // Skill packages ship scripts the Bot runs with run_command, so the Bot's own skills
       // folder is readable inside the sandbox, but never writable: skills change only through the app.
@@ -266,6 +282,10 @@ export async function sensitiveReadBoundary(
       }
       allowRead.push(home, await sibling("attachments"), skills);
       readOnly.push(skills);
+    }
+    if (bot.commandHome) {
+      const commandHome = await profileRoot(commandHomePath(home), "profile_bot_home");
+      allowRead.push(commandHome);
     }
     if (allowRead.some((path) => protectedRoots.some((root) => within(root, path))))
       throw new ExecError("invalid_input");

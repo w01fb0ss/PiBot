@@ -5,6 +5,7 @@ import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import {
   CustomProviderFetchSchema,
   IMPORTED_MAGPIE_PREFIX,
+  imageApiRequiresKey,
   importedMagpieRoute,
 } from "@pibot/protocol-base";
 import {
@@ -103,6 +104,7 @@ export function createRuntimeContext(deps: AgentRuntimeDeps) {
         (magpiePort(parsed.data.baseUrl) === undefined ||
           parsed.data.api !== "openai-completions" ||
           parsed.data.headers ||
+          parsed.data.videoModels?.length ||
           parsed.data.imageApi ||
           parsed.data.imageModels?.length)
       )
@@ -333,7 +335,7 @@ export function createRuntimeContext(deps: AgentRuntimeDeps) {
               () =>
                 deps.hasApiKey(config.id) ||
                 (config.id.startsWith(IMPORTED_MAGPIE_PREFIX) && importedMagpieRoute(config)),
-              true,
+              !!config.models.length || !imageApiRequiresKey(config.imageApi),
               config.id === MAGPIE_PROVIDER.id
                 ? { authorization: `Bearer ${MAGPIE_PROVIDER.attribution}` }
                 : config.headers,
@@ -444,6 +446,7 @@ export function createAgentRuntime(deps: AgentRuntimeDeps): AgentRuntime {
     generatePersona: auxiliary.generatePersona,
     draftCommitMessage: auxiliary.draftCommitMessage,
     draftSkill: auxiliary.draftSkill,
+    quoteMemoryDraft: auxiliary.quoteMemoryDraft,
     draftMemories: auxiliary.draftMemories,
     extractPage: pages.extractPage,
     refreshModels: models.refreshModels,

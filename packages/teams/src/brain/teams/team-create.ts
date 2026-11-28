@@ -57,6 +57,7 @@ export interface CreateTeamInput {
   skippedMembers?: ReadonlyMap<number, string[]>;
   /** Quick starts per group index, when the caller adds a profession's own starter. */
   quickStarts?: (index: number) => string[] | undefined;
+  welcomeNote?: (index: number, coordinatorId: string) => string | undefined;
   /** A sidebar section holding everything created (user imports keep theirs together). */
   sidebarSection?: string;
   /**
@@ -149,6 +150,8 @@ export function createTeam(context: CreateTeamContext, input: CreateTeamInput) {
     if (section) sidebar.update(`group:${group.id}`, { groupId: section.id });
     if (g.welcome) {
       const lines = [g.welcome];
+      const note = input.welcomeNote?.(index, group.coordinatorBotId);
+      if (note) lines.push(note);
       const skipped = input.skippedMembers?.get(index) ?? [];
       if (skipped.length)
         lines.push(

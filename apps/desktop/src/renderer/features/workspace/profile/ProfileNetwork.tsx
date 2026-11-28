@@ -1,3 +1,4 @@
+import { commandNetworkNoteKey } from "@pibot/i18n";
 import { DomainSchema, type Permissions } from "@pibot/protocol";
 import { PermissionRow, botPanelStyles as styles, useT } from "@pibot/renderer-kit";
 import { Button, Icon, TextField } from "@pibot/ui";
@@ -5,8 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import type { PermissionUpdate } from "../../settings/permissions/use-permissions.ts";
 
 /**
- * 「联网」card, second row: whether this Bot's commands may reach every site or only the
- * listed ones (and the list itself). It sits with「访问网站」, which the caller renders above.
+ * Settings for this Bot's command network access, including the public website list.
  */
 export function ProfileNetwork({
   network,
@@ -54,7 +54,8 @@ export function ProfileNetwork({
     <>
       <PermissionRow<"list" | "all">
         icon={{ name: "network", tone: "green" }}
-        label={t("workspace.commandNetwork")}
+        label={t("permissions.allowNetwork")}
+        note={`${t(network.allowAll ? "permissions.webNetworkOn" : "permissions.webNetworkOff")} ${t(commandNetworkNoteKey(window.pibot.platform, network.allowAll))}`}
         value={network.allowAll ? "all" : "list"}
         overridden={!inherited}
         disabled={disabled}
@@ -101,7 +102,19 @@ export function ProfileNetwork({
               {t("permissions.addDomain")}
             </Button>
           </div>
-          <small className={styles.note}>{t("permissions.commandDomainsNote")}</small>
+          <details>
+            <summary className={styles.note}>{t("permissions.networkDetails")}</summary>
+            <small className={styles.note}>{t("permissions.networkExceptions")}</small>
+          </details>
+          {window.pibot.platform !== "win32" && (
+            <small className={styles.note}>
+              {t(
+                network.allowAll
+                  ? "permissions.commandDomainsNote"
+                  : "permissions.commandDomainsNoteOff",
+              )}
+            </small>
+          )}
           {!network.allowAll && !network.domains.length && (
             <small className={styles.note}>{t("permissions.noDomains")}</small>
           )}

@@ -432,6 +432,7 @@ export class RunnerConnections {
           target,
           platform: target.platform,
           name: record.name,
+          pairedDeviceId: id,
         });
         entry.target = target;
         entry.online = true;

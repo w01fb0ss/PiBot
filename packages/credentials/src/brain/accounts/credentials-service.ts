@@ -471,12 +471,14 @@ export class CredentialService {
       if (pauses.get(approval.id)) pauses.choice(approval.id, { credentialId });
     }
     try {
-      return await this.local.approvals.resolve(
+      await this.local.approvals.resolve(
         params.approvalId,
         params.decision,
         params.decision === "allow" && params.remember,
         params.decision === "allow" && params.preauthorize === true,
       );
+      // The login card's result has no out-of-date flag; the settled card reads it from history.
+      return { ok: true as const };
     } catch (error) {
       this.choices.delete(key);
       throw error;

@@ -1,5 +1,6 @@
 import { createConnectorConnectionFactory } from "@pibot/agent";
 import {
+  abortable,
   activeGroup,
   type BrainCapability,
   type ConnectorsPort,
@@ -8,12 +9,17 @@ import {
 } from "@pibot/brain/kit";
 import type { Plugin } from "@pibot/plugin-sdk";
 import {
+  CONNECTION_HEALTH_PORT,
+  type ConnectionHealthPort,
+  type Connector,
   ConnectorManifestSchema,
+  type FailedConnection,
   DiscoverySourceIdSchema as OriginToolSchema,
   RpcError,
+  RpcErrorCodes,
 } from "@pibot/plugins-contract/full";
 import { dangerousReasons } from "@pibot/policy";
-import { BotsRepo, DiagnosticsRepo } from "@pibot/storage";
+import { BotsRepo, DiagnosticsRepo, transaction } from "@pibot/storage";
 import { restoreFirstUseConfirmation } from "../store/connection-confirmation-restore.ts";
 import { migrateConnectionAccess } from "../store/connection-migration.ts";
 import {
@@ -34,11 +40,17 @@ import { defaultBuiltinPluginDir, loadBuiltinPlugins } from "./declarative-loade
 import { DiscoveryService } from "./discovery/service.ts";
 import { ImportedSkillCopies } from "./imported-skill-copies.ts";
 import { connectorAuthInboxSource } from "./inbox/reauth.ts";
-import { clickVaultAccess } from "./knowledge/access.ts";
-import { notionManifest } from "./knowledge/notion.ts";
+import { clickVaultAccess, inspectVaultAccess } from "./knowledge/access.ts";
+import {
+  READ_TOOLS as NOTION_READ_TOOLS,
+  WRITE_TOOLS as NOTION_WRITE_TOOLS,
+  notionManifest,
+} from "./knowledge/notion.ts";
 import { readNotionAccount } from "./knowledge/notion-account.ts";
 import { knowledgePolicyRequests } from "./knowledge/policy.ts";
 import { registerKnowledgeTools } from "./knowledge/tools.ts";
+import { knowledgeWrites } from "./knowledge/write.ts";
+import { isKnowledgeWrite } from "./knowledge/write-input.ts";
 import { mcpDescription } from "./mcp-description.ts";
 import { cleanupOrphanPluginDirectories } from "./orphan-cleanup.ts";
 import { ConnectorPool } from "./pool/pool.ts";
@@ -149,7 +161,13 @@ export function pluginsCapability(
           );
         }
       };
+      const knowledge = new KnowledgeRepo(db);
       const service = new ConnectorService({
+        commitInteractiveOAuth: (id, commit) =>
+          transaction(db, () => {
+            commit();
+            knowledge.invalidateNotionAccount(id);
+          }),
         commandRisk: async (command, signal) => {
           const policy = await local.getPolicy(signal);
           signal.throwIfAborted();
@@ -176,13 +194,12 @@ export function pluginsCapability(
         },
         // Codes only; the stderr tail stays in brain memory for the detail panel.
         logStartFailure: (event) => ctx.logger.warn(JSON.stringify(event)),
-        logStderr: (connectorId, stderr) =>
+        logStderr: (connectorId) =>
           ctx.logger.warn(
             JSON.stringify({
               module: "connector",
               event: "stdio_failed",
               connectorId,
-              stderrTail: stderr,
             }),
           ),
         displayRedact: (value) => ctx.redactor.redact(value),
@@ -199,8 +216,17 @@ export function pluginsCapability(
         userSecrets: local.userSecrets,
         pluginSkills,
         pool: new ConnectorPool(),
-        factory: createConnectorConnectionFactory(),
+        factory: createConnectorConnectionFactory(ctx.fetch),
+        proxy: local.deps.proxy,
         importHost: ctx.host.connectorImports,
+        ...(ctx.host.pickFolder
+          ? {
+              pickWorkingDirectory: async (signal: AbortSignal) => {
+                const result = await ctx.host.pickFolder?.(signal);
+                return result ? { path: result } : null;
+              },
+            }
+          : {}),
         confirmUnisolated: ctx.host.confirmConnectorCommand,
         openExternal: (url) =>
           ctx.host.openExternal
@@ -249,6 +275,9 @@ export function pluginsCapability(
           enabled: installation.enabled,
           sourceKind: installation.sourceKind,
           application: plugins.isApplication(installation.id),
+          ...(isKnowledgeManagedInstallation(db, installation.id)
+            ? { managedByKnowledge: true as const }
+            : {}),
           applicationPlatforms: plugins.applicationPlatforms(installation.id),
           ...originOf(installation.id),
           ...(installation.sourceKind === "directory"
@@ -268,6 +297,7 @@ export function pluginsCapability(
         return { items: page.items.map(summary), nextBefore: page.nextBefore };
       };
       const port: ConnectorsPort = {
+        commandCandidates: (target) => service.commandCandidates(target),
         availability: (...args) => service.availability(...args),
         unavailable: (target) => service.unavailable(target),
         get: (id) => connectors.get(id),
@@ -293,7 +323,6 @@ export function pluginsCapability(
       registerConnectorRpc(ctx.rpc.handle, service);
       // Knowledge sources reuse the same wrapper; they only hold references, so nothing here
       // touches the connector pool.
-      const knowledge = new KnowledgeRepo(db);
       const knowledgeService = new KnowledgeService({
         repo: knowledge,
         host: ctx.host,
@@ -303,6 +332,10 @@ export function pluginsCapability(
         // A click on a note link asks the same read gate as a knowledge tool call, so a
         // policy deny cannot be turned into an allow by clicking.
         readAccess: (scope, signal) => clickVaultAccess(local, scope, signal),
+        // Folder summary inspection asks the same read gate and protected-path boundary so
+        // denied files never enter PDF extraction.
+        inspectAccess: (targets, signal) =>
+          inspectVaultAccess(local, db, mainBot.id, targets, signal),
         // Each click is recorded like a read — which source, which run and the fixed
         // outcome — never the note, the path or the href.
         audit: ({ botId, runId, sourceId, status }) =>
@@ -323,7 +356,60 @@ export function pluginsCapability(
           exists: (connectorId) => connectors.get(connectorId) !== undefined,
           sync: (sourceId) => syncKnowledgeAccess(db, audit, mainBot.id, sourceId),
           account: (input, signal) =>
-            readNotionAccount(local, { ...input, mainBotId: mainBot.id }, signal),
+            readNotionAccount(local, { ...input, db, mainBotId: mainBot.id }, signal),
+          writeToolsState: (connectorId, confirmed) => {
+            const connector = connectors.get(connectorId);
+            if (!connector?.enabled || !["ready", "idle"].includes(connector.status))
+              return undefined;
+            const states = connectors.toolPolicyStates(connectorId);
+            const actions = Object.entries(NOTION_WRITE_TOOLS) as [
+              keyof typeof NOTION_WRITE_TOOLS,
+              string,
+            ][];
+            const available = actions.filter(([, name]) => states.has(name));
+            const missingWrites = actions
+              .filter(([, name]) => !states.has(name))
+              .map(([action]) => action);
+            const readAvailable = NOTION_READ_TOOLS.some((name) => {
+              const state = states.get(name);
+              return state?.readOnly && state.enabled;
+            });
+            return {
+              revision: connector.revision,
+              total: available.length,
+              enabled: available.filter(
+                ([action, name]) => confirmed.includes(action) && states.get(name)?.enabled,
+              ).length,
+              readOnlyMode: connector.confirmationMode === "read_only",
+              availableWrites: available.map(([action]) => action),
+              missingWrites,
+              readAvailable,
+              readToolToEnable: readAvailable
+                ? undefined
+                : NOTION_READ_TOOLS.find((name) => states.has(name)),
+            };
+          },
+          setWriteToolsEnabled: (connectorId, actions) => {
+            const connector = connectors.get(connectorId);
+            if (!connector) return;
+            const states = connectors.toolPolicyStates(connectorId);
+            const updates: { tool: string; enabled: boolean; readOnly: boolean }[] = [];
+            for (const action of Object.keys(
+              NOTION_WRITE_TOOLS,
+            ) as (keyof typeof NOTION_WRITE_TOOLS)[]) {
+              const name = NOTION_WRITE_TOOLS[action];
+              const state = states.get(name);
+              const enabled = actions.includes(action);
+              if (!state || (state.enabled === enabled && !state.readOnly)) continue;
+              updates.push({ tool: name, enabled, readOnly: false });
+            }
+            if (updates.length === 0) return;
+            service.updateConnector({
+              id: connector.id,
+              expectedRevision: connector.revision,
+              tools: updates,
+            });
+          },
           reconcile: () => reconcileKnowledgeAccess(db, audit, mainBot.id),
           uninstall: (connectorId) => {
             const connector = connectors.get(connectorId);
@@ -351,26 +437,44 @@ export function pluginsCapability(
       registerKnowledgeRpc(ctx.rpc.handle, knowledgeService);
       // The tools read the same assignment the RPC tables manage, so revoking a source
       // stops the next call; the prompt only needs names, which the kernel asks for per model call.
-      registerKnowledgeTools(
-        { executor: (tool, run) => ctx.tools.executor(tool, run), local, logger: ctx.logger },
-        { repo: knowledge, connectors, service },
-      );
-      // Notion sources are connections, so their call is judged by the connection's own
-      // rule during prepare, before the tool runs; this hook is how prepare learns which sources
-      // one search will touch.
-      local.provideToolPolicy((context, call, tool, input) =>
-        knowledgePolicyRequests(
-          { repo: knowledge, connectors, service },
-          context,
-          call,
-          tool,
-          input,
-        ),
+      const knowledgeContext = {
+        executor: (tool: string, run: import("@pibot/brain/kit").ToolExecutor) =>
+          ctx.tools.executor(tool, run),
+        local,
+        logger: ctx.logger,
+      };
+      const knowledgeDeps = { db, repo: knowledge, connectors, service };
+      const writes = knowledgeWrites(knowledgeContext, knowledgeDeps);
+      registerKnowledgeTools(knowledgeContext, knowledgeDeps, writes);
+      local.provideToolPolicy((context, call, tool, input, signal) =>
+        isKnowledgeWrite(tool)
+          ? writes.prepare(context, call, tool, input, signal)
+          : knowledgePolicyRequests(knowledgeDeps, context, call, tool, input),
       );
       local.provideKnowledge((botId, groupId) =>
-        knowledge
-          .assigned({ botId, groupId })
-          .map((entry) => ({ name: entry.source.name, kind: entry.source.kind })),
+        knowledge.assigned({ botId, groupId }).map(({ source }) => ({
+          name: source.name,
+          kind: source.kind,
+          writable: source.writable,
+        })),
+      );
+      ctx.rpc.handle(
+        "connections.commands",
+        ({ botId, groupId, readOnly, cursor, limit }, { signal }) => {
+          const bot = new BotsRepo(db).get(botId);
+          if (!bot || bot.archivedAt) throw new RpcError(-32602, "bot_unavailable");
+          if (groupId) activeGroup(db, groupId, botId);
+          const commands =
+            bot.kind === "agent" || bot.category === "image"
+              ? []
+              : local.connectionCommands(botId, groupId, readOnly ?? false, signal);
+          const start = cursor ? commands.findIndex((command) => command.id === cursor) + 1 : 0;
+          const items = commands.slice(start, start + limit);
+          return Promise.resolve({
+            items,
+            nextCursor: commands.length > start + limit ? (items.at(-1)?.id ?? null) : null,
+          });
+        },
       );
       ctx.rpc.handle("connections.availability", (params) => {
         if (params.target.kind === "group") activeGroup(ctx.db, params.target.id);
@@ -390,7 +494,16 @@ export function pluginsCapability(
       });
       ctx.rpc.handle("connectors.dataDestinations", ({ id }) =>
         Promise.resolve(
-          connectionDestinations({ connectors, plugins, registry: service.registry, activity }, id),
+          connectionDestinations(
+            {
+              connectors,
+              plugins,
+              registry: service.registry,
+              activity,
+              platform: local.deps.platform,
+            },
+            id,
+          ),
         ),
       );
       ctx.rpc.handle("plugins.pendingSkillAssignments", (params) =>
@@ -417,6 +530,18 @@ export function pluginsCapability(
         ...(ctx.host.connectorImports ? { importHost: ctx.host.connectorImports } : {}),
         shutdown: local.shutdown.signal,
       });
+      ctx.rpc.handle("plugins.pickSettingPath", async ({ kind }, context) => {
+        const picker = kind === "directory" ? ctx.host.pickFolder : ctx.host.pickFile;
+        if (!picker)
+          throw new RpcError(RpcErrorCodes.unsupported, "plugin_setting_picker_unavailable");
+        const signal = AbortSignal.any([
+          context.signal,
+          local.shutdown.signal,
+          AbortSignal.timeout(630_000),
+        ]);
+        const path = await abortable(picker(signal), signal);
+        return { path: path ?? null };
+      });
       ctx.rpc.handle("connections.discoverConsent", ({ allow }) =>
         Promise.resolve(discovery.setConsent(allow)),
       );
@@ -429,9 +554,15 @@ export function pluginsCapability(
       ctx.rpc.handle("connections.cancelBringOver", ({ batchId }) =>
         discovery.cancelBringOver(batchId),
       );
+      ctx.rpc.handle("connections.previewSetup", ({ key }, context) =>
+        discovery.previewSetup(key, context.signal),
+      );
       // A bring-over of skills shows the same preview as a picked folder first.
       ctx.rpc.handle("connections.previewBringOver", ({ keys, batchId }, context) =>
         discovery.previewBringOver(keys, context.signal, batchId),
+      );
+      ctx.rpc.handle("connections.adoptBringOver", ({ key }, context) =>
+        discovery.adoptForSetup(key, context.signal),
       );
       let migrationWork: Promise<void> | undefined;
       ctx.rpc.handle("connections.tokens", () =>
@@ -442,6 +573,21 @@ export function pluginsCapability(
         }),
       );
       ctx.rpc.handle("plugins.available", (params) => Promise.resolve(summaryPage(params)));
+      // The default Pi's health check lists failed connections and offers the same restart as
+      // "Test connection"; names are redacted like everywhere else they are shown.
+      const failedView = (connector: Connector): FailedConnection => ({
+        id: connector.id,
+        name: ctx.redactor.redact(connector.name).slice(0, 200),
+        revision: connector.revision,
+        detail: connector.statusDetailCode,
+        since: connector.updatedAt,
+      });
+      ctx.ports.provide<ConnectionHealthPort>(CONNECTION_HEALTH_PORT, {
+        failed: (limit) => connectors.failed(limit).map(failedView),
+        failedOne: (id) => connectors.failed(1, id).map(failedView)[0],
+        restart: (id, expectedRevision, signal) =>
+          service.restart({ id, expectedRevision }, signal),
+      });
       return {
         start() {
           scheduleOrphanCleanup();

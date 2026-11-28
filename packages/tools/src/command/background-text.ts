@@ -35,6 +35,7 @@ const reasons: Record<string, { zh: string; en: string }> = {
     en: "interrupted by restart; stop unverified",
   },
   time_limit: { zh: "已达总时长上限", en: "total time limit reached" },
+  orphaned: { zh: "进程已经不在，由 Pi 清理", en: "its process was gone; cleaned up by Pi" },
 };
 
 function line(row: BackgroundCommand, language: Language) {

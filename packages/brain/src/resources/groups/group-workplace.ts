@@ -29,7 +29,7 @@ export async function groupWorkplace(
       signal,
     );
     if (remote) return remote;
-    const own = await local.workplaces.list(botId, signal);
+    const home = await local.workplaces.botHome(botId, signal);
     const cwd = primary?.path ?? (await local.workplaces.groupHome(group.id, signal));
     const boundary = await workspaceBoundary(
       [
@@ -54,9 +54,16 @@ export async function groupWorkplace(
           .filter((folder) => folder.id !== primary?.id)
           .map(({ id, name, path }) => ({ id, name, path })),
       },
+      ...(local.deps.platform === "win32"
+        ? {
+            displayFolders: group.folders
+              ?.filter((folder) => !folder.location && folder.displayPath !== folder.path)
+              .map(({ path, displayPath }) => ({ path, displayPath })),
+          }
+        : {}),
       cwd,
       roots: boundary.readRoots,
-      home: own.home,
+      home,
       boundary,
     };
   } catch (error) {

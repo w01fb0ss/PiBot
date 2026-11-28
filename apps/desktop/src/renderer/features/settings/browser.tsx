@@ -13,6 +13,7 @@ import {
 import { Button, SegmentedControl } from "@pibot/ui";
 import { useEffect, useState } from "react";
 import type { z } from "zod";
+import { browserExtensionStores } from "../../app/browser-extension-store.ts";
 
 type BrowserExtensionStatus = z.infer<typeof BrowserExtensionStatusSchema>;
 type ExtensionState = BrowserExtensionStatus["extension"];
@@ -21,7 +22,7 @@ const STATUS_TONES = {
   connected: "ok",
   installed: "warn",
   not_installed: "warn",
-  unsupported: "danger",
+  unsupported: undefined,
 } as const;
 
 export function BrowserSettings() {
@@ -70,6 +71,14 @@ export function BrowserSettings() {
       );
     });
   };
+  const [checked, setChecked] = useState(false);
+  const check = () => {
+    if (!peer) return;
+    void task.run(async () => {
+      setStatus(await peer.call("browserExtension.status", {}, { timeoutMs: 5000 }));
+      setChecked(true);
+    });
+  };
   const registration = status?.preference === "user" ? status.registration : undefined;
   const extension: ExtensionState = status?.extension ?? "unsupported";
   const extensionLabel = {
@@ -78,7 +87,9 @@ export function BrowserSettings() {
     not_installed: t("settings.browserExtensionStatus.not_installed"),
     unsupported: t("settings.browserExtensionStatus.unsupported"),
   }[extension];
-  const browserName = status?.defaultBrowser?.name ?? t("settings.browserUnknown");
+  const browser = status?.defaultBrowser;
+  const browserName = browser?.name || t("settings.browserUnknown");
+  const store = browser && browserExtensionStores[browser.id];
   return (
     <SettingsPage>
       <TaskStatus task={task} />
@@ -94,21 +105,59 @@ export function BrowserSettings() {
           tone="teal"
           label={t("settings.browserExtension")}
           note={
-            status?.defaultBrowser?.id === "edge" && extension !== "connected"
-              ? t("settings.browserExtensionStatus.edgeNotListed")
-              : extensionLabel
+            status && (
+              <>
+                {extensionLabel}
+                {browser?.id === "edge" &&
+                  store &&
+                  extension === "not_installed" &&
+                  ` · ${t("settings.browserExtensionEdgeHelp")}`}
+                {browser?.id === "safari" &&
+                  extension === "unsupported" &&
+                  ` · ${t("settings.browserExtensionSafariHelp")}`}
+                {checked &&
+                  (extension === "installed" || extension === "not_installed") &&
+                  ` · ${t("settings.browserExtensionCheckHelp")}`}
+              </>
+            )
           }
-          dot={STATUS_TONES[extension]}
-        />
+          dot={status ? STATUS_TONES[extension] : undefined}
+        >
+          {!status && (
+            <Button variant="secondary" disabled={!peer || task.busy} onClick={check}>
+              {t("settings.browserExtensionCheck")}
+            </Button>
+          )}
+          {store && extension === "not_installed" && (
+            <Button
+              variant="secondary"
+              onClick={() => window.open(store, "_blank", "noopener,noreferrer")}
+            >
+              {t("settings.browserExtensionInstall")}
+            </Button>
+          )}
+          {extension !== "unsupported" && status?.preference === "user" && !registration && (
+            <Button variant="secondary" disabled={disabled} onClick={check}>
+              {t("settings.browserExtensionCheck")}
+            </Button>
+          )}
+        </SettingsRow>
         {registration && (
           <SettingsRow
             icon="plug"
             tone="amber"
             label={t(`settings.browserExtensionStatus.${registration}`)}
           >
-            <Button variant="secondary" disabled={disabled} onClick={() => change("user", true)}>
-              {t("settings.browserExtensionConnectHere")}
-            </Button>
+            {registration === "other_instance" && (
+              <Button variant="secondary" disabled={disabled} onClick={() => change("user", true)}>
+                {t("settings.browserExtensionConnectHere")}
+              </Button>
+            )}
+            {registration === "registration_failed" && (
+              <Button variant="secondary" disabled={disabled} onClick={() => change("user")}>
+                {t("settings.browserExtensionRetry")}
+              </Button>
+            )}
           </SettingsRow>
         )}
         <SettingsRow icon="shield" tone="violet" label={t("settings.browserPreference")}>

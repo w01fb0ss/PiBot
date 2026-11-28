@@ -1,8 +1,9 @@
 import { topicGrantLabel } from "@pibot/client-core";
+import { commandNetworkNoteKey } from "@pibot/i18n";
 import type { Category, GrantListItem, Level } from "@pibot/protocol";
 import { useState } from "react";
 import { View } from "react-native";
-import { useSharedText, useText } from "../../../runtime/context.tsx";
+import { useMobileSelector, useSharedText, useText } from "../../../runtime/context.tsx";
 import { Button, ListCard, Separator, Switch } from "../../../ui/controls.tsx";
 import { OptionRow, Radio, Sheet, SheetText, SheetTitle } from "../../../ui/sheet.tsx";
 import { useToast } from "../../../ui/toast.tsx";
@@ -41,7 +42,9 @@ function scopeText(
     case "web_read":
       return shared("permissions.webReadScope");
     case "paid_image":
-      return shared("permissions.paidImageScope", { model: `${scope.provider} / ${scope.model}` });
+      return shared("permissions.paidImageScope", {
+        model: `${grant.providerName || scope.provider} / ${scope.model}`,
+      });
     case "send_target":
       return scope.target;
     case "secret":
@@ -69,6 +72,10 @@ export function PermissionsPage({ state }: Props) {
     shared = useSharedText(),
     toast = useToast();
   const [editing, setEditing] = useState<Category>();
+  const [networkDetails, setNetworkDetails] = useState(false);
+  const desktopPlatform = useMobileSelector((state) =>
+    state.desktop?.computerId === state.selectedId ? state.desktop?.platform : undefined,
+  );
   const permissions = state.data?.permissions;
   const image = state.bot?.category === "image";
   const effective = permissions && (permissions.scoped.effective ?? permissions.scoped);
@@ -106,17 +113,11 @@ export function PermissionsPage({ state }: Props) {
                 <Separator />
                 <OptionRow
                   strong
-                  title={t("networkAllowAll")}
-                  subtitle={
-                    effective.network.allowAll
-                      ? undefined
-                      : effective.network.domains.length
-                        ? t("networkDomains", { domains: effective.network.domains.join(", ") })
-                        : t("networkNone")
-                  }
+                  title={shared("permissions.allowNetwork")}
+                  subtitle={`${shared(effective.network.allowAll ? "permissions.webNetworkOn" : "permissions.webNetworkOff")} ${shared(commandNetworkNoteKey(desktopPlatform, effective.network.allowAll))}`}
                   right={
                     <Switch
-                      label={t("networkAllowAll")}
+                      label={shared("permissions.allowNetwork")}
                       value={effective.network.allowAll}
                       disabled={!state.editable}
                       onValueChange={(allowAll) =>
@@ -125,6 +126,28 @@ export function PermissionsPage({ state }: Props) {
                     />
                   }
                 />
+                <OptionRow
+                  title={shared(
+                    networkDetails
+                      ? "permissions.networkHideDetails"
+                      : "permissions.networkDetails",
+                  )}
+                  subtitle={networkDetails ? shared("permissions.networkExceptions") : undefined}
+                  onPress={() => setNetworkDetails((open) => !open)}
+                />
+                {!effective.network.allowAll && (
+                  <>
+                    <Separator />
+                    <OptionRow
+                      title={shared("permissions.domains")}
+                      subtitle={
+                        effective.network.domains.length
+                          ? effective.network.domains.join(shared("tool.group.separator"))
+                          : shared("permissions.noDomains")
+                      }
+                    />
+                  </>
+                )}
                 {overrides?.network && (
                   <>
                     <Separator />

@@ -249,10 +249,10 @@
         "zh": "研究员统筹：拆问题、核来源、写报告；数据分析师统一口径与底数，交 data.md；演示设计师把核对后的结论与数据做成可编辑 PPT，逐轮渲染自查。需要演示的步骤交给演示设计师。周期简报按「周期简报」方法：把本期资料放进指定文件夹或附上文件，上期结果自动带入。同一文件夹同一时间只有一个成员写；写文件和命令按当前权限模式处理。交付放在工作文件夹的「.pibot/out/<主题>/」，研究员最后列全部路径。",
         "en": "The researcher coordinates questions, sources and reports; the analyst supplies definitions and data.md; the presentation designer owns deck steps, turning checked findings into editable slides with rendered reviews. For periodic briefs name the material folder or attach files; previous results carry over. One writer per folder at a time. Deliver in the \".pibot/out\" output folder, one subfolder per topic; the researcher lists all paths."
       },
-      "autoRoundLimit": 3,
+      "autoRoundLimit": 8,
       "template": {
         "id": "research-group",
-        "version": 15
+        "version": 16
       },
       "summary": {
         "zh": "查资料、算数据、写报告、做演示",

@@ -1,6 +1,7 @@
-import type { JSONType } from "zod";
+import { type JSONType, z } from "zod";
 import type { Connector, ConnectorTool, ConnectorToolRef } from "./connectors.ts";
 import type { ConnectorNativeDiagnostics } from "./native-errors.ts";
+import type { ConnectorNetworkApproval } from "./network.ts";
 import type { ConnectorAccess } from "./operations.ts";
 
 /** Validated connector call retained in a prepared tool; raw model input never supplies this. */
@@ -12,6 +13,8 @@ export interface ConnectorCallInput extends ConnectorToolRef {
 export interface PreparedConnector {
   groupId?: string;
   secretUses?: { name: string; revision: number }[];
+  /** Set by the trusted connection registry for the built-in inspiration search only. */
+  translateImageInspirationQuery?: true;
   pluginRevision: number;
   pluginDigest: string;
   connector: Connector;
@@ -27,10 +30,16 @@ export interface ConnectorRemoteTool {
   title?: string;
   description?: string;
   inputSchema: Record<string, unknown>;
+  /** Top-level string arguments the host should translate before executing the tool. */
+  inputLanguage?: Readonly<Record<string, "en">>;
   readOnlyHint?: boolean;
   idempotentHint?: boolean;
   destructiveHint?: boolean;
 }
+
+/** Carried in the MCP input schema so catalog versioning also binds the language declaration. */
+export const CONNECTOR_INPUT_LANGUAGE = "x-pibot-input-language";
+export const ConnectorInputLanguageSchema = z.record(z.string(), z.literal("en"));
 
 export interface ConnectorToolPage {
   tools: ConnectorRemoteTool[];
@@ -55,6 +64,8 @@ export interface ConnectorConnection {
      * intended operation.
      */
     idempotencyKey?: string;
+    /** Trusted local dispatch callback. The MCP SDK never serializes it. */
+    networkApproval?: ConnectorNetworkApproval;
   }): Promise<unknown>;
   onToolsChanged(listener: () => void): () => void;
   /** Resolves only after calls and owned transport/process resources have actually drained. */
@@ -62,7 +73,10 @@ export interface ConnectorConnection {
 }
 
 /** Credentials are resolved by brain for this connection only; never serialized to renderer. */
-export type ConnectorConnectionOptions =
+export type ConnectorConnectionOptions = {
+  /** Connection-private values may appear in untrusted MCP replies or tool metadata. */
+  containsPrivateValue?(value: unknown, inToolResult?: boolean): boolean;
+} & (
   | {
       transport: "http";
       /** Initialization only; later tool calls retain their normal timeout. */
@@ -83,7 +97,8 @@ export type ConnectorConnectionOptions =
       /** Fixed system failure metadata, enabled only by the builtin system-service registry. */
       trustedNativeErrors?: boolean;
       signal: AbortSignal;
-    };
+    }
+);
 
 /** Exec owns process creation and group termination; agent only consumes this injected stream. */
 export interface ConnectorStream {
@@ -113,6 +128,8 @@ export interface ConnectorOAuthAuthorization {
   storage: ConnectorOAuthStorage;
   openExternal(url: string): Promise<void>;
   signal: AbortSignal;
+  /** Forces a fresh browser consent flow instead of short-circuiting with stored OAuth tokens. */
+  fresh?: boolean;
 }
 export class ConnectorAuthenticationError extends Error {
   constructor() {
@@ -152,19 +169,33 @@ export class ConnectorCallError extends Error {
   readonly serviceMessage?: string;
   readonly outcome: "failed" | "unknown";
   readonly nativeDiagnostics?: ConnectorNativeDiagnostics;
+  readonly retryAfter?: number;
   constructor(
     outcome: "failed" | "unknown" = "failed",
     reason?: unknown,
     nativeDiagnostics?: ConnectorNativeDiagnostics,
     serviceMessage?: unknown,
+    retryAfter?: number,
   ) {
     super("connector_tool_failed");
     this.outcome = outcome;
     this.nativeDiagnostics = nativeDiagnostics;
+    this.retryAfter = retryAfter;
     if (typeof reason === "string" && /^[a-z_]{1,64}$/.test(reason)) this.reason = reason;
     const bounded = boundedConnectorServiceMessage(serviceMessage);
     if (bounded) this.serviceMessage = bounded;
     this.name = "ConnectorCallError";
+  }
+}
+
+/** Host-authored explanation from Pi Bot's network filter, separate from service output. */
+export class ConnectorNetworkBlockedError extends ConnectorCallError {
+  readonly displayMessage: string;
+
+  constructor(outcome: ConnectorCallError["outcome"], displayMessage: string) {
+    super(outcome, "connector_network_blocked");
+    this.displayMessage = displayMessage;
+    this.name = "ConnectorNetworkBlockedError";
   }
 }
 

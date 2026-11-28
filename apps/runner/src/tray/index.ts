@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { decodeRunnerPairCode } from "@pibot/link";
 import { prepareRunnerDataDir } from "../data-dir.ts";
 import { RUNNER_FATAL_EXIT } from "../fatal.ts";
+import { isRunnerMessageCode, type RunnerMessageCode, runnerMessages } from "../messages.ts";
 import { readPairedDesktop } from "../paired-desktop.ts";
 import {
   acquireRunnerLock,
@@ -69,7 +70,8 @@ export async function runRunnerTray(options: RunnerTrayOptions): Promise<void> {
   // Install a rejection handler before any asynchronous owner read can fail.
   void uiExited.catch(() => {});
   let closing = false;
-  let pairing = false;
+  let pairing: "generate" | "connect" | undefined;
+  let pairingChild: ChildProcess | undefined;
   let code: string | undefined;
   let pending = Promise.resolve();
   let actionPending = false;
@@ -77,6 +79,9 @@ export async function runRunnerTray(options: RunnerTrayOptions): Promise<void> {
   const send = (value: object) => {
     if (!ui.stdin?.destroyed && (ui.stdin?.writableLength ?? 0) < 32768)
       ui.stdin?.write(`${JSON.stringify(value)}\n`);
+  };
+  const showError = (error: RunnerMessageCode) => {
+    send({ error: runnerMessages[error] });
   };
   ui.stdin?.on("error", () => {
     /* UI loss never terminates the runner. */
@@ -92,7 +97,7 @@ export async function runRunnerTray(options: RunnerTrayOptions): Promise<void> {
       const now = Date.now();
       while (crashes.length && now - (crashes[0] ?? now) > 600_000) crashes.shift();
       crashes.push(now);
-      if (crashes.length >= 5) return send({ error: "runner_start_failed" });
+      if (crashes.length >= 5) return showError("runner_start_failed");
       restart = setTimeout(
         () => {
           restart = undefined;
@@ -102,7 +107,7 @@ export async function runRunnerTray(options: RunnerTrayOptions): Promise<void> {
       );
     });
   const launch = (command: "start" | "pair", pairCode?: string) => {
-    // No inherited pipes: a tray crash cannot send EPIPE into the independent owner.
+    // Pairing reports only a fixed failure code over IPC. The owner never needs the tray to live.
     const child = spawn(
       options.executable,
       [
@@ -120,20 +125,41 @@ export async function runRunnerTray(options: RunnerTrayOptions): Promise<void> {
           PIBOT_DATA_DIR: options.dataDir,
           ...(command === "pair" ? { PIBOT_RUNNER_TRAY_PAIR: "1" } : {}),
         },
-        stdio: "ignore",
+        stdio: command === "pair" ? ["ignore", "ignore", "ignore", "ipc"] : "ignore",
       },
     );
     child.unref();
     supervise(child);
-    if (command === "pair")
-      child.once("exit", (exit) => {
-        if (exit !== 0 && pairCode) send({ error: "runner_pair_failed" });
-        pairing = false;
-        code = undefined;
-        send({ pairing: null });
+    if (command === "pair") {
+      pairingChild = child;
+      let failure: RunnerMessageCode = "runner_pair_failed";
+      child.on("message", (message: unknown) => {
+        if (
+          message &&
+          typeof message === "object" &&
+          "code" in message &&
+          isRunnerMessageCode(message.code)
+        )
+          failure = message.code;
       });
-    child.once("error", () => send({ error: "runner_start_failed" }));
+      child.channel?.unref();
+      child.once("close", (exit) => {
+        if (pairingChild !== child) return;
+        if (exit !== 0) showError(failure);
+        finishPairing();
+      });
+    }
+    child.once("error", () => {
+      if (pairingChild === child) finishPairing();
+      showError("runner_start_failed");
+    });
     return child;
+  };
+  const finishPairing = () => {
+    pairing = undefined;
+    pairingChild = undefined;
+    code = undefined;
+    send({ connecting: false, pairing: null });
   };
   const stopOwner = async (operation: "stop" | "revoke" = "stop") => {
     const state = await readRunnerState(options.dataDir);
@@ -176,21 +202,21 @@ export async function runRunnerTray(options: RunnerTrayOptions): Promise<void> {
     const initial = await readRunnerState(options.dataDir);
     if (!initial || !processAlive(initial.pid)) launch("start");
     const refresh = async () => {
+      const currentPairingChild = pairingChild;
       const paired = await readPairedDesktop(options.dataDir);
       const state = await readRunnerState(options.dataDir);
       const status =
         state && state.status !== "drain_incomplete" && processAlive(state.pid)
           ? await requestRunner(state, "status")
           : undefined;
-      if (pairing && paired) {
-        pairing = false;
-        code = undefined;
-        send({ pairing: null });
-      } else if (pairing && state && state.status !== "drain_incomplete") {
+      if (currentPairingChild && currentPairingChild === pairingChild && paired) {
+        finishPairing();
+      } else if (pairing === "generate" && state && state.status !== "drain_incomplete" && status) {
+        const child = pairingChild;
         const nextCode = await requestRunnerPairingCode(state);
-        if (nextCode && nextCode !== code) {
+        if (pairingChild === child && nextCode && nextCode !== code) {
           code = nextCode;
-          send({ pairing: code });
+          send({ connecting: false, pairing: code });
         }
       }
       send({
@@ -228,26 +254,33 @@ export async function runRunnerTray(options: RunnerTrayOptions): Promise<void> {
           send({ close: true });
         } catch {
           closing = false;
-          send({ error: "runner_stop_failed" });
+          showError("runner_stop_failed");
+        }
+      } else if (value === "unpair" && !pairing) {
+        try {
+          await stopOwner("revoke");
+          launch("start");
+        } catch {
+          showError("runner_revoke_failed");
         }
       } else if ((value === "pair" || value.startsWith("pair-code:")) && !pairing) {
-        const pairCode = value.startsWith("pair-code:") ? value.slice(10) : undefined;
-        if (pairCode) {
+        const pairCode = value.startsWith("pair-code:") ? value.slice(10).trim() : undefined;
+        if (pairCode !== undefined) {
           let decoded: ReturnType<typeof decodeRunnerPairCode>;
           try {
             decoded = decodeRunnerPairCode(pairCode);
           } catch {
             // Checked before the current pairing is revoked: a mistyped code changes nothing.
-            send({ error: "runner_pair_failed" });
+            showError("invalid_pairing");
             return;
           }
           decoded.psk.fill(0);
           decoded.prologue.fill(0);
-          send({ connecting: new URL(decoded.relay ?? "wss://relay.pibot.space").host });
         }
         await stopOwner((await readPairedDesktop(options.dataDir)) ? "revoke" : "stop");
         // Re-pairing requires explicit confirmation in the native UI before revocation.
-        pairing = true;
+        pairing = pairCode ? "connect" : "generate";
+        send({ connecting: true });
         launch("pair", pairCode);
       } else if (value === "login" && process.platform === "darwin") {
         await toggleRunnerLogin(options.executable);
@@ -257,7 +290,7 @@ export async function runRunnerTray(options: RunnerTrayOptions): Promise<void> {
           [join(options.dataDir, "logs")],
           { windowsHide: true, stdio: "ignore" },
         );
-        child.once("error", () => send({ error: "runner_logs_failed" }));
+        child.once("error", () => showError("runner_logs_failed"));
       }
     };
     ui.stdout?.on("data", (chunk: Buffer) => {
@@ -271,14 +304,16 @@ export async function runRunnerTray(options: RunnerTrayOptions): Promise<void> {
         const line = output.slice(0, end).trim();
         output = output.slice(end + 1);
         if (
-          (["pair", "quit", "logs", "login"].includes(line) ||
+          (["pair", "unpair", "quit", "logs", "login"].includes(line) ||
             (line.startsWith("pair-code:") && line.length <= 1162)) &&
           !actionPending
         ) {
           actionPending = true;
           pending = pending
             .then(() => action(line))
-            .catch(() => send({ error: "runner_control_failed" }))
+            .catch(() =>
+              showError(line === "login" ? "runner_login_failed" : "runner_control_failed"),
+            )
             .finally(() => {
               actionPending = false;
             });

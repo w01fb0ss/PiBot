@@ -1,6 +1,6 @@
 import { join, resolve } from "node:path";
 import { ExecError, sensitiveReadBoundary } from "@pibot/execution";
-import { containsPath } from "@pibot/policy";
+import { containsPath, type Platform } from "@pibot/policy";
 import { GroupsRepo } from "@pibot/storage";
 import type { ToolRunContext } from "../../core/local-types.ts";
 import { runPermissionScope } from "../../core/run-permissions.ts";
@@ -47,25 +47,44 @@ export async function createReadPathBoundary(
     workplace.boundary.primaryPath === join(resolve(local.deps.dataDir), "groups", group.id, "home")
       ? workplace.boundary.primaryPath
       : undefined;
+  const permits = createProtectedReadPathCheck(local.deps.userHome, protectedPaths, platform, {
+    scmRoot,
+    sharedHome,
+    localPlatform: local.deps.platform,
+  });
+  assertCurrent(signal);
+  return {
+    workplace,
+    authorization,
+    assertCurrent,
+    permits,
+    sensitiveReadRoots: protectedPaths.denyRead,
+  };
+}
+
+/** Apply the protected-path rules to local reads whether or not they belong to a tool run. */
+export function createProtectedReadPathCheck(
+  userHome: string,
+  protectedPaths: Awaited<ReturnType<typeof sensitiveReadBoundary>>,
+  platform: Platform,
+  options?: { scmRoot?: string; sharedHome?: string; localPlatform: Platform },
+) {
+  const { scmRoot, sharedHome, localPlatform = platform } = options ?? {};
   const match = pathPrefixMatcher(platform);
   const denied = pathRegion(protectedPaths.denyRead, platform);
   const allowed = pathRegion(protectedPaths.allowRead, platform);
-  const permits = (path: string) => {
+  return (path: string) => {
     const contains = match(path);
     // AI login files are not project instructions. Their ordinary dot-directory exclusion is
     // insufficient when a model explicitly chooses one of them as the search root.
     if (
       [".claude", ".codex", ".cursor"].some(
         (name) =>
-          contains(join(local.deps.userHome, name)) &&
+          contains(join(userHome, name)) &&
           !(
             scmRoot &&
-            containsPath(
-              join(local.deps.userHome, name, "worktrees"),
-              scmRoot,
-              local.deps.platform,
-            ) &&
-            containsPath(scmRoot, path, local.deps.platform)
+            containsPath(join(userHome, name, "worktrees"), scmRoot, localPlatform) &&
+            containsPath(scmRoot, path, localPlatform)
           ),
       )
     )
@@ -91,6 +110,4 @@ export async function createReadPathBoundary(
         ].includes(segment),
     );
   };
-  assertCurrent(signal);
-  return { workplace, authorization, assertCurrent, permits };
 }

@@ -3,6 +3,7 @@ import type { CapabilityContext } from "@pibot/brain/kit";
 import type { ImportParams } from "@pibot/import-contract/full";
 import { RpcError, RpcErrorCodes } from "@pibot/protocol-base";
 import type { ImportStore } from "../store/index.ts";
+import { type DistillationPlan, sameDistillationScope } from "./distillation.ts";
 import { selectPersona, selectPlan } from "./memory-review.ts";
 import { sameTarget } from "./project.ts";
 import type { ImportSelection } from "./reviews.ts";
@@ -61,22 +62,26 @@ export function startPlan(
   }
   const projectTopics = (preview.projects ?? []).reduce((sum, { topics }) => sum + topics, 0);
   const conversations = (options.conversations ?? true) && preview.topics > projectTopics;
-  const quote = selection.quote;
+  const quoted = selection.quote;
   const { distillationQuoteId } = options;
+  const scope = {
+    conversations,
+    projectKeys: projects
+      .filter(({ info }) =>
+        preview.projects?.some(({ key, topics }) => key === info.key && topics > 0),
+      )
+      .map(({ info }) => info.key),
+  };
   if (
     distillationQuoteId &&
-    (!conversations ||
-      !port ||
-      quote?.quoteId !== distillationQuoteId ||
-      quote.botId !== botId ||
-      port.estimate(botId)?.modelId !== quote.modelId)
+    (!port ||
+      quoted?.port !== port ||
+      quoted.quote.quoteId !== distillationQuoteId ||
+      quoted.botId !== botId ||
+      !sameDistillationScope(quoted.scope, scope))
   )
     throw invalid("import_distillation_quote_expired");
-  // Named through CapabilityContext so the exported plan type does not reach into the brain's internals.
-  const distillation:
-    | { port: NonNullable<CapabilityContext["local"]["memoryImportDistillation"]>; modelId: string }
-    | undefined =
-    distillationQuoteId && quote && port ? { port, modelId: quote.modelId } : undefined;
+  const distillation: DistillationPlan | undefined = distillationQuoteId ? quoted : undefined;
   if (!conversations && !projects.length && !memories.size && !persona)
     throw invalid("import_memory_selection_invalid");
   if (preview.source === "gemini" && preview.topics === 0) throw invalid("import_format_gemini");

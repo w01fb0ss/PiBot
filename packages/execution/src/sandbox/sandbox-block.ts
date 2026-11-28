@@ -79,7 +79,12 @@ function classifyPath(
   cwd: string,
   allowWrite: readonly string[],
   denyWrite: readonly string[],
+  platform?: NodeJS.Platform,
+  profileCwd = cwd,
 ): SandboxBlockItem | undefined {
+  // Seatbelt's mandatory literal .git/hooks rule also pins its parent against creation.
+  if (platform === "darwin" && path === join(profileCwd, ".git"))
+    return { kind: "git_resource", rule: ".git/hooks", target: path };
   const mandatory = mandatoryRule(path, cwd);
   if (mandatory) return { ...mandatory, target: path };
   if (denyWrite.some((root) => within(root, path)))
@@ -116,8 +121,11 @@ export function classifySandboxBlock(input: {
   homes?: readonly string[];
   /** Exit 0: only strong violation evidence is a block; output hints are not collected then. */
   succeeded?: boolean;
+  /** Completed external-agent turns can ignore the repeated login-keychain metadata probe. */
+  quietLoginKeychainMetadata?: boolean;
   command?: string;
   cwd: string;
+  profileCwd?: string;
   config: SandboxRuntimeConfig;
   platform?: NodeJS.Platform;
 }): SandboxBlock | undefined {
@@ -137,7 +145,9 @@ export function classifySandboxBlock(input: {
       homes: [...new Set((input.homes ?? []).map(canonical))],
       denyRead: literalPaths(input.config.filesystem?.denyRead).map(canonical),
       platform: input.platform ?? process.platform,
-      classifyWrite: (path) => classifyPath(canonical(path), cwd, allowWrite, denyWrite),
+      ...(input.quietLoginKeychainMetadata ? { quietLoginKeychainMetadata: true } : {}),
+      classifyWrite: (path) =>
+        classifyPath(canonical(path), cwd, allowWrite, denyWrite, input.platform, input.profileCwd),
       ...(input.listening ? { listening: input.listening } : {}),
     });
     // Reads first: a missing login explains the rest of a failure better than a cache write.
@@ -150,7 +160,7 @@ export function classifySandboxBlock(input: {
     // `~` in output is the Bot's own HOME, not a path this call can attribute reliably.
     if (candidate.startsWith("~/")) continue;
     const path = canonical(isAbsolute(candidate) ? resolve(candidate) : resolve(cwd, candidate));
-    const item = classifyPath(path, cwd, allowWrite, denyWrite);
+    const item = classifyPath(path, cwd, allowWrite, denyWrite, input.platform, input.profileCwd);
     if (item) push(item);
   }
   // Path-less signals come from fixed patterns of a command that failed inside the sandbox.

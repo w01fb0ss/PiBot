@@ -34,6 +34,7 @@ export const StoredTopicsSchema = z.object({
       z.object({
         id: z.uuid(),
         title: z.string().max(200).optional(),
+        importSource: z.string().min(1).max(32).optional(),
         isCurrent: z.boolean(),
         updatedAt: z.string().max(40),
       }),

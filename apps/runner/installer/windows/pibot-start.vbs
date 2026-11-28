@@ -1,6 +1,6 @@
 ' Pi Bot Runner: start the tray when the user signs in, without a console window.
 '
-' The scheduled task runs this file through wscript.exe. The install folder comes from the script's
+' The Startup shortcut runs this file through wscript.exe. The install folder comes from the script's
 ' own location, so it still works when the user picks another install folder in the installer.
 ' Pure ASCII on purpose: Windows Script Host reads .vbs as ANSI unless it carries a BOM.
 ' The independent execution owner survives a tray crash. This supervisor only restarts exit 70.

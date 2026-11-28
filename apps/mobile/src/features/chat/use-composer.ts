@@ -1,5 +1,5 @@
 import { mentionOptions, mentionQuery, pickedMentions } from "@pibot/client-core";
-import type { Bot, ChatAdditionMode } from "@pibot/protocol";
+import { type Bot, type ChatAdditionMode, RpcError, RpcErrorCodes } from "@pibot/protocol";
 import { useEffect, useState } from "react";
 import { useMobileSelector, useRuntime } from "../../runtime/context.tsx";
 import { useAction } from "../../runtime/use-action.ts";
@@ -103,8 +103,28 @@ export function useComposer(
         if ((!submitted && !files.length) || attachments.preparing || !into) return;
         let outcome: "sent" | ChatAdditionMode = "sent";
         if (steering && runId && !topic && !files.length) {
-          await appendToRun(runtime, into, runId, busyMode, submitted, signal);
-          outcome = busyMode;
+          try {
+            await appendToRun(runtime, into, runId, busyMode, submitted, signal);
+            outcome = busyMode;
+          } catch (error) {
+            // When the live run cannot accept an append in this phase (waiting on approval,
+            // between tool calls, or just finished), queue as the next turn of the same topic.
+            if (
+              error instanceof RpcError &&
+              error.code === RpcErrorCodes.busy &&
+              error.message === "append_unavailable"
+            ) {
+              await runtime.send(
+                scopeTarget(into),
+                submitted,
+                pickedMentions(submitted, picks, members),
+                [],
+              );
+              outcome = "sent";
+            } else {
+              throw error;
+            }
+          }
         } else {
           const taken = attachments.take();
           try {

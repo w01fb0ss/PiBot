@@ -12,6 +12,7 @@ import {
   IMAGE_LIMIT,
   ImageContentSchema,
   type ModelInfo,
+  mediaMime,
   RpcError,
   RpcErrorCodes,
   THUMBNAIL_BYTES,
@@ -198,7 +199,7 @@ export class AttachmentService {
       input: AttachmentInputSchema.parse({
         kind: stored.metadata.kind,
         name: stored.metadata.name,
-        mimeType: stored.metadata.mimeType,
+        mimeType: mediaMime(stored.metadata.name) ?? stored.metadata.mimeType,
         data: data.toString("base64"),
       }),
       ...(stored.textPath
@@ -231,7 +232,7 @@ export class AttachmentService {
         AttachmentInputSchema.parse({
           kind: stored.metadata.kind,
           name: stored.metadata.name,
-          mimeType: stored.metadata.mimeType,
+          mimeType: mediaMime(stored.metadata.name) ?? stored.metadata.mimeType,
           data: bytes.toString("base64"),
         }),
       );

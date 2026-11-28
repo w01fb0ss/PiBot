@@ -17,10 +17,11 @@ const ICONS: Record<PiDispatch["status"], IconName> = {
 };
 
 /** Whether this reply handed work out (only then is there a receipt to read). */
-export function handedOut(message: Message) {
+export function handedOut(message: Message, liveTool?: string) {
+  const tools: readonly string[] = PI_DISPATCH_TOOLS;
   return (
     message.role === "assistant" &&
-    !!message.tools?.some((tool) => (PI_DISPATCH_TOOLS as readonly string[]).includes(tool.tool))
+    (tools.includes(liveTool ?? "") || !!message.tools?.some(({ tool }) => tools.includes(tool)))
   );
 }
 
@@ -66,6 +67,22 @@ function DispatchReceipt({ item }: { item: PiDispatch }) {
     : status;
   const rows: [string, string][] = [
     [t("dispatch.row.result"), result],
+    ...(item.modelSwitches?.length
+      ? [
+          [
+            t("dispatch.row.models"),
+            item.modelSwitches
+              .map(({ from, to, reason }) =>
+                t("dispatch.modelSwitch", {
+                  from,
+                  to,
+                  reason: t(`dispatch.modelReason.${reason}`),
+                }),
+              )
+              .join("\n"),
+          ] as [string, string],
+        ]
+      : []),
     ...(item.summary ? [[t("dispatch.row.summary"), item.summary] as [string, string]] : []),
     ...(item.outputs.length
       ? [
@@ -76,6 +93,7 @@ function DispatchReceipt({ item }: { item: PiDispatch }) {
         ]
       : []),
   ];
+  const action = item.open_topic;
   const tone =
     item.status === "failed" ? colors.danger : item.status === "done" ? colors.ok : colors.text2;
   return (
@@ -100,11 +118,26 @@ function DispatchReceipt({ item }: { item: PiDispatch }) {
             </Text>
           </View>
         ))}
-        {!!item.targetConversationId && (
+        {action && (
           <View style={{ flexDirection: "row" }}>
             <Button
-              title={t("dispatch.open", { target: item.targetName })}
-              onPress={() => router.push(`/conversation/${item.targetKind}/${item.targetId}`)}
+              wrapTitle
+              style={{ flexShrink: 1, paddingVertical: 6 }}
+              title={
+                action.folderName
+                  ? t("dispatch.openFolder", {
+                      target: action.name,
+                      title: action.title,
+                      folder: action.folderName,
+                    })
+                  : t("dispatch.open", { target: action.name, title: action.title })
+              }
+              onPress={() =>
+                router.push({
+                  pathname: "/conversation/[kind]/[id]",
+                  params: { kind: action.kind, id: action.id, topic: action.conversationId },
+                })
+              }
             />
           </View>
         )}

@@ -8,6 +8,7 @@ export interface RpcContextValue {
   /** null until the brain port arrives, and again while the brain restarts. */
   peer: Peer | null;
   state: BrainState;
+  registerSkillDrop?(files: File[]): Promise<string | null>;
   navigation?: EventPayloads["ui.navigate"];
   consumeNavigation(target: EventPayloads["ui.navigate"]): void;
 }

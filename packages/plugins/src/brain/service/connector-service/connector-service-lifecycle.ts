@@ -6,6 +6,7 @@
 import { ConnectorToolError } from "@pibot/brain/kit";
 import type { ConnectorOperation } from "@pibot/plugins-contract/full";
 import {
+  CONNECTOR_INPUT_LANGUAGE,
   ConnectorAuthenticationError,
   ConnectorNativeError,
   RpcError,
@@ -92,7 +93,10 @@ export async function discoverToolsStep(
     const result = remotePageSchema.parse(await connection.listTools({ cursor, signal }));
     signal.throwIfAborted();
     for (const tool of result.tools) {
-      const stack: { value: unknown; depth: number }[] = [{ value: tool.inputSchema, depth: 0 }];
+      const schema = tool.inputLanguage
+        ? { ...tool.inputSchema, [CONNECTOR_INPUT_LANGUAGE]: tool.inputLanguage }
+        : tool.inputSchema;
+      const stack: { value: unknown; depth: number }[] = [{ value: schema, depth: 0 }];
       let schemaNodes = 0;
       while (stack.length) {
         const node = stack.pop();
@@ -110,7 +114,7 @@ export async function discoverToolsStep(
         tool: tool.name,
         ...(tool.title ? { title: tool.title } : {}),
         description: tool.description ?? "",
-        schema: tool.inputSchema,
+        schema,
         suggestedReadOnly: tool.readOnlyHint === true,
         ...(tool.readOnlyHint === undefined ? {} : { readOnlyHint: tool.readOnlyHint }),
         ...(tool.idempotentHint === undefined ? {} : { idempotentHint: tool.idempotentHint }),
@@ -219,6 +223,10 @@ export async function runUninstallStep(
           // The run-as-me receipt is a setting, kept across disconnect, gone with the MCP.
           this.deps.secrets.remove(`connector:${connector.id}`, OUTSIDE_SANDBOX_ACK);
           this.startFailures.delete(connector.id);
+          this.deps.connectors.writeBlockedSites(connector.id, []);
+          this.networkPrompts.delete(connector.id);
+          for (const key of this.deniedNetworkSites.keys())
+            if (key.startsWith(`${connector.id}/`)) this.deniedNetworkSites.delete(key);
         }
         this.deps.secrets.remove(`plugin-runtime:${installationId}`, "values");
         this.deps.secrets.removePrefix(USER_SECRET_SCOPE, secretPrefix);
@@ -298,6 +306,20 @@ export function recordStartFailureStep(
             : error instanceof DOMException && error.name === "TimeoutError"
               ? "timeout"
               : "connection_failed";
+  // Failures outside the stdio start (validation, an interrupted start, a refused location)
+  // otherwise leave no trace; codes and the error class only, never the message.
+  this.deps.logStartFailure?.({
+    module: "connector",
+    event: "operation_failed",
+    connectorId: operation.connectorId,
+    operation: operation.kind,
+    failureCode,
+    errorName: error instanceof Error ? error.name : typeof error,
+    errorCode:
+      error instanceof Error && "code" in error && typeof error.code === "string"
+        ? error.code
+        : undefined,
+  });
   this.emitOperation(
     this.deps.operations.fail(operation.id, currentRevision, failureCode, this.deps.actorBotId),
   );

@@ -27,6 +27,7 @@ export function approvalFactsHash(
   call: LocalToolCall,
   result: PolicyResult,
   isolation: Approval["isolation"],
+  binding?: string,
 ) {
   // Explanations/decision can change on reentry; authority, target and disclosed facts cannot.
   const { explanation: _explanation, decision: _decision, ...facts } = result;
@@ -39,5 +40,6 @@ export function approvalFactsHash(
     context.runWorkplace,
     facts,
     isolation,
+    ...(binding === undefined ? [] : [binding]),
   ]);
 }

@@ -11,15 +11,21 @@ import {
   type DiscoveryResult,
   RpcError,
   RpcErrorCodes,
+  requiresPluginSetup,
 } from "@pibot/plugins-contract/full";
 import { SkillImportDetailsSchema } from "@pibot/skills-contract";
 import type { AuditRepo } from "@pibot/storage";
-import { DiscoveryConsentRepo, installedManifestNames } from "../../store/index.ts";
+import {
+  DiscoveryConsentRepo,
+  freeInstalledName,
+  installedManifestNames,
+} from "../../store/index.ts";
 import type { ConnectorService } from "../service/connector-service.ts";
 import { sourceLayouts } from "./locations.ts";
 import { broughtOverId, entryDescription, entryManifest, McpEntryError } from "./mcp.ts";
 import {
   currentDigest,
+  digestOf,
   readMcpFile,
   type ScannedItem,
   type ScannedSource,
@@ -67,7 +73,13 @@ function reasonOf(error: unknown): BringOverReason {
     if (error.code === RpcErrorCodes.busy) return "busy";
     if (/too_large|too_many_files/.test(error.message)) return "too_large";
     // Not "can't read its settings": the package itself is readable but holds something refused.
-    if (error.message.startsWith("skill_import_unsafe")) return "unsafe";
+    if (
+      error.message.startsWith("skill_import_unsafe") ||
+      error.message === "connector_import_symlink" ||
+      error.message.startsWith("connector_import_symlink:") ||
+      error.message === "connector_import_path_outside_plugin"
+    )
+      return "unsafe";
     if (/already exists with a different value|secret conflict/i.test(error.message))
       return "secret_conflict";
     if (error.message === "skill_name_exists") return "name_exists";
@@ -165,7 +177,7 @@ export class DiscoveryService {
         continue;
       }
       try {
-        scanned.push(await scanSource(layout, seen, signal, skip));
+        scanned.push(await scanSource(layout, seen, signal, skip, this.deps.home));
       } catch {
         withdrawn.throwIfAborted();
         skip(layout.id, "", signal.aborted ? "scan_timeout" : "unreadable");
@@ -194,6 +206,9 @@ export class DiscoveryService {
           })),
           conflict: state,
           ...(item.contains ? { contains: item.contains } : {}),
+          ...(item.needsSetup ? { needsSetup: true } : {}),
+          ...(item.workingDirectory ? { workingDirectory: item.workingDirectory } : {}),
+          ...(item.registrySites?.length ? { registrySites: item.registrySites } : {}),
         });
         if (!shown.success) {
           skip(layout.id, item.kind, "item_unsupported");
@@ -406,7 +421,10 @@ export class DiscoveryService {
     try {
       const { item } = entry;
       // What was shown must still be what is there; values are re-read now, never cached.
-      if ((await currentDigest(item.locator, signal)) !== item.digest)
+      if (
+        item.locator.kind !== "mcp" &&
+        (await currentDigest(item.locator, signal)) !== item.digest
+      )
         return { key, outcome: "failed", reason: "changed" };
       const locator = item.locator;
       // A skill never goes straight from a scan to a copy. It has to pass the same preview
@@ -442,19 +460,49 @@ export class DiscoveryService {
         row.names.map((value) => value.toLowerCase()),
       ),
     );
-    if (!taken.has(name.toLowerCase())) return name;
-    for (let n = 2; n < 100; n++) {
-      const candidate = `${name.slice(0, 190)} ${n}`;
-      if (!taken.has(candidate.toLowerCase())) return candidate;
-    }
-    throw new RpcError(RpcErrorCodes.invalidParams, "skill_name_exists");
+    return freeInstalledName(name, taken);
   }
 
-  private async mcp(
-    key: string,
-    { item }: { item: ScannedItem },
-    signal: AbortSignal,
-  ): Promise<BringOverResult> {
+  async previewSetup(key: string, signal: AbortSignal) {
+    const entry = this.latest.get(key);
+    if (
+      !this.consent.get() ||
+      !entry ||
+      entry.conflict === "imported" ||
+      entry.item.kind === "skill"
+    )
+      throw new RpcError(RpcErrorCodes.pluginImportInvalid, "connector_bringOverSourceChanged");
+    const { item } = entry;
+    signal = AbortSignal.any([signal, this.deps.shutdown]);
+    const locator = item.locator;
+    if (locator.kind === "skill") throw new McpEntryError();
+    const isMcp = locator.kind === "mcp";
+    const prepared = isMcp
+      ? await this.previewMcp(item, signal)
+      : (await currentDigest(locator, signal)) === item.digest
+        ? { preview: await this.previewPlugin(locator, signal) }
+        : undefined;
+    const preview = prepared?.preview;
+    if (!preview)
+      throw new RpcError(RpcErrorCodes.pluginImportInvalid, "connector_bringOverSourceChanged");
+    try {
+      signal.throwIfAborted();
+      if (!this.consent.get() || this.conflicts()(item) === "imported")
+        throw new RpcError(RpcErrorCodes.pluginImportInvalid, "connector_bringOverSourceChanged");
+      this.deps.connectors.markDiscoveredPreview(preview.previewId, {
+        tool: locator.source,
+        key: item.key,
+        ...(isMcp ? {} : { name: this.freeName(preview.manifest.name.en) }),
+        path: isMcp ? `${locator.file}#${encodeURIComponent(locator.entry)}` : locator.folder,
+      });
+      return { ...preview, fromBringOver: true as const };
+    } catch (error) {
+      await this.deps.connectors.cancelPreview({ previewId: preview.previewId });
+      throw error;
+    }
+  }
+
+  private async previewMcp(item: ScannedItem, signal: AbortSignal) {
     const locator = item.locator;
     if (locator.kind !== "mcp") throw new McpEntryError();
     // Values (and any key written in them) come from the file at this moment and go straight into
@@ -463,8 +511,9 @@ export class DiscoveryService {
     const found = entries?.find(
       (candidate) => candidate.scope === locator.scope && candidate.name === locator.entry,
     );
-    if (!found) return { key, outcome: "failed", reason: "changed" };
-    if (!found.entry) return { key, outcome: "failed", reason: "invalid" };
+    if (!found) return { reason: "changed" as const };
+    if (!found.entry) return { reason: "invalid" as const };
+    if (digestOf(found.entry) !== item.digest) return { reason: "changed" as const };
     const layout = sourceLayouts(this.deps.home, this.deps.env).find(
       (source) => source.id === locator.source,
     );
@@ -483,7 +532,37 @@ export class DiscoveryService {
       { kind: "json", text: JSON.stringify(manifest) },
       signal,
     );
+    return { preview, name };
+  }
+
+  private async mcp(
+    key: string,
+    { item }: { item: ScannedItem },
+    signal: AbortSignal,
+  ): Promise<BringOverResult> {
+    const prepared = await this.previewMcp(item, signal);
+    if (!prepared.preview) return { key, outcome: "failed", reason: prepared.reason };
+    const { preview, name } = prepared;
+    if (preview.requiredKeys?.length || preview.savedKeys?.length) {
+      await this.deps.connectors.cancelPreview({ previewId: preview.previewId });
+      return { key, outcome: "failed", reason: "needs_setup" };
+    }
     return this.commit(key, item, name, undefined, preview, false, signal);
+  }
+
+  private async previewPlugin(
+    locator: Extract<ScannedItem["locator"], { kind: "plugin" }>,
+    signal: AbortSignal,
+  ) {
+    if (!this.deps.importHost?.adopt) return;
+    const { selectionId } = await this.deps.importHost.adopt({ path: locator.folder });
+    try {
+      return await this.deps.connectors.previewImport({ kind: "selection", selectionId }, signal);
+    } catch (error) {
+      // A failed read may already have released this selection.
+      await this.deps.importHost.release({ selectionId }).catch(() => undefined);
+      throw error;
+    }
   }
 
   private async plugin(
@@ -493,21 +572,11 @@ export class DiscoveryService {
   ): Promise<BringOverResult> {
     const locator = item.locator;
     if (locator.kind !== "plugin") throw new McpEntryError();
-    if (!this.deps.importHost?.adopt) return { key, outcome: "failed", reason: "unsupported" };
-    const { selectionId } = await this.deps.importHost.adopt({ path: locator.folder });
-    let preview: Awaited<ReturnType<ConnectorService["previewImport"]>>;
-    try {
-      preview = await this.deps.connectors.previewImport(
-        { kind: "selection", selectionId },
-        signal,
-      );
-    } catch (error) {
-      await this.deps.importHost.release({ selectionId }).catch(() => undefined);
-      throw error;
-    }
+    const preview = await this.previewPlugin(locator, signal);
+    if (!preview) return { key, outcome: "failed", reason: "unsupported" };
     // Settings the plugin needs (often an API key it reads from the environment) have to be
     // typed in; that is the 「导入插件」 dialog's job, not a silent bring-over.
-    if (preview.plugin?.config.some((field) => field.required && field.default === undefined)) {
+    if (preview.plugin && requiresPluginSetup(preview.plugin.config)) {
       await this.deps.connectors.cancelPreview({ previewId: preview.previewId });
       return { key, outcome: "failed", reason: "needs_setup" };
     }
@@ -526,6 +595,42 @@ export class DiscoveryService {
     );
   }
 
+  /** Turns one discovered plugin folder into an import selection so ImportPlugin can configure it. */
+  async adoptForSetup(key: string, requestSignal: AbortSignal): Promise<{ selectionId: string }> {
+    if (!this.consent.get()) throw new RpcError(RpcErrorCodes.unsupported, "discovery_no_consent");
+    const entry = this.latest.get(key);
+    if (entry?.item.locator.kind !== "plugin")
+      throw new RpcError(RpcErrorCodes.invalidParams, "unknown_item");
+    if (this.conflicts()(entry.item) === "imported")
+      throw new RpcError(RpcErrorCodes.invalidParams, "skill_name_exists");
+    if (!this.deps.importHost?.adopt)
+      throw new RpcError(RpcErrorCodes.unsupported, "plugin_import_unavailable");
+    const signal = AbortSignal.any([
+      requestSignal,
+      this.deps.shutdown,
+      AbortSignal.timeout(ITEM_TIMEOUT_MS),
+    ]);
+    if ((await currentDigest(entry.item.locator, signal)) !== entry.item.digest)
+      throw new RpcError(RpcErrorCodes.connectorStale, "source_changed");
+    signal.throwIfAborted();
+    let adopted: { selectionId: string };
+    try {
+      adopted = await this.deps.importHost.adopt({
+        path: entry.item.locator.folder,
+        bringOver: { tool: entry.item.locator.source, key: entry.item.key },
+      });
+    } catch (error) {
+      throw this.deps.connectors.scrubSymlinkError(error);
+    }
+    if (signal.aborted) {
+      await this.deps.importHost
+        .release({ selectionId: adopted.selectionId })
+        .catch(() => undefined);
+      signal.throwIfAborted();
+    }
+    return adopted;
+  }
+
   /**
    * Imported switched off and, in the same install transaction, given to nobody; the person picks
    * Bots on the page afterwards.
@@ -539,8 +644,9 @@ export class DiscoveryService {
     plugin: boolean,
     signal: AbortSignal,
   ): Promise<BringOverResult> {
+    let imported: Awaited<ReturnType<ConnectorService["import"]>>;
     try {
-      await this.deps.connectors.import(
+      imported = await this.deps.connectors.import(
         {
           previewId: preview.previewId,
           // Nothing starts until someone uses it; a skills-only plugin has nothing to start.
@@ -565,6 +671,6 @@ export class DiscoveryService {
         .catch(() => undefined);
       throw error;
     }
-    return { key, outcome: "imported", name };
+    return { key, outcome: "imported", name, installationId: imported.installation.id };
   }
 }

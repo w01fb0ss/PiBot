@@ -1,4 +1,5 @@
 import {
+  AbsolutePathSchema,
   ExecutionModeSchema,
   IdSchema,
   PermissionsSettingsSchema,
@@ -32,6 +33,13 @@ export const TaskAuthoritySchema = z.strictObject({
   modelTier: z.literal("cheap").optional(),
   workplace: z.strictObject({
     value: WorkplacesSchema,
+    displayFolders: z
+      .array(
+        z.strictObject({ path: AbsolutePathSchema, displayPath: AbsolutePathSchema.optional() }),
+      )
+      .max(32)
+      .readonly()
+      .optional(),
     cwd: z.string().min(1).max(32_768),
     roots: z.array(z.string().min(1).max(32_768)).max(202),
     home: z.string().min(1).max(32_768),

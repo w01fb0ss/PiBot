@@ -73,6 +73,7 @@ export type LaunchProgress =
  */
 export async function launchBackground(options: {
   dataDir: string;
+  dataDirDisplayPath?: string;
   version: string;
   dev: boolean;
   env: Readonly<NodeJS.ProcessEnv>;
@@ -134,7 +135,7 @@ export async function launchBackground(options: {
     const current = spawn(options.owner.file, [...options.owner.args], {
       detached: true,
       stdio: "ignore",
-      env: desktopLaunchEnvironment(options, options.dataDir),
+      env: desktopLaunchEnvironment(options, options.dataDir, options.dataDirDisplayPath),
     });
     child = current;
     current.once("error", () => {

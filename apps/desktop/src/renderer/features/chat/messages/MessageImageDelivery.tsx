@@ -1,4 +1,9 @@
-import { IdSchema, ImageDeliverySchema, type Message } from "@pibot/protocol";
+import {
+  IdSchema,
+  ImageDeliverySchema,
+  imageGenerationResults,
+  type Message,
+} from "@pibot/protocol";
 import { useRpc, useT } from "@pibot/renderer-kit";
 import { Button, Card } from "@pibot/ui";
 import { useEffect, useRef, useState } from "react";
@@ -100,6 +105,11 @@ export function MessageImageDelivery({
   }, [peer, identity]);
   const usage = message.usage;
   if (!usage || typeof usage !== "object" || Array.isArray(usage)) return null;
+  if (
+    imageGenerationResults(usage) &&
+    !message.attachments?.some((attachment) => attachment.kind === "image")
+  )
+    return null;
   const parsed = ImageDeliverySchema.safeParse(usage.imageDelivery);
   if (
     !parsed.success &&

@@ -15,16 +15,21 @@ function phoneName(fallback: string) {
     .slice(0, 80);
   return name || fallback;
 }
-/** Only a fixed lowercase code (stage or reason), never a message that could carry the code text. */
-function pairFailureCode(error: unknown) {
-  const parts = [
-    error instanceof Error ? error.name : "",
-    error instanceof Error ? error.message : "",
-    error && typeof error === "object" && "stage" in error ? String(error.stage) : "",
-    error && typeof error === "object" && "reason" in error ? String(error.reason) : "",
-  ].filter((part) => /^[A-Za-z][A-Za-z0-9_]{1,63}$/.test(part));
-  return parts.length ? parts.join(" · ") : "unknown";
-}
+const pairingFailures = {
+  invalid: "pairInvalid",
+  invalid_pairing: "pairInvalid",
+  invalid_encoding: "pairInvalid",
+  invalid_relay: "pairInvalid",
+  pair_expired: "pairExpired",
+  pairing_expired: "pairExpired",
+  relay_unavailable: "pairNetwork",
+  remote_room_empty: "pairWaiting",
+  remote_session_timeout: "pairWaiting",
+  handshake_failed: "pairIdentityFailed",
+  identity_mismatch: "pairIdentityFailed",
+  invalid_identity: "pairIdentityFailed",
+  pair_cancelled: "pairWaiting",
+} as const;
 export function usePairing() {
   const router = useRouter(),
     navigation = useNavigation();
@@ -33,7 +38,7 @@ export function usePairing() {
     // Pairing belongs to no computer's link: saving it switches the selected computer, and an
     // action owned by that link was cancelled mid-save, so the page never moved on.
     action = useAction("pairing");
-  const [permission, requestPermission] = useCameraPermissions(),
+  const [permission, requestPermission, getPermission] = useCameraPermissions(),
     [qr, setQr] = useState(""),
     [name] = useState(() => phoneName(t("phone")));
   const [candidate, setCandidate] = useState<Computer>(),
@@ -44,29 +49,38 @@ export function usePairing() {
   // so the camera only started on the next launch.
   const [active, setActive] = useState(AppState.currentState === "active");
   useEffect(() => {
-    const subscription = AppState.addEventListener("change", (state) =>
-      setActive(state === "active"),
-    );
+    const subscription = AppState.addEventListener("change", (state) => {
+      setActive(state === "active");
+      if (state === "active")
+        void getPermission().catch(() => {
+          // The existing camera permission state still offers a way to continue by pasting.
+        });
+    });
     return () => subscription.remove();
-  }, []);
+  }, [getPermission]);
   useEffect(() => () => runtime.cancelPair(), [runtime]);
-  // Every pairing failure used to read only "failed"; the fixed code says which step broke.
-  const [failure, setFailure] = useState<string>();
   const pair = (code: string) =>
     action.run(async (signal) => {
-      setFailure(undefined);
-      const value = await runtime.preparePair(code, name).catch((error: unknown) => {
-        setFailure(pairFailureCode(error));
-        throw error;
-      });
-      signal.throwIfAborted();
-      setQr("");
-      setCandidate(value);
+      try {
+        const value = await runtime.preparePair(code.trim(), name);
+        signal.throwIfAborted();
+        setQr("");
+        setCandidate(value);
+      } catch (error) {
+        if (signal.aborted) return;
+        const reason = error instanceof Error ? error.message : "";
+        action.setError(
+          Object.hasOwn(pairingFailures, reason)
+            ? pairingFailures[reason as keyof typeof pairingFailures]
+            : "pairTryAgain",
+        );
+      }
     });
   const cancel = () => {
     runtime.cancelPair();
     setCandidate(undefined);
     setQr("");
+    action.setError(undefined);
   };
   // The code check is a step of this page: Android back returns to scanning, as "the code does
   // not match" does, instead of leaving (or, on a first pairing, closing the app) mid-pairing.
@@ -93,15 +107,25 @@ export function usePairing() {
       }),
     qr,
     setQr,
-    failure,
     candidate,
     pasting,
-    setPasting,
+    setPasting: (value: boolean) => {
+      action.setError(undefined);
+      if (!value) setQr("");
+      setPasting(value);
+    },
     action,
     /** The camera runs only while this page is visible and nothing else is in progress. */
-    scanning: focused && active && !!permission?.granted && !candidate && !action.busy,
+    scanning:
+      focused &&
+      active &&
+      !!permission?.granted &&
+      !candidate &&
+      !action.busy &&
+      !pasting &&
+      !action.error,
     read: (value: string) => {
-      if (value.length <= 8192 && !action.busy) void pair(value);
+      if (!action.busy) void pair(value);
     },
     pastePair: () => pair(qr),
     cancel,

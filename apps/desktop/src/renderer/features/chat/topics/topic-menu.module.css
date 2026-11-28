@@ -10,7 +10,7 @@
   color: var(--text2);
   font: inherit;
   padding: 1px 4px;
-  border-radius: 6px;
+  border-radius: var(--subtitle-trigger-radius, 6px);
   cursor: pointer;
   -webkit-app-region: no-drag;
 }
@@ -23,8 +23,10 @@
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
-.trigger svg {
+.chevron {
   flex: none;
+  width: var(--subtitle-trigger-chevron-size, 12px);
+  height: var(--subtitle-trigger-chevron-size, 12px);
 }
 .panel {
   position: fixed;

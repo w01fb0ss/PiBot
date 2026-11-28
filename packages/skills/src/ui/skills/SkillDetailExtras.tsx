@@ -1,13 +1,14 @@
 import type { TranslationKey, TranslationVars } from "@pibot/i18n";
-import { useAction, useRpc, useRpcEvent, useSettings } from "@pibot/renderer-kit";
+import { useAction, useNavigation, useRpc, useRpcEvent, useSettings } from "@pibot/renderer-kit";
 import type {
   SkillCompatibilityEntry,
   SkillLinkOrigin,
+  SkillManagedRuntime,
   SkillRuntimeStatus,
   SkillUpdatePending,
   SkillUpdateState,
 } from "@pibot/skills-contract/full";
-import { Button } from "@pibot/ui";
+import { Button, SegmentedControl } from "@pibot/ui";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import {
   type RuntimeLoadFailure,
@@ -15,6 +16,8 @@ import {
   sizeText,
   skillError,
 } from "./presentation.ts";
+import { SkillFileList } from "./SkillFileList.tsx";
+import { SkillSecretBindings } from "./SkillSecretBindings.tsx";
 import { SkillUpdateDialog } from "./SkillUpdateDialog.tsx";
 import styles from "./skills.module.css";
 import {
@@ -32,6 +35,8 @@ export type SkillExtrasSlot = (controls: {
   groupId?: string;
   botId: string;
   name: string;
+  prepareRuntime?: boolean;
+  runtime?: "python" | "node";
 }) => ReactNode;
 
 type T = (key: TranslationKey, vars?: TranslationVars) => string;
@@ -51,11 +56,17 @@ const RUNTIME_REASONS = new Set([
   "uv_unsupported_platform",
   "uv_isolation_unavailable",
   "uv_cleanup_unconfirmed",
+  "windows_proxy_credentials",
   "python_requirement_unsupported",
   "python_workspace_boundary",
   "node_not_found",
   "node_version_unsatisfied",
+  "node_isolation_unavailable",
+  "node_dependencies_unreviewable",
   "install_failed",
+  "install_network_failed",
+  "install_package_missing",
+  "install_wheel_missing",
   "cancelled",
   "plan_changed",
 ]);
@@ -94,6 +105,8 @@ export function SkillDetailExtras({
   botId,
   name,
   readOnly = false,
+  prepareRuntime = false,
+  runtime: initialRuntime,
   detail,
   resources,
   retryDestination,
@@ -103,20 +116,24 @@ export function SkillDetailExtras({
   groupId?: string;
   botId: string;
   name: string;
-  /** Bot panel: state and reports stay visible, but every action happens on the connections page. */
+  /** The Bot panel displays runtime state and sends preparation to Connections. */
   readOnly?: boolean;
+  prepareRuntime?: boolean;
+  runtime?: "python" | "node";
   detail?: SkillDetailData;
   resources?: ReturnType<typeof useSkillResources>;
-  retryDestination?: { botName: string; open(): void };
+  retryDestination?: { botName: string; open(runtime?: SkillManagedRuntime): void };
   /** Lets the detail panel re-read the skill after an update switched its package. */
   onChanged?(): void;
 }) {
   const { t, language } = useSettings();
+  const navigation = useNavigation();
   const { peer } = useRpc();
   const updateTask = useAction();
   const prepareTask = useAction();
   const runtimeTask = useAction();
   const [updateOverride, setUpdate] = useState<SkillUpdateState>();
+  const [selectedRuntime, selectRuntime] = useState(initialRuntime);
   const [runtime, setRuntime] = useState<SkillRuntimeStatus>();
   const [runtimeFailure, setRuntimeFailure] = useState<RuntimeLoadFailure>();
   // Auto-retries belong to one skill: switching details starts the count over.
@@ -135,6 +152,8 @@ export function SkillDetailExtras({
   const [notice, setNotice] = useState<{ key: TranslationKey; vars?: TranslationVars }>();
   const [updating, setUpdating] = useState<SkillUpdatePending>();
   const [preparing, setPreparing] = useState(false);
+  const openPrepareOnce = useRef(prepareRuntime);
+  const [useMirror, setUseMirror] = useState(false);
   const [showPackages, setShowPackages] = useState(false);
   const [log, setLog] = useState<{ path: string | null; text: string } | false>(false);
   const [removing, setRemoving] = useState(false);
@@ -157,12 +176,21 @@ export function SkillDetailExtras({
     let retry: ReturnType<typeof setTimeout> | undefined;
     setRuntimeLoading(true);
     void peer
-      .call("skills.runtime", { groupId, skillId }, { signal: controller.signal })
+      .call(
+        "skills.runtime",
+        { groupId, skillId, runtime: selectedRuntime },
+        { signal: controller.signal },
+      )
       .then((status) => {
         if (controller.signal.aborted) return;
         setRuntimeFailure(undefined);
         runtimeRetries.current = { key: `${groupId ?? ""}/${skillId}`, count: 0 };
         setRuntime(status);
+        if (openPrepareOnce.current) {
+          openPrepareOnce.current = false;
+          if (status.planHash && ["not_prepared", "needs_prepare", "failed"].includes(status.state))
+            setPreparing(true);
+        }
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
@@ -186,9 +214,14 @@ export function SkillDetailExtras({
       controller.abort();
       if (retry) clearTimeout(retry);
     };
-  }, [peer, skillId, groupId, runtimeRevision, reloadRuntime]);
+  }, [peer, skillId, groupId, selectedRuntime, runtimeRevision, reloadRuntime]);
   useRpcEvent("skills.runtimeProgress", (event) => {
-    if (event.skillId !== skillId || event.groupId !== groupId) return;
+    if (
+      event.skillId !== skillId ||
+      event.groupId !== groupId ||
+      (event.runtime && event.runtime !== runtime?.runtime)
+    )
+      return;
     setRuntime((current) =>
       current
         ? {
@@ -263,7 +296,19 @@ export function SkillDetailExtras({
     setPreparing(false);
     const result = await prepareTask.run(
       (signal) =>
-        peer.call("skills.runtime.prepare", { groupId, skillId, requestId, planHash }, { signal }),
+        peer.call(
+          "skills.runtime.prepare",
+          {
+            groupId,
+            skillId,
+            runtime: runtime.runtime,
+            requestId,
+            planHash,
+            confirmWithoutIsolation: runtime.requiresUnisolatedConfirmation,
+            useMirror: runtime.managedPython && useMirror ? true : undefined,
+          },
+          { signal },
+        ),
       skillError,
     );
     if (!result) {
@@ -273,13 +318,24 @@ export function SkillDetailExtras({
     }
     prepareId.current = undefined;
     setRuntime(result);
+    if (
+      runtime.resolvesPythonPackages &&
+      result.reviewedPackages &&
+      result.state === "not_prepared"
+    )
+      setPreparing(true);
     onChanged?.();
   };
 
   const cancel = async () => {
     if (!peer) return;
     const result = await runtimeTask.run(
-      (signal) => peer.call("skills.runtime.cancel", { groupId, skillId }, { signal }),
+      (signal) =>
+        peer.call(
+          "skills.runtime.cancel",
+          { groupId, skillId, runtime: runtime?.runtime },
+          { signal },
+        ),
       skillError,
     );
     if (result) setRuntime(result);
@@ -288,7 +344,12 @@ export function SkillDetailExtras({
   const remove = async () => {
     if (!peer) return;
     const result = await runtimeTask.run(
-      (signal) => peer.call("skills.runtime.remove", { groupId, skillId }, { signal }),
+      (signal) =>
+        peer.call(
+          "skills.runtime.remove",
+          { groupId, skillId, runtime: runtime?.runtime },
+          { signal },
+        ),
       skillError,
     );
     if (!result) return;
@@ -305,15 +366,22 @@ export function SkillDetailExtras({
     }
     if (!peer) return;
     const result = await runtimeTask.run(
-      (signal) => peer.call("skills.runtime.log", { groupId, skillId }, { signal }),
+      (signal) =>
+        peer.call(
+          "skills.runtime.log",
+          { groupId, skillId, runtime: runtime?.runtime },
+          { signal },
+        ),
       skillError,
     );
     if (result) setLog(result);
   };
 
   const requirements = runtime?.requirements ?? [];
-  const packages = requirements.flatMap((requirement) => requirement.packages ?? []);
-  const needText = requirements
+  const currentRequirements = requirements.filter(({ runtime: kind }) => kind === runtime?.runtime);
+  const packages =
+    runtime?.reviewedPackages ?? currentRequirements.flatMap((item) => item.packages ?? []);
+  const needText = currentRequirements
     .map((requirement) => {
       const label = t(`skills.runtime.${requirement.runtime}` as TranslationKey);
       const version = requirement.version ? ` ${requirement.version}` : "";
@@ -325,6 +393,7 @@ export function SkillDetailExtras({
     .join(" · ");
   const state = runtime?.state;
   const progress = runtime?.progress;
+  const interpreterName = runtime?.runtime ? t(`skills.runtime.${runtime.runtime}`) : undefined;
   const interruptible = !readOnly && !updateTask.busy && !prepareTask.busy;
 
   return (
@@ -453,6 +522,9 @@ export function SkillDetailExtras({
           </div>
         </section>
       )}
+      {base && !base.skill.builtinKey && (
+        <SkillSecretBindings key={skillId} skillId={skillId} groupId={groupId} />
+      )}
       {runtime && (
         <section className={styles.card}>
           <div className={styles.cardHead}>
@@ -462,6 +534,26 @@ export function SkillDetailExtras({
             </span>
           </div>
           <div className={styles.cardBody}>
+            {requirements.length > 1 && runtime.runtime && (
+              <SegmentedControl<SkillManagedRuntime>
+                label={t("skills.runtime.title")}
+                value={runtime.runtime}
+                disabled={
+                  runtimeLoading || runtimeTask.busy || prepareTask.busy || state === "preparing"
+                }
+                options={requirements.map(({ runtime: kind }) => ({
+                  value: kind,
+                  label: t(`skills.runtime.${kind}`),
+                }))}
+                onValueChange={(kind) => {
+                  setRuntimeLoading(true);
+                  setShowPackages(false);
+                  setLog(false);
+                  setRemoving(false);
+                  selectRuntime(kind);
+                }}
+              />
+            )}
             {state === "not_required" ? (
               <p className={styles.note}>{t("skills.runtime.notRequired")}</p>
             ) : (
@@ -472,7 +564,11 @@ export function SkillDetailExtras({
                 {state === "preparing" && progress && (
                   <p role="status" className={styles.note}>
                     {t("skills.runtime.progress", {
-                      phase: t(`skills.runtime.phase.${progress.phase}` as TranslationKey),
+                      phase: t(
+                        runtime.resolvesPythonPackages && progress.phase === "dependencies"
+                          ? "skills.runtime.phase.resolve"
+                          : (`skills.runtime.phase.${progress.phase}` as TranslationKey),
+                      ),
                       done: progress.done,
                       total: progress.total,
                     })}
@@ -498,7 +594,7 @@ export function SkillDetailExtras({
                   <p className={styles.note}>
                     {t("skills.runtime.readyLine", {
                       interpreter: runtime.interpreter
-                        ? `${runtime.interpreter.command} ${runtime.interpreter.version}`
+                        ? `${interpreterName ?? runtime.interpreter.command} ${runtime.interpreter.version}`
                         : "—",
                       count: runtime.packages,
                       size: runtime.bytes === null ? "—" : sizeText(runtime.bytes),
@@ -508,15 +604,8 @@ export function SkillDetailExtras({
                 {runtime.interpreter && (state === "not_prepared" || state === "needs_prepare") && (
                   <p className={styles.note}>
                     {t("skills.runtime.found", {
-                      command: runtime.interpreter.command,
+                      command: interpreterName ?? runtime.interpreter.command,
                       version: runtime.interpreter.version,
-                    })}
-                  </p>
-                )}
-                {state === "ready" && runtime.nativeModules.length > 0 && (
-                  <p className={styles.note}>
-                    {t("skills.runtime.nativeModules", {
-                      names: runtime.nativeModules.join(", "),
                     })}
                   </p>
                 )}
@@ -534,6 +623,7 @@ export function SkillDetailExtras({
               ))}
             {log !== false && (
               <>
+                <p className={styles.note}>{t("skills.runtime.logSummary")}</p>
                 {log.path && <p className={styles.note}>{log.path}</p>}
                 <pre className={styles.body}>
                   {log.text.trim() ? log.text : t("skills.runtime.logEmpty")}
@@ -573,6 +663,19 @@ export function SkillDetailExtras({
                   onClick={() => setShowPackages((value) => !value)}
                 >
                   {showPackages ? t("skills.runtime.hidePackages") : t("skills.runtime.packages")}
+                </Button>
+              )}
+              {[
+                "uv_network_failed",
+                "install_network_failed",
+                "windows_proxy_credentials",
+              ].includes(runtime.reason ?? "") && (
+                <Button
+                  variant="secondary"
+                  className={styles.mini}
+                  onClick={() => navigation.openSettings("general", "network-proxy")}
+                >
+                  {t("skills.runtime.openProxy")}
                 </Button>
               )}
               {runtime.logPath && (
@@ -625,11 +728,17 @@ export function SkillDetailExtras({
                   {t(runtime.planHash ? "skills.runtime.retry" : "skills.runtime.recheck")}
                 </Button>
               )}
-              {readOnly && state === "failed" && retryDestination && (
-                <Button variant="secondary" className={styles.mini} onClick={retryDestination.open}>
-                  {t("skills.runtime.retryInSkills", { bot: retryDestination.botName })}
-                </Button>
-              )}
+              {readOnly &&
+                (state === "failed" || state === "not_prepared" || state === "needs_prepare") &&
+                retryDestination && (
+                  <Button
+                    variant="secondary"
+                    className={styles.mini}
+                    onClick={() => retryDestination.open(runtime.runtime)}
+                  >
+                    {t("skills.runtime.retryInSkills", { bot: retryDestination.botName })}
+                  </Button>
+                )}
               {!readOnly && state === "ready" && (
                 <Button
                   variant="ghost"
@@ -671,7 +780,7 @@ export function SkillDetailExtras({
         </section>
       )}
 
-      {(!resourceRead.data || resourceRead.error) && base && (
+      {(!resourceRead.data || resourceRead.error) && (base || resourceRead.error) && (
         <section className={styles.card}>
           <div className={styles.cardHead}>{t("skills.compatibility.title")}</div>
           {resourceRead.error && (
@@ -698,39 +807,64 @@ export function SkillDetailExtras({
           </div>
         </section>
       )}
+      {!resources && !resourceRead.error && !!resourceRead.data?.files.length && (
+        <section className={styles.card}>
+          <h3 className={styles.cardHead}>
+            {t("skills.detail.files", { count: resourceRead.data.files.length })}
+          </h3>
+          <SkillFileList
+            files={resourceRead.data.files}
+            label={t("skills.detail.files", { count: resourceRead.data.files.length })}
+          />
+        </section>
+      )}
       {report &&
         (report.unavailable.length + report.partial.length + report.notice.length > 0 ? (
-          <details className={styles.extraCard}>
-            <summary>
-              {t("skills.compatibility.title")}
-              <span className={styles.extraBadge}>
-                {t("skills.compatibility.counts", {
-                  unavailable: report.unavailable.length,
-                  partial: report.partial.length,
-                  notice: report.notice.length,
-                })}
-              </span>
-            </summary>
+          <section className={styles.card}>
+            <div className={styles.cardHead}>{t("skills.compatibility.title")}</div>
             {[
-              ["unavailable", report.unavailable],
-              ["partial", report.partial],
-              ["notice", report.notice],
-            ].map(([kind, entries]) =>
-              (entries as SkillCompatibilityEntry[]).length ? (
-                <div key={kind as string} className={styles.extraGroup}>
-                  <h4>{t(`skills.compatibility.${kind}` as TranslationKey)}</h4>
-                  <ul className={styles.extraList}>
-                    {(entries as SkillCompatibilityEntry[]).map((entry) => (
-                      <li key={`${entry.code}:${JSON.stringify(entry.params)}`}>
-                        {compatibilityText(t, entry)}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null,
-            )}
-            <p className={styles.note}>{t("skills.compatibility.advisory")}</p>
-          </details>
+              ...new Set(
+                [...report.unavailable, ...report.partial, ...report.notice].map(
+                  (entry) => entry.code,
+                ),
+              ),
+            ].map((code) => (
+              <p key={code} className={styles.note}>
+                {t(`skills.compatibility.impact.${code}`)}
+              </p>
+            ))}
+            <details className={styles.extraCard}>
+              <summary>
+                {t("skills.compatibility.details")}
+                <span className={styles.extraBadge}>
+                  {t("skills.compatibility.counts", {
+                    unavailable: report.unavailable.length,
+                    partial: report.partial.length,
+                    notice: report.notice.length,
+                  })}
+                </span>
+              </summary>
+              {[
+                ["unavailable", report.unavailable],
+                ["partial", report.partial],
+                ["notice", report.notice],
+              ].map(([kind, entries]) =>
+                (entries as SkillCompatibilityEntry[]).length ? (
+                  <div key={kind as string} className={styles.extraGroup}>
+                    <h4>{t(`skills.compatibility.${kind}` as TranslationKey)}</h4>
+                    <ul className={styles.extraList}>
+                      {(entries as SkillCompatibilityEntry[]).map((entry) => (
+                        <li key={`${entry.code}:${JSON.stringify(entry.params)}`}>
+                          {compatibilityText(t, entry)}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null,
+              )}
+              <p className={styles.note}>{t("skills.compatibility.advisory")}</p>
+            </details>
+          </section>
         ) : (
           <p className={styles.note}>{t("skills.compatibility.none")}</p>
         ))}
@@ -757,7 +891,7 @@ export function SkillDetailExtras({
           apply={() => void apply()}
         />
       )}
-      {preparing && runtime && (
+      {preparing && runtime?.planHash && runtime.state !== "preparing" && (
         <RuntimePrepareDialog
           name={name}
           status={runtime}
@@ -765,6 +899,8 @@ export function SkillDetailExtras({
           error={prepareTask.error}
           close={() => setPreparing(false)}
           confirm={() => void prepare()}
+          useMirror={useMirror}
+          setUseMirror={setUseMirror}
         />
       )}
     </>
@@ -779,18 +915,28 @@ function RuntimePrepareDialog({
   error,
   close,
   confirm,
+  useMirror,
+  setUseMirror,
 }: {
   name: string;
   status: SkillRuntimeStatus;
+  useMirror: boolean;
+  setUseMirror(value: boolean): void;
   busy: boolean;
   error?: TranslationKey;
   close(): void;
   confirm(): void;
 }) {
   const { t } = useSettings();
-  const runtime = status.requirements[0]?.runtime ?? "python";
-  const python = runtime === "python";
+  const python = status.runtime === "python";
   const managed = status.managedPython;
+  const windows = status.requiresUnisolatedConfirmation;
+  const resolving = status.resolvesPythonPackages;
+  const packages = windows
+    ? (status.reviewedPackages ?? [])
+    : (status.requirements.find((item) => item.runtime === status.runtime)?.packages ?? []);
+  const network = status.networkDomains;
+  const domains = (useMirror ? network?.withMirror : undefined) ?? network?.primary;
   return (
     <div className={styles.overlay} role="presentation">
       <div
@@ -811,7 +957,7 @@ function RuntimePrepareDialog({
                 })
               : t("skills.runtime.approval.usesValue", {
                   interpreter: status.interpreter
-                    ? `${status.interpreter.command} ${status.interpreter.version}`
+                    ? `${status.runtime ? t(`skills.runtime.${status.runtime}`) : status.interpreter.command} ${status.interpreter.version}`
                     : "—",
                 })}
           </span>
@@ -819,39 +965,64 @@ function RuntimePrepareDialog({
         <p className={styles.kv}>
           <span>{t("skills.runtime.approval.runs")}</span>
           <span>
-            {python
-              ? t("skills.runtime.approval.runsPython", { count: status.packages })
-              : t("skills.runtime.approval.runsNode")}
-            {python && status.requirements[0]?.packages?.length
-              ? ` · ${status.requirements[0].packages.join(", ")}`
-              : ""}
+            {resolving
+              ? t("skills.runtime.approval.resolvePythonBody")
+              : windows && !packages.length
+                ? t("skills.runtime.approval.noPackages")
+                : python
+                  ? t("skills.runtime.approval.runsPython", { count: status.packages })
+                  : t(
+                      windows
+                        ? "skills.runtime.approval.runsWindowsNode"
+                        : "skills.runtime.approval.runsNode",
+                    )}
+            {packages.length && !windows ? ` · ${packages.join(", ")}` : ""}
           </span>
         </p>
-        <p className={styles.kv}>
-          <span>{t("skills.runtime.approval.network")}</span>
-          <span>
-            {t(
-              python
-                ? "skills.runtime.approval.networkPython"
-                : "skills.runtime.approval.networkNode",
-            )}
-          </span>
-        </p>
-        <p className={styles.kv}>
-          <span>{t("skills.runtime.approval.writes")}</span>
-          <span>
-            {t(
-              python
-                ? "skills.runtime.approval.writesPython"
-                : "skills.runtime.approval.writesValue",
-            )}
-          </span>
-        </p>
-        <p className={styles.warn}>{t("skills.runtime.approval.risk")}</p>
-        {status.nativeModules.length > 0 && (
-          <p className={styles.note}>
-            {t("skills.runtime.nativeModules", { names: status.nativeModules.join(", ") })}
+        {windows && packages.length > 0 && (
+          <p className={styles.kv}>
+            <span>{t("skills.runtime.approval.reviewedPackages")}</span>
+            <span>{packages.join(", ")}</span>
           </p>
+        )}
+        <p className={styles.warn}>
+          {t(windows ? "skills.runtime.approval.windows" : "skills.runtime.approval.risk")}
+        </p>
+        {domains && (
+          <p className={styles.kv}>
+            <span>{t("skills.runtime.approval.network")}</span>
+            <span>
+              {t("skills.runtime.approval.networkDomains", { domains: domains.join(", ") })}
+            </span>
+          </p>
+        )}
+        {(!windows || managed) && (
+          <details>
+            <summary>{t("skills.runtime.advanced")}</summary>
+            {!windows && (
+              <p className={styles.kv}>
+                <span>{t("skills.runtime.approval.writes")}</span>
+                <span>
+                  {t(
+                    python
+                      ? "skills.runtime.approval.writesPython"
+                      : "skills.runtime.approval.writesValue",
+                  )}
+                </span>
+              </p>
+            )}
+            {managed && (
+              <label>
+                <input
+                  type="checkbox"
+                  checked={useMirror}
+                  disabled={busy}
+                  onChange={(event) => setUseMirror(event.currentTarget.checked)}
+                />
+                {t("skills.runtime.mirror")}
+              </label>
+            )}
+          </details>
         )}
         {error && (
           <p role="alert" className={styles.error}>
@@ -868,7 +1039,11 @@ function RuntimePrepareDialog({
             disabled={!status.planHash || busy}
             onClick={confirm}
           >
-            {t("skills.runtime.approval.confirm")}
+            {t(
+              resolving
+                ? "skills.runtime.approval.resolvePython"
+                : "skills.runtime.approval.confirm",
+            )}
           </Button>
         </div>
       </div>

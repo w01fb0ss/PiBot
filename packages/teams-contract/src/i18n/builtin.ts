@@ -69,8 +69,10 @@ export const builtinZh = {
   "builtin.template.members": "{count} 个成员 · 统筹：{name}",
   "builtin.template.title": "从模板建群",
   "builtin.template.note":
-    "会新建下面这些 Bot（用默认模型及角色权限），建好群后由统筹发一条固定的欢迎消息。不会联网，也不会调用模型。",
+    "新建成员使用默认模型和角色权限，已有成员直接加入。建群后由统筹发送固定欢迎消息。",
   "builtin.template.coordinator": "统筹",
+  "builtin.template.reusedPermissions": "沿用该 Bot 的现有权限",
+  "builtin.template.connectImageInspiration": "可在「连接」中添加生图灵感库，并允许撰稿人使用。",
   "builtin.template.announcement": "群公告",
   "builtin.template.skipped": "暂不创建：{names}（还没有能生图的模型）",
   "builtin.template.unavailable": "可用的成员不够，暂时建不了这个群。",
@@ -290,8 +292,11 @@ export const builtinEn: Record<keyof typeof builtinZh, string> = {
   "builtin.template.members": "{count} members · coordinator: {name}",
   "builtin.template.title": "Group from a template",
   "builtin.template.note":
-    "Creates the Bots below (default model and role permissions); once the group exists its coordinator posts a fixed welcome message. Nothing goes online and no model is called.",
+    "New members use the default model and role permissions. Existing members join as they are. The coordinator posts a fixed welcome message once the group is created.",
   "builtin.template.coordinator": "Coordinator",
+  "builtin.template.reusedPermissions": "Keeps this Bot’s current permissions",
+  "builtin.template.connectImageInspiration":
+    "Add Image Inspiration in Connections and grant the writer access.",
   "builtin.template.announcement": "Announcement",
   "builtin.template.skipped": "Not created yet: {names} (no image generation model)",
   "builtin.template.unavailable": "Not enough members are available to create this group yet.",

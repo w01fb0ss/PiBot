@@ -1,18 +1,40 @@
 import type { ChatPeer } from "@pibot/client-core";
-import type { Group, GroupTopic } from "@pibot/protocol";
-import { useAction, useNavigation, useT, useWorkspace } from "@pibot/renderer-kit";
-import { useEffect, useRef, useState } from "react";
+import { type Group, type GroupTopic, RpcError } from "@pibot/protocol";
+import { actionError, useAction, useNavigation, useT, useWorkspace } from "@pibot/renderer-kit";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTimelineDay } from "../../chat/messages/MessageTime.tsx";
 import { topicArchiveError } from "../../chat/topics/use-topic-archive.ts";
 import { TopicListView } from "../../workspace/topics/TopicListView.tsx";
+import {
+  isTransientRevealError,
+  TOPIC_READ_TIMEOUT_MS,
+  TopicScopeMismatchError,
+  useTopicPage,
+} from "../../workspace/topics/use-topic-page.ts";
+
+function logRevealFailure(groupId: string, error: unknown) {
+  console.warn(
+    JSON.stringify({
+      module: "group-topics",
+      event: "topic_reveal_failed",
+      groupId,
+      ...(error instanceof RpcError ? { code: error.code } : {}),
+    }),
+  );
+}
+
 export function GroupTopicList({
   peer,
   group,
+  conversationId,
+  selected,
   changed,
   draft,
 }: {
   peer: ChatPeer;
   group: Group;
+  conversationId?: string;
+  selected?: GroupTopic;
   changed(): void;
   draft?: boolean;
 }) {
@@ -24,18 +46,31 @@ export function GroupTopicList({
   useTimelineDay();
   const task = useAction(),
     restoring = useAction(),
-    [topics, setTopics] = useState<GroupTopic[]>([]),
     [archived, setArchived] = useState(false),
     [query, setQuery] = useState(""),
     [loading, setLoading] = useState(true),
     [unavailable, setUnavailable] = useState(false),
-    [more, setMore] = useState(false),
     [revision, setRevision] = useState(0),
     [editing, setEditing] = useState<string>(),
     [title, setTitle] = useState("");
-  const epoch = useRef(0),
+  const scope = useMemo(
+    () => ({ peer, groupId: group.id, query, archived }),
+    [peer, group.id, query, archived],
+  );
+  const { page, read, update, refresh, append, reveal, isAppending } =
+    useTopicPage<GroupTopic>(scope);
+  const { topics, more } = page;
+  const revealCancelRef = useRef<AbortController | null>(null),
     renameLock = useRef(false),
     lifetime = useRef(new AbortController());
+  const revalidate = useRef({ requested: 0, completed: 0 });
+  const targetId = draft ? undefined : (conversationId ?? selected?.id ?? group.conversationId);
+  const targetArchived =
+    targetId === selected?.id
+      ? !!selected?.archivedAt
+      : targetId === group.conversationId
+        ? !!group.topicArchivedAt
+        : undefined;
   useEffect(() => {
     const signal = new AbortController();
     lifetime.current = signal;
@@ -51,6 +86,12 @@ export function GroupTopicList({
       peer.on("groups.changed", (event) => {
         if (event.groupId === group.id) refresh();
       }),
+      peer.on("sidebar.topicsChanged", (event) => {
+        if (event.conversationKey === `group:${group.id}`) {
+          revalidate.current.requested++;
+          refresh();
+        }
+      }),
       peer.on("chat.status", (event) => {
         if (event.groupId === group.id) refresh();
       }),
@@ -60,41 +101,83 @@ export function GroupTopicList({
       for (const stop of off) stop();
     };
   }, [peer, group.id]);
+  const fetchPage = useCallback(
+    async (before: string | undefined, limit: number, signal: AbortSignal) => {
+      const { peer, groupId, query, archived } = scope;
+      const rows = await peer.call(
+        "groups.topics.list",
+        { groupId, before, limit, query, archived },
+        { signal, timeoutMs: TOPIC_READ_TIMEOUT_MS },
+      );
+      if (
+        !rows.every(
+          (topic) =>
+            topic.groupId === groupId && topic.kind === "group" && !!topic.archivedAt === archived,
+        )
+      ) {
+        console.warn(
+          JSON.stringify({ module: "group-topics", event: "topic_scope_mismatch", groupId }),
+        );
+        throw new TopicScopeMismatchError();
+      }
+      return rows;
+    },
+    [scope],
+  );
+
   // biome-ignore lint/correctness/useExhaustiveDependencies: accepted topic creation/selection invalidates current marker
   useEffect(() => {
-    const version = ++epoch.current;
-    setLoading(true);
-    setMore(false);
-    setUnavailable(false);
     const cancel = new AbortController();
+    setUnavailable(false);
+    setLoading(read().topics.length === 0);
+    const matchesCurrent = (topic: GroupTopic) => topic.id === targetId;
     const timer = setTimeout(
       () => {
-        void peer
-          .call(
-            "groups.topics.list",
-            { groupId: group.id, limit: 50, query, archived },
-            { signal: cancel.signal, timeoutMs: 30000 },
-          )
-          .then((rows) => {
+        const loadInitial = async () => {
+          const requested = revalidate.current.requested;
+          await refresh(
+            fetchPage,
+            AbortSignal.any([cancel.signal, AbortSignal.timeout(TOPIC_READ_TIMEOUT_MS)]),
+            requested !== revalidate.current.completed,
+          );
+          if (cancel.signal.aborted) return;
+          revalidate.current.completed = requested;
+          setLoading(false);
+          if (query || !targetId || (targetArchived !== undefined && targetArchived !== archived))
+            return;
+          const start = read();
+          if (!start.more || start.topics.some(matchesCurrent) || isAppending()) return;
+
+          const revealCancel = new AbortController();
+          revealCancelRef.current = revealCancel;
+          const revealSignal = AbortSignal.any([
+            cancel.signal,
+            revealCancel.signal,
+            AbortSignal.timeout(TOPIC_READ_TIMEOUT_MS),
+          ]);
+          try {
+            await reveal(fetchPage, matchesCurrent, revealSignal);
+          } catch (revealError) {
+            if (revealError instanceof TopicScopeMismatchError) throw revealError;
             if (
-              rows.some(
-                (topic) =>
-                  topic.groupId !== group.id ||
-                  topic.kind !== "group" ||
-                  !!topic.archivedAt !== archived,
-              )
-            )
-              throw new Error("Topic target mismatch");
-            if (epoch.current === version) {
-              setTopics(rows);
-              setMore(rows.length === 50);
+              cancel.signal.aborted ||
+              revealCancel.signal.aborted ||
+              isTransientRevealError(revealError, revealSignal)
+            ) {
+              // First page (or preserved refresh list) is already displayed; ignore cancellation
+              // and expected transient transport failures.
+              return;
             }
-          })
+            if (!cancel.signal.aborted) logRevealFailure(group.id, revealError);
+            throw revealError;
+          }
+        };
+        void loadInitial()
           .catch(() => {
-            if (!cancel.signal.aborted && epoch.current === version) setUnavailable(true);
+            if (!cancel.signal.aborted) setUnavailable(true);
           })
           .finally(() => {
-            if (epoch.current === version) setLoading(false);
+            if (!cancel.signal.aborted) setLoading(false);
           });
       },
       query ? 250 : 0,
@@ -102,17 +185,25 @@ export function GroupTopicList({
     return () => {
       clearTimeout(timer);
       cancel.abort();
-      epoch.current++;
+      revealCancelRef.current?.abort();
+      revealCancelRef.current = null;
     };
   }, [
     peer,
     group.id,
     group.conversationId,
-    group.topicArchivedAt,
+    targetId,
+    targetArchived,
     draft,
     query,
     archived,
     revision,
+    fetchPage,
+    refresh,
+    reveal,
+    read,
+    update,
+    isAppending,
   ]);
   const select = async (topic: GroupTopic) => {
     const original = latest.current;
@@ -140,6 +231,8 @@ export function GroupTopicList({
       );
       if (topic.groupId !== group.id || topic.id !== topicId || topic.archivedAt)
         throw new Error("Restored topic mismatch");
+      revalidate.current.requested++;
+      setRevision((value) => value + 1);
       if (latest.current !== original || signal.aborted) return undefined;
       return peer.call(
         "groups.topics.switch",
@@ -164,7 +257,6 @@ export function GroupTopicList({
       return;
     }
     renameLock.current = true;
-    const version = epoch.current;
     const result = await task.run((signal) =>
       peer.call(
         "groups.topics.rename",
@@ -173,7 +265,14 @@ export function GroupTopicList({
       ),
     );
     renameLock.current = false;
-    if (result && version === epoch.current) {
+    if (result && result.id === topicId) {
+      update((current) => ({
+        ...current,
+        topics: current.topics.map((topic) =>
+          topic.id === topicId ? { ...topic, title: result.title } : topic,
+        ),
+      }));
+      if (query) revalidate.current.requested++;
       setEditing(undefined);
       setRevision((value) => value + 1);
     }
@@ -196,10 +295,8 @@ export function GroupTopicList({
   );
   return (
     <TopicListView
-      topics={topics.filter(
-        (topic) => topic.groupId === group.id && !!topic.archivedAt === archived,
-      )}
-      currentId={draft ? undefined : group.conversationId}
+      topics={topics}
+      currentId={targetId}
       archived={archived}
       setArchived={setArchived}
       query={query}
@@ -228,28 +325,13 @@ export function GroupTopicList({
       restore={(id) => void restore(id)}
       more={more}
       loadMore={() => {
-        const version = epoch.current;
-        void task
-          .run((signal) =>
-            peer.call(
-              "groups.topics.list",
-              { groupId: group.id, before: topics.at(-1)?.id, limit: 50, query, archived },
-              { signal, timeoutMs: 30000 },
-            ),
-          )
-          .then((next) => {
-            if (
-              next &&
-              version === epoch.current &&
-              next.every((topic) => topic.groupId === group.id && !!topic.archivedAt === archived)
-            ) {
-              setTopics((previous) => {
-                const ids = new Set(previous.map((topic) => topic.id));
-                return [...previous, ...next.filter((topic) => !ids.has(topic.id))];
-              });
-              setMore(next.length === 50);
-            }
-          });
+        revealCancelRef.current?.abort();
+        revealCancelRef.current = null;
+        void task.run(
+          (signal) => append(fetchPage, signal),
+          (error) =>
+            error instanceof TopicScopeMismatchError ? "workspace.unavailable" : actionError(error),
+        );
       }}
     />
   );

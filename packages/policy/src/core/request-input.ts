@@ -25,6 +25,13 @@ import type { EvaluationInput, Platform } from "./types.ts";
 const privateApprovals = z.strictObject({
   approved: z.array(z.string().min(1).max(300)).max(64),
 });
+const projectNotesFingerprint = z.strictObject({
+  target: z.string().min(1),
+  diffHash: z.hash("sha256"),
+  contentHash: z.hash("sha256"),
+  beforeHash: z.hash("sha256").nullable(),
+});
+
 const requestSchema = z.discriminatedUnion("category", [
   z.strictObject({ category: z.literal("tool_discovery") }),
   z.strictObject({ category: z.literal("plugin_install") }),
@@ -61,7 +68,7 @@ const requestSchema = z.discriminatedUnion("category", [
     scopeValid: z.boolean(),
   }),
   z.strictObject({
-    category: z.literal("image_generation"),
+    category: z.enum(["image_generation", "video_generation"]),
     recipient: z.string().min(1).max(253),
     provider: z.string().min(1).max(200),
     model: z.string().min(1).max(200),
@@ -92,6 +99,18 @@ const requestSchema = z.discriminatedUnion("category", [
   z.strictObject({
     category: z.literal("work_dispatch"),
     mainDirect: z.boolean().optional(),
+  }),
+  z.strictObject({
+    category: z.literal("settings_change"),
+    operation: z.enum(["read", "ordinary", "security"]),
+    mainDirect: z.boolean().optional(),
+    unattended: z.boolean().optional(),
+  }),
+  z.strictObject({
+    category: z.literal("pi_repair"),
+    operation: z.enum(["check", "repair"]),
+    mainDirect: z.boolean().optional(),
+    mustAsk: z.boolean().optional(),
   }),
   z.strictObject({
     category: z.literal("memory"),
@@ -140,6 +159,13 @@ const requestSchema = z.discriminatedUnion("category", [
       category: z.literal(category),
       path: z.string().min(1),
       projectNotes: z.boolean().optional(),
+      projectNotesReview: z
+        .strictObject({
+          reviewed: projectNotesFingerprint,
+          change: projectNotesFingerprint,
+        })
+        .optional(),
+      knowledgeRoot: z.string().min(1).optional(),
     }),
   ),
   z.strictObject({
@@ -237,6 +263,14 @@ export function parseInput(input: EvaluationInput, platform: Platform): Evaluati
   )
     throw new PolicyInputError("Conflicting or non-command execution recipe facts");
   const { isAbsolute } = pathApi(platform);
+  const boundSkillScript =
+    input.boundSkillScript &&
+    z
+      .strictObject({
+        folder: z.string().refine(isAbsolute),
+        dataDir: z.string().refine(isAbsolute),
+      })
+      .parse(input.boundSkillScript);
   const groupOutputRoots = outputRoots(input.groupOutputRoots, isAbsolute);
   const commandReadRoots = outputRoots(input.commandReadRoots, isAbsolute);
   return {
@@ -245,6 +279,7 @@ export function parseInput(input: EvaluationInput, platform: Platform): Evaluati
     gitHook,
     hostSsh,
     gitEntries,
+    boundSkillScript,
     ...(input.outsideSandbox === undefined
       ? {}
       : { outsideSandbox: OutsideSandboxFactsSchema.parse(input.outsideSandbox) }),

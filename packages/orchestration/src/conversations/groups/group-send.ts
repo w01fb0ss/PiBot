@@ -8,6 +8,7 @@ import {
   quotedAttachmentIds,
   quotedPrompt,
   resolveMessageQuote,
+  runModelOverride,
   type UserMessageDisplay,
   userMessageUsage,
   validateImageInputs,
@@ -128,23 +129,25 @@ export class GroupSender {
       throw new RpcError(-32602, "group_topic_stale");
     const conversationId = threadId ?? group.conversationId;
     const quoteScope = { groupId, conversationId };
+    const modelScope = { ...quoteScope, taskId: task?.id };
     const quote = resolveMessageQuote(
       this.service.deps.db,
       params.replyToMessageId,
       quoteScope,
       this.service.deps.redactor,
     );
-    const explicit = coordinatorOnly
-      ? [group.coordinatorBotId]
-      : workflow
-        ? [workflow.botId]
-        : template
-          ? [group.coordinatorBotId]
-          : threadId
-            ? []
-            : quote?.botId
-              ? [quote.botId]
-              : mentions(this.service.deps.db, group, text, params.mentions ?? []);
+    const explicit =
+      coordinatorOnly || display?.dispatch
+        ? [group.coordinatorBotId]
+        : workflow
+          ? [workflow.botId]
+          : template
+            ? [group.coordinatorBotId]
+            : threadId
+              ? []
+              : quote?.botId
+                ? [quote.botId]
+                : mentions(this.service.deps.db, group, text, params.mentions ?? []);
     const ids = task
       ? [task.assigneeBotId]
       : quote?.botId
@@ -168,9 +171,15 @@ export class GroupSender {
       const targets: {
         bot: Awaited<ReturnType<GroupService["model"]>>["bot"];
         files: PreparedAttachments;
+        override: import("@pibot/protocol-base").ModelOverride | undefined;
       }[] = [];
       for (const id of ids) {
-        const { bot, model } = await this.service.model(id, signal);
+        const { bot, model, effective, override } = await this.service.model(
+          id,
+          signal,
+          undefined,
+          modelScope,
+        );
         const files = await this.service.deps.chat.attachments.prepare(
           id,
           params.attachments ?? [],
@@ -189,15 +198,21 @@ export class GroupSender {
         prepared.push(files);
         await validateImageInputs(
           this.service.deps.agent,
-          bot,
+          effective ?? bot,
           files,
           signal,
           this.service.deps.local.imageProvider,
         );
-        targets.push({ bot, files });
+        targets.push({ bot, files, override });
       }
       signal.throwIfAborted();
       await confirmation?.beforeCommit();
+      for (const { bot, override } of targets)
+        if (
+          JSON.stringify(runModelOverride(this.service.deps.db, bot, modelScope)) !==
+          JSON.stringify(override)
+        )
+          throw new RpcError(-32011, "model_override_changed");
       signal.throwIfAborted();
       this.service.active(groupId);
       this.service.deps.chat.queue.capacity(ids);

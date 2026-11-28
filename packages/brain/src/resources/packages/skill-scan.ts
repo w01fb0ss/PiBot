@@ -1,6 +1,8 @@
 import { constants } from "node:fs";
 import { mkdir, open } from "node:fs/promises";
 import { basename, dirname, extname } from "node:path";
+import { isSafeSecretEnvName } from "@pibot/execution";
+import { scriptLanguage } from "@pibot/policy";
 import { envExampleFilter, SKILL_BODY_MAX_BYTES } from "@pibot/protocol-base";
 import { PackageError, scriptLike, textOf } from "./skill-package.ts";
 import { detectRuntimeRequirements, RUNTIME_MANIFEST_MAX_BYTES } from "./skill-runtime.ts";
@@ -20,6 +22,7 @@ export interface SkillPackageSummary {
   licenses: { path: string; agpl: boolean; gpl: boolean }[];
   /** `optional` marks names the example only declares commented out (`# NAME=`). */
   environmentVariables: { name: string; optional: boolean }[];
+  bindableEnvironmentVariables?: string[];
   /** Absent when the package was never analyzed; the contract treats the same field as optional. */
   runtimeRequirements?: {
     runtime: "python" | "node";
@@ -135,8 +138,20 @@ async function analyze(file: SkillSourceFile, signal: AbortSignal, activity?: ()
   } catch {
     text = false;
   }
+  const script = scriptLike(file.path, head);
+  if (script && text) {
+    const source = head.toString("utf8");
+    const references =
+      scriptLanguage(file.path, source) === "shell"
+        ? /(?<!\\)\$\{?([A-Z][A-Z0-9_]{0,63})\b/g
+        : /(?:process\.env\.|\$env:)([A-Z][A-Z0-9_]{0,63})\b|(?:process\.env\[|(?:os\.)?environ(?:\.get)?[[(]|(?:os\.)?getenv\()['"]([A-Z][A-Z0-9_]{0,63})['"]/gi;
+    for (const match of source.matchAll(references)) {
+      const name = match[1] ?? match[2];
+      if (name && /^[A-Z][A-Z0-9_]{0,63}$/.test(name) && !names.has(name)) names.set(name, false);
+    }
+  }
   return {
-    script: scriptLike(file.path, head),
+    script,
     text,
     license: license ? { path: file.path, agpl, gpl } : undefined,
     names,
@@ -212,6 +227,10 @@ export async function scanSkillPackage(
   summary.environmentVariables = [...variables]
     .map(([name, optional]) => ({ name, optional }))
     .sort((a, b) => a.name.localeCompare(b.name));
+  summary.bindableEnvironmentVariables = summary.environmentVariables
+    .map(({ name }) => name)
+    .filter(isSafeSecretEnvName)
+    .slice(0, 64);
   // Manifests are read from the listing the scan already paid for, each under an explicit
   // bound, so detection cannot turn a preview into an arbitrary file read.
   const byPath = new Map(files.map((file) => [file.path, file]));

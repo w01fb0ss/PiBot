@@ -2,6 +2,7 @@
  * Shared pieces of the knowledge tools: the types every part of the capability speaks, the two
  * answer markers, and the small helpers that both the executors and the prepare phase use.
  */
+import type { DatabaseSync } from "node:sqlite";
 import type { LocalService, ToolExecutor, ToolRunContext } from "@pibot/brain/kit";
 import { ConnectorToolError } from "@pibot/brain/kit";
 import { type KnowledgeConfig, type KnowledgeSource, RpcError } from "@pibot/plugins-contract/full";
@@ -43,6 +44,7 @@ export interface Failure {
 }
 
 export interface KnowledgeToolDeps {
+  db: DatabaseSync;
   repo: KnowledgeRepo;
   connectors: ConnectorsRepo;
   service: ConnectorService;
@@ -57,6 +59,7 @@ export interface KnowledgeToolContext {
 export type CallAuthorization = {
   confirmedNow: boolean;
   assertCurrent(): void;
+  recordInputTranslation?(text: string): void;
   /** This call's own prepare result (KB-11 judged connections); absent for older callers. */
   data?: unknown;
 };
@@ -66,14 +69,11 @@ export function selectSources(
   context: ToolRunContext,
   selector?: string,
 ): { source: KnowledgeSource; config: KnowledgeConfig }[] {
-  const assigned = repo
-    .assigned({ botId: context.botId, groupId: context.groupId })
-    .slice(0, MAX_SOURCES);
+  const assigned = repo.assigned({ botId: context.botId, groupId: context.groupId });
   const wanted = selector?.trim().toLowerCase();
-  if (!wanted) return assigned;
-  return assigned.filter(
-    (entry) => entry.source.id === wanted || entry.source.name.toLowerCase() === wanted,
-  );
+  if (!wanted) return assigned.slice(0, MAX_SOURCES);
+  const exact = assigned.find((entry) => entry.source.id === wanted);
+  return exact ? [exact] : assigned.filter((entry) => entry.source.name.toLowerCase() === wanted);
 }
 
 export function noSourceText(repo: KnowledgeRepo, context: ToolRunContext, selector?: string) {

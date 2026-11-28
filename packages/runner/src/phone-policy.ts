@@ -21,7 +21,7 @@ const digest = (value: unknown) =>
 export function phonePolicyFacts(targetId: string, source?: PolicyFactSource) {
   const pending = new Map<
     string,
-    { input: RunnerPolicyPreparation; hash: string; expiresAt: number }
+    { input: RunnerPolicyPreparation; hash: string; expiresAt: number; windowsReadOnly: boolean }
   >();
   const active = new Map<
     string,
@@ -47,7 +47,13 @@ export function phonePolicyFacts(targetId: string, source?: PolicyFactSource) {
       if (Buffer.byteLength(JSON.stringify(facts)) > 600_000)
         throw new RpcError(RpcErrorCodes.busy, "policy_facts_capacity");
       signal.throwIfAborted();
-      pending.set(input.opId, { input, hash: digest(facts), expiresAt: Date.now() + 120_000 });
+      pending.set(input.opId, {
+        input,
+        hash: digest(facts),
+        expiresAt: Date.now() + 120_000,
+        windowsReadOnly:
+          facts.result.reason === "windows_read_only" && facts.result.windowsReadOnly === true,
+      });
       return facts;
     },
     claim(
@@ -64,6 +70,7 @@ export function phonePolicyFacts(targetId: string, source?: PolicyFactSource) {
         homeDir?: unknown;
         skillGroupId?: unknown;
         gitEntryPlanId?: unknown;
+        windowsReadOnly?: unknown;
       },
     ) {
       const held = opId ? pending.get(opId) : undefined;
@@ -91,10 +98,12 @@ export function phonePolicyFacts(targetId: string, source?: PolicyFactSource) {
           file.pathEntries !== undefined ||
           file.homeDir !== undefined ||
           file.skillGroupId !== undefined ||
-          file.gitEntryPlanId !== undefined)
+          file.gitEntryPlanId !== undefined ||
+          file.windowsReadOnly !== undefined)
       )
         return refused();
       active.set(opId as string, held);
+      return held.windowsReadOnly;
     },
     async assert(opId: string, signal: AbortSignal) {
       const held = active.get(opId);

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { InboxOriginSchema } from "../app/inbox-origin.ts";
 import { IdSchema } from "../core/ids.ts";
+import { optionalPageBefore } from "../tools/pagination.ts";
 
 export const PersonalTodoColors = [
   "coral",
@@ -127,7 +128,7 @@ export const PersonalTodoToolDeclarationSchema = z.strictObject({
   sourceKey: SourceKeySchema.optional(),
   id: IdSchema.optional(),
   status: z.enum(["open", "done"]).optional(),
-  before: IdSchema.optional(),
+  before: optionalPageBefore,
   limit: z.number().int().min(1).max(100).optional(),
 });
 const ACTION_FIELDS: Record<string, readonly string[]> = {

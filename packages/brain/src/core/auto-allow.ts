@@ -4,6 +4,7 @@ import {
   EDITOR_SESSION_REASON,
   EDITOR_TERMINAL_READONLY_REASON,
   type PolicyResult,
+  SETTINGS_SECURITY_CONFIRM,
   WINDOWS_READ_ONLY,
 } from "@pibot/policy";
 import type { Grant } from "@pibot/protocol-base";
@@ -31,9 +32,15 @@ const AUTO_ALLOW_REASONS = new Set([
   "run_grant_matched",
   "paid_grant_matched",
   "routine_paid_preapproved",
+  "project_notes_reviewed",
 ]);
 
 export function isAutoAllowed(result: PolicyResult): boolean {
+  if (
+    result.reason === SETTINGS_SECURITY_CONFIRM ||
+    result.explanation?.some((step) => step.code === SETTINGS_SECURITY_CONFIRM)
+  )
+    return false;
   return result.decision === "allow" && AUTO_ALLOW_REASONS.has(result.reason);
 }
 
@@ -45,11 +52,14 @@ export function auditAutoAllow(
   result: PolicyResult,
 ) {
   const { redactor } = local.deps;
+  const reviewedImport = result.reason === "project_notes_reviewed";
   local.approvals.audit.append({
     botId: context.botId,
     runId: context.runId,
     kind: "approval.resolved",
-    summary: "Allowed automatically / 自动允许",
+    summary: reviewedImport
+      ? "Allowed in import preview / 已在导入预览中允许"
+      : "Allowed automatically / 自动允许",
     detail: {
       ...auditToolFields(call, redactor, result, local.deps.capabilityTools),
       botName: auditText(new BotsRepo(local.deps.db).get(context.botId)?.name ?? "Bot", redactor),
@@ -58,7 +68,7 @@ export function auditAutoAllow(
       toolCallId: call.id,
       decision: "allow",
       remember: false,
-      actor: "automatic",
+      actor: reviewedImport ? "user" : "automatic",
       reasonCode: result.reason,
       risk: result.risk,
       ...(context.groupId ? { groupId: context.groupId } : {}),

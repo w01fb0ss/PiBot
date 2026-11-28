@@ -26,7 +26,12 @@ export const calendarTools = [
       end: str(64),
       calendarId: str(),
       calendarIds: { type: "array", items: str(), minItems: 1, maxItems: 100, uniqueItems: true },
-      cursor: str(),
+      cursor: {
+        type: ["string", "number", "null"],
+        maxLength: 4096,
+        description:
+          "Omit cursor for the first page; never pass placeholders. Copy nextCursor for later pages.",
+      },
       limit,
     },
     ["start", "end"],

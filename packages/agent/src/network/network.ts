@@ -171,10 +171,10 @@ export function installAgentNetwork(
         // SDKs can flatten HTTP errors before onResponse runs. Forward only Retry-After,
         // scoped to this provider attempt; never retain headers or share a process-wide value.
         async response(response) {
-          if (response.status !== 429) return;
+          if (response.status !== 429 && response.status < 500) return;
           const retryAfter = response.headers.get("retry-after");
           await options?.onResponse?.(
-            { status: 429, headers: retryAfter ? { "retry-after": retryAfter } : {} },
+            { status: response.status, headers: retryAfter ? { "retry-after": retryAfter } : {} },
             model,
           );
         },

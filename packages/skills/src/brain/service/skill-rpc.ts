@@ -68,11 +68,25 @@ export function registerSkillRpc(
           .skillsFor(params.groupId)
           .readFile(params.skillId, params.path, AbortSignal.any([signal, context.signal])),
   );
-  handle("skills.pickFiles", ({ groupId, botId, from }) =>
-    owner
-      .skillsFor(groupId)
-      .pickFiles(botId, from, AbortSignal.any([signal, AbortSignal.timeout(660_000)])),
-  );
+  handle("skills.pickFiles", async ({ groupId, botId, from, dropId }, context) => {
+    const skills = owner.skillsFor(groupId);
+    if (from === "drop" && dropId) {
+      if (context.source === "acp")
+        throw new RpcError(RpcErrorCodes.unsupported, "skill_picker_unavailable");
+      context.signal.throwIfAborted();
+      skills.activeBot(botId);
+      return skills.uploads.drop(
+        dropId,
+        AbortSignal.any([signal, context.signal, AbortSignal.timeout(30_000)]),
+      );
+    }
+    if (from === "drop") throw new RpcError(RpcErrorCodes.invalidParams, "skill_files_invalid");
+    return skills.pickFiles(
+      botId,
+      from,
+      AbortSignal.any([signal, context.signal, AbortSignal.timeout(660_000)]),
+    );
+  });
   handle("skills.create", ({ botId, requestId, document, enabled, files }, context) =>
     owner.idempotentWrite(
       requestId,
@@ -159,44 +173,100 @@ export function registerSkillRpc(
   handle("skills.cancelPreview", async ({ groupId, previewId }) =>
     owner.skillsFor(groupId).imports.cancel(previewId),
   );
-  handle("skills.import", ({ groupId, previewId }, context) =>
-    owner.skillsFor(groupId).imports.import(previewId, AbortSignal.any([signal, context.signal])),
-  );
+  handle("skills.secretChoices", async ({ botId }, context) => {
+    if (context.source === "acp")
+      throw new RpcError(RpcErrorCodes.invalidParams, "skill_secret_invalid");
+    await owner.skills.deps.local?.userSecrets.ready(context.signal);
+    return owner.skills.secretChoices(botId);
+  });
+  handle("skills.secretBindings", async ({ groupId, skillId }, context) => {
+    if (context.source === "acp")
+      throw new RpcError(RpcErrorCodes.invalidParams, "skill_secret_invalid");
+    const skills = owner.skillsFor(groupId);
+    const record = skills.require(skillId);
+    await skills.deps.local?.userSecrets.ready(context.signal);
+    const names = new Map<string, string | null>(
+      skills.secretBindings(skillId).map(({ variable, secretName }) => [variable, secretName]),
+    );
+    for (const variable of await skills.secretVariables(skillId, context.signal)) {
+      if (names.size === 64) break;
+      if (!names.has(variable)) names.set(variable, null);
+    }
+    return {
+      bindings: [...names].map(([variable, secretName]) => ({ variable, secretName })),
+      available: skills.secretChoices(record.botId),
+    };
+  });
+  handle("skills.setSecretBindings", async ({ groupId, skillId, bindings }, context) => {
+    if (context.source === "acp")
+      throw new RpcError(RpcErrorCodes.invalidParams, "skill_secret_invalid");
+    const skills = owner.skillsFor(groupId);
+    await skills.deps.local?.userSecrets.ready(context.signal);
+    const variables = await skills.secretVariables(skillId, context.signal);
+    context.signal.throwIfAborted();
+    skills.bindSecrets(skills.require(skillId), bindings, variables);
+    return { ok: true };
+  });
+  handle("skills.import", ({ groupId, previewId, bindings }, context) => {
+    if (context.source === "acp" && bindings?.length)
+      throw new RpcError(RpcErrorCodes.invalidParams, "skill_secret_invalid");
+    const work = AbortSignal.any([signal, context.signal]);
+    return owner.skillsFor(groupId).imports.import(previewId, work, bindings);
+  });
   handle("skills.proposals", async (params) => owner.skills.proposals.list(params));
   handle("skills.propose.resolve", (params) => owner.skills.proposals.resolve(params));
   // The plan hash makes the run idempotent the way the card does — a retry installs the
   // exact plan the user approved, and a changed plan is rejected instead of slipping through.
-  handle("skills.runtime", ({ groupId, skillId }, context) =>
+  handle("skills.runtime", ({ groupId, skillId, runtime }, context) =>
     measure("skills.runtime", "runtime", async () => {
       const skills = owner.skillsFor(groupId);
       const work = AbortSignal.any([signal, context.signal]);
       await skills.readLocation(skills.require(skillId), work);
       work.throwIfAborted();
-      const status = await owner.runtime.status(runtimeTarget(groupId, skillId), work);
+      const status = await owner.runtime.status(runtimeTarget(groupId, skillId), work, runtime);
       work.throwIfAborted();
       return status;
     }),
   );
-  handle("skills.runtime.prepare", ({ groupId, skillId, requestId, planHash }, context) =>
-    owner.idempotentWrite(
-      requestId,
-      { method: "skills.runtime.prepare", groupId, skillId, planHash },
-      context.signal,
-      (queueSignal) =>
-        owner.runtime.prepare(
-          runtimeTarget(groupId, skillId),
+  handle(
+    "skills.runtime.prepare",
+    (
+      { groupId, skillId, runtime, requestId, planHash, confirmWithoutIsolation, useMirror },
+      context,
+    ) => {
+      if (context.source === "acp")
+        throw new RpcError(RpcErrorCodes.invalidParams, "skill_runtime_confirmation_required");
+      return owner.idempotentWrite(
+        requestId,
+        {
+          method: "skills.runtime.prepare",
+          groupId,
+          skillId,
+          runtime,
           planHash,
-          AbortSignal.any([signal, queueSignal, AbortSignal.timeout(30 * 60_000)]),
-        ),
-    ),
+          confirmWithoutIsolation,
+          useMirror,
+        },
+        context.signal,
+        (queueSignal) =>
+          owner.runtime.prepare(
+            runtimeTarget(groupId, skillId),
+            planHash,
+            AbortSignal.any([signal, queueSignal, AbortSignal.timeout(30 * 60_000)]),
+            confirmWithoutIsolation,
+            useMirror,
+            runtime,
+          ),
+      );
+    },
   );
-  handle("skills.runtime.cancel", ({ groupId, skillId }) =>
-    owner.runtime.cancel(runtimeTarget(groupId, skillId)),
+  handle("skills.runtime.cancel", ({ groupId, skillId, runtime }) =>
+    owner.runtime.cancel(runtimeTarget(groupId, skillId), runtime),
   );
-  handle("skills.runtime.remove", ({ groupId, skillId }) =>
-    owner.runtime.remove(runtimeTarget(groupId, skillId)),
+  handle("skills.runtime.remove", ({ groupId, skillId, runtime }) =>
+    owner.runtime.remove(runtimeTarget(groupId, skillId), runtime),
   );
-  handle("skills.runtime.log", ({ groupId, skillId }) =>
-    owner.runtime.log(runtimeTarget(groupId, skillId)),
+  handle("skills.runtime.log", ({ groupId, skillId, runtime }) =>
+    owner.runtime.log(runtimeTarget(groupId, skillId), runtime),
   );
 }

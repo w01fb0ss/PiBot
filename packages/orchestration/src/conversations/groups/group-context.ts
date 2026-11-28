@@ -115,6 +115,7 @@ export function groupPrompt(
       ...(b?.category === "image"
         ? {
             capability: groupContextPrompts.imageMember,
+            imageModel: { provider: b.modelProvider, id: b.modelId },
           }
         : b?.kind === "agent"
           ? {

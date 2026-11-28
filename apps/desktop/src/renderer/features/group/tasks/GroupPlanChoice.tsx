@@ -1,4 +1,4 @@
-import type { MethodParams, GroupPlanProgress as Progress } from "@pibot/protocol";
+import type { MethodParams, MethodResults, GroupPlanProgress as Progress } from "@pibot/protocol";
 import { useRpc, useT } from "@pibot/renderer-kit";
 import { Button } from "@pibot/ui";
 import { useEffect, useRef, useState } from "react";
@@ -19,7 +19,7 @@ export function GroupPlanChoice({
   groupId: string;
   progress: Progress & { choice: NonNullable<Progress["choice"]> };
   titles: ReadonlyMap<string, string>;
-  changed(value: Progress, choice: Choice): void;
+  changed(value: MethodResults["groups.plan.choose"], choice: Choice): void;
 }) {
   const t = useT();
   const { peer } = useRpc();
@@ -56,7 +56,9 @@ export function GroupPlanChoice({
       }
     }
   };
-  const steps = progress.choice.stepIds.map((id) => titles.get(id) ?? id).join(" · ");
+  const steps = progress.choice.stepIds
+    .map((id) => titles.get(id) ?? t("group.plan.step.untitled"))
+    .join(" · ");
   const options: { choice: Choice; label: string; primary?: boolean }[] =
     progress.choice.kind === "replan_limit"
       ? [

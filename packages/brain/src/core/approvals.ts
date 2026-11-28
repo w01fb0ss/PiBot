@@ -3,13 +3,17 @@ import { rememberableSystemService } from "@pibot/execution";
 import {
   createGrantScope,
   explainPolicyResult,
+  OUTSIDE_SANDBOX_REASON,
   type PolicyResult,
+  SETTINGS_SECURITY_CONFIRM,
+  WINDOWS_FILE_READ_CONFIRMATION,
   yoloMustAsk,
 } from "@pibot/policy";
 import {
   type Approval,
   type ApprovalFact,
   type ApprovalFinalStatus,
+  type ApprovalModelOption,
   type ComputerApprovalRequest,
   credentialSiteLabel,
   isPiManagerCategory,
@@ -52,6 +56,9 @@ export class ApprovalChangedError extends RpcError {
 }
 
 interface Waiting {
+  lifetimeRunId: string;
+  modelOptions?: ApprovalModelOption[];
+  evaluateModel?(id: string): Promise<{ result: PolicyResult; commit(): void }>;
   taskWebScope?: string;
   editorSessionShape?: string;
   folderChange?: ApprovalFolderChange;
@@ -74,6 +81,8 @@ interface Waiting {
     allowConversation?: boolean,
     allowTaskWeb?: boolean,
     allowSession?: boolean,
+    modelOption?: ApprovalModelOption,
+    rememberDirectRun?: boolean,
   ): void;
 }
 /** The connection tool a card asks about, taken from the resolved call rather than model text. */
@@ -95,7 +104,10 @@ export class ApprovalService {
     remember: boolean,
     preauthorize: boolean,
   ) => Promise<{ ok: true }>;
-  pausedResolve?: (id: string, decision: "allow" | "deny") => Promise<{ ok: true }>;
+  pausedResolve?: (
+    id: string,
+    decision: "allow" | "deny",
+  ) => Promise<{ ok: true; superseded?: true }>;
   deniedOnResume(context: ToolRunContext, call: LocalToolCall): boolean {
     return (
       new ApprovalPausesRepo(this.deps.db).consume(context.runId, approvalCallHash(call)) ===
@@ -163,6 +175,8 @@ export class ApprovalService {
   constructor(
     private readonly deps: LocalDependencies,
     private readonly taskScope: (context: ToolRunContext) => string | undefined = () => undefined,
+    /** Display name of a model provider; custom providers are otherwise only a UUID. */
+    private readonly providerName: (providerId: string) => string | null = () => null,
   ) {
     this.repo = new ApprovalsRepo(deps.db);
     this.audit = new AuditRepo(deps.db, deps.redactor);
@@ -175,33 +189,56 @@ export class ApprovalService {
       const pending = this.repo.pendingForRecovery({ limit: 200 });
       if (!pending.length) break;
       transaction(this.deps.db, () => {
-        for (const value of pending) {
-          this.repo.resolve(value.id, "expired");
-          this.audit.append({
-            botId: value.botId,
-            runId: value.runId,
-            kind: "approval.resolved",
-            summary: "Approval expired after restart / 重启后审批过期",
-            detail: {
-              ...auditToolFields(
-                { tool: value.category, input: {} },
-                this.deps.redactor,
-                value,
-                this.deps.capabilityTools,
-              ),
-              botName: auditText(this.bots.get(value.botId)?.name ?? "Bot", this.deps.redactor),
-              category: value.category,
-              approvalId: value.id,
-              toolCallId: value.toolCallId,
-              status: "expired",
-              actor: "system",
-              decision: "deny",
-              remember: false,
-            },
-          });
-        }
+        for (const value of pending) this.expire(value, "system");
       });
     }
+  }
+  /**
+   * The same expiry as startup recovery, for one card no live run waits on while the brain keeps
+   * running (the default Pi's repair, on the person's request). Paused, send-draft and parked
+   * routine cards are not orphans and are left to their own paths; a card with a live waiter is
+   * answered by its run. False when the card is not such an orphan (anymore).
+   */
+  expireOrphan(id: string): boolean {
+    if (this.waiting.has(id)) return false;
+    const value = transaction(this.deps.db, () => {
+      const orphan = this.repo.recoverable(id);
+      if (orphan) this.expire(orphan, "user", "approval_settled_by_pi");
+      return orphan;
+    });
+    if (!value) return false;
+    this.deps.peer.emit("approval.resolved", { id, status: "expired", remembered: false });
+    this.deps.peer.emit("inbox.changed", {});
+    return true;
+  }
+  private expire(value: Approval, actor: "system" | "user", reasonCode?: string) {
+    this.repo.resolve(value.id, "expired");
+    this.audit.append({
+      botId: value.botId,
+      runId: value.runId,
+      kind: "approval.resolved",
+      summary:
+        actor === "system"
+          ? "Approval expired after restart / 重启后审批过期"
+          : "Approval nobody waited on expired / 没有运行在等的审批已过期",
+      detail: {
+        ...auditToolFields(
+          { tool: value.category, input: {} },
+          this.deps.redactor,
+          value,
+          this.deps.capabilityTools,
+        ),
+        botName: auditText(this.bots.get(value.botId)?.name ?? "Bot", this.deps.redactor),
+        category: value.category,
+        approvalId: value.id,
+        toolCallId: value.toolCallId,
+        status: "expired",
+        actor,
+        decision: "deny",
+        remember: false,
+        ...(reasonCode ? { reasonCode } : {}),
+      },
+    });
   }
   async serial<T>(
     botId: string,
@@ -234,7 +271,7 @@ export class ApprovalService {
     result: PolicyResult,
     isolation: Approval["isolation"],
     evaluate: () => Promise<PolicyResult>,
-    onAllowed?: () => void,
+    onAllowed?: (rememberDirectRun?: boolean) => void,
     lifecycle?: {
       requested(approval: Approval): void;
       resolved(approval: Approval, by: ResolvedBy): void;
@@ -247,27 +284,42 @@ export class ApprovalService {
       computer?: ComputerApprovalRequest;
       login?: LoginApprovalRequest;
       connector?: ConnectorCardDisplay;
+      connectorNetworkSite?: string;
+      waitMs?: number;
       /** Original delegated request spelling; policy facts retain their canonical identities. */
       facts?: ApprovalFact[];
       title?(language: "zh" | "en"): string;
       /** A capability's own card text (labelled rows, one lead sentence) in each language. */
       text?(language: "zh" | "en"): { title: string; lead?: string; facts: ApprovalFact[] };
+      modelOptions?: ApprovalModelOption[];
+      evaluateModel?: Waiting["evaluateModel"];
+      pauseBinding?: string;
+      directRunRemember?: Approval["directRunRemember"];
+      /** A derived card can be shown under the originating message while another run waits. */
+      lifetimeRunId?: string;
     },
     folderChange?: ApprovalFolderChange,
   ): Promise<ApprovalFinalStatus> {
     context.signal.throwIfAborted();
     const { deps } = this;
+    const fileRead =
+      result.reason === WINDOWS_FILE_READ_CONFIRMATION &&
+      (result.category === "list_dir" || result.category === "read_file")
+        ? result.category
+        : undefined;
     const pauseRepo = new ApprovalPausesRepo(deps.db);
     const callHash = approvalCallHash(call);
-    const factsHash = approvalFactsHash(context, call, result, isolation);
-    const resumed = transaction(deps.db, () => {
-      const status = pauseRepo.consume(context.runId, callHash, factsHash, call.id);
-      if (status === "allowed") {
-        if (lifecycle?.resuming) lifecycle.resuming(pauseRepo.takeChoice(context.runId, call.id));
-        onAllowed?.();
-      }
-      return status;
-    });
+    const factsHash = approvalFactsHash(context, call, result, isolation, card?.pauseBinding);
+    const resumed =
+      !card?.connectorNetworkSite &&
+      transaction(deps.db, () => {
+        const status = pauseRepo.consume(context.runId, callHash, factsHash, call.id);
+        if (status === "allowed") {
+          if (lifecycle?.resuming) lifecycle.resuming(pauseRepo.takeChoice(context.runId, call.id));
+          onAllowed?.();
+        }
+        return status;
+      });
     if (resumed) return Promise.resolve(resumed);
     const taskWebScope =
       call.tool === "web_fetch" && result.taskWebReadAvailable
@@ -284,6 +336,13 @@ export class ApprovalService {
           target: context.executionDevice.target,
         }
       : undefined;
+    // Acceptance 2026-11-25: a custom image provider showed as its UUID on the card and in the
+    // remember text; people know it by the name they gave it.
+    const providerLabel = (id: string) => auditText(this.providerName(id) ?? id, deps.redactor);
+    const imageProvider =
+      call.tool === "image_generation" && typeof call.input.provider === "string"
+        ? providerLabel(call.input.provider)
+        : undefined;
     const connector = card?.connector
       ? {
           ...card.connector,
@@ -326,6 +385,11 @@ export class ApprovalService {
         botName,
         {
           secrets: !!result.secretUses?.length,
+          fileRead,
+          ...((fileRead === "list_dir" || call.tool === "list_dir") && result.path && !device
+            ? { listing: { path: result.path.path, home: deps.userHome, platform: deps.platform } }
+            : {}),
+          ...(imageProvider ? { imageProvider } : {}),
           ...(connector
             ? {
                 connector: {
@@ -349,7 +413,7 @@ export class ApprovalService {
           kind: "warning",
           value: `${zh ? "执行设备" : "Execution device"}: ${deviceScope}`,
         });
-        if (call.tool === "run_command")
+        if (call.tool === "run_command" && !fileRead)
           display.title = zh
             ? `${botName} 想在 ${device.name} 上运行命令`
             : `${botName} wants to run a command on ${device.name}`;
@@ -391,8 +455,8 @@ export class ApprovalService {
                               : "Reading public web pages (read-only fetch; not the Bot browser, logins, form submissions or private addresses)"
                             : scope.kind === "paid_image"
                               ? zh
-                                ? `这个 Bot 用 ${scope.provider} / ${scope.model} 付费生成图片（换模型会再问）`
-                                : `This Bot generating paid images with ${scope.provider} / ${scope.model} (another model asks again)`
+                                ? `这个 Bot 用 ${providerLabel(scope.provider)} / ${scope.model} 付费生成图片（换模型会再问）`
+                                : `This Bot generating paid images with ${providerLabel(scope.provider)} / ${scope.model} (another model asks again)`
                               : scope.root;
         display.facts.push({
           kind: "warning",
@@ -483,6 +547,7 @@ export class ApprovalService {
       ...(editorSessionShape ? { editorSession: true as const } : {}),
       ...(card?.computer ? { computer: card.computer } : {}),
       ...(card?.login ? { login: card.login } : {}),
+      ...(card?.connectorNetworkSite ? { connectorNetworkSite: card.connectorNetworkSite } : {}),
       ...(connector
         ? {
             connectorCall: {
@@ -494,8 +559,15 @@ export class ApprovalService {
           }
         : {}),
       facts,
+      ...(result.videoModel ? { videoModel: result.videoModel } : {}),
+      ...(card?.modelOptions ? { modelOptions: card.modelOptions } : {}),
       explanation: result.explanation,
       ...(result.canRemember && result.grantScope ? { grantScope: result.grantScope } : {}),
+      ...(result.canRemember &&
+      result.grantScope?.kind === "paid_image" &&
+      providerLabel(result.grantScope.provider) !== result.grantScope.provider
+        ? { grantScopeProviderName: providerLabel(result.grantScope.provider) }
+        : {}),
       ...(result.secretUses?.length
         ? {
             secretUses: result.secretUses,
@@ -504,16 +576,32 @@ export class ApprovalService {
           }
         : {}),
       canRemember: context.routineRunId ? false : result.canRemember,
+      ...(card?.directRunRemember !== undefined
+        ? {
+            directRunRemember: card.directRunRemember && {
+              program: card.directRunRemember.program,
+              folder: deps.redactor.redact(card.directRunRemember.folder).slice(0, 4096),
+            },
+          }
+        : {}),
       ...(folderChange ? { canAddWritableFolder: true } : {}),
       canPreauthorize: context.routineSource === "routine" && !!consent?.available,
       ...(context.routineRunId
         ? { routineRunId: context.routineRunId, source: context.routineSource ?? "routine" }
         : {}),
       expiresAt: new Date(
-        Date.now() + (context.routineRunId ? (context.routineApprovalWaitMs ?? 86400000) : 600000),
+        Date.now() +
+          (card?.waitMs ??
+            (context.routineRunId ? (context.routineApprovalWaitMs ?? 86400000) : 600000)),
       ).toISOString(),
-      isolation,
-      ...(result.command ? { command: result.command } : {}),
+      isolation:
+        isolation.reason === "windows_unisolated"
+          ? {
+              ...isolation,
+              windowsYoloConsent: this.settings.get().yoloUnisolatedCommands === true,
+            }
+          : isolation,
+      ...(result.command && !fileRead ? { command: result.command } : {}),
       ...(result.url ? { url: result.url } : {}),
       ...(result.domain ? { domain: result.domain } : {}),
     };
@@ -575,7 +663,11 @@ export class ApprovalService {
       const pause = () => {
         if (finished) return;
         if (!context.pauseForApproval || context.routineRunId) {
-          automatic(context.routineRunId ? "expired" : "auto_denied");
+          automatic(
+            context.routineRunId || result.category === "settings_change"
+              ? "expired"
+              : "auto_denied",
+          );
           return;
         }
         try {
@@ -624,6 +716,8 @@ export class ApprovalService {
         allowConversation = false,
         allowTaskWeb = false,
         allowSession = false,
+        modelOption?: ApprovalModelOption,
+        rememberDirectRun = false,
       ) => {
         if (finished) return;
         const checked = current?.explanation ?? result.explanation;
@@ -775,7 +869,15 @@ export class ApprovalService {
               });
             }
           }
-          if (status === "allowed") onAllowed?.();
+          if (status === "allowed") onAllowed?.(rememberDirectRun);
+          if (modelOption && current?.videoModel)
+            this.repo.selectModel(approval.id, context.language, modelOption, {
+              videoModel: {
+                provider: auditText(current.videoModel.provider, deps.redactor),
+                id: auditText(current.videoModel.id, deps.redactor),
+              },
+              domain: current.domain,
+            });
           if (!this.repo.resolve(approval.id, status, remember, resolvedExplanation))
             throw new RpcError(-32602, "Approval is no longer pending");
           if (by === "yolo" && status === "allowed")
@@ -787,12 +889,16 @@ export class ApprovalService {
             summary: `Approval ${status}`,
             detail: {
               ...auditFields,
+              ...(current?.videoModel
+                ? auditToolFields(call, deps.redactor, current, deps.capabilityTools)
+                : {}),
               policySteps: resolvedExplanation.map((step) => step.code),
               category: approval.category,
               approvalId: approval.id,
               toolCallId: call.id,
               decision: status === "allowed" ? "allow" : "deny",
-              remember,
+              ...(rememberDirectRun ? {} : { remember }),
+              ...(rememberDirectRun ? { reasonCode: "sandbox_outside_remember_requested" } : {}),
               ...(allowConversation ? { reasonCode: "conversation_web_read" } : {}),
               ...(allowSession ? { reasonCode: "editor_session_command" } : {}),
               ...(allowTaskWeb || by === "task"
@@ -842,6 +948,7 @@ export class ApprovalService {
       timer = setTimeout(pause, Math.max(1, Date.parse(approval.expiresAt) - Date.now()));
       context.signal.addEventListener("abort", abort, { once: true });
       this.waiting.set(approval.id, {
+        lifetimeRunId: card?.lifetimeRunId ?? context.runId,
         ...(taskWebScope ? { taskWebScope } : {}),
         ...(editorSessionShape ? { editorSessionShape } : {}),
         signal: AbortSignal.any([context.signal, lifetime.signal]),
@@ -849,6 +956,8 @@ export class ApprovalService {
         approval,
         context,
         evaluate,
+        modelOptions: approval.modelOptions,
+        evaluateModel: card?.evaluateModel,
         finish,
         expire: pause,
         detach: () => {
@@ -930,13 +1039,47 @@ export class ApprovalService {
     allowConversation = false,
     allowTaskWeb = false,
     allowSession = false,
-  ): Promise<{ ok: true }> {
+    modelOptionId?: string,
+    rememberDirectRun = false,
+  ): Promise<{ ok: true; superseded?: true }> {
     const waiter = this.waiting.get(id);
+    if (
+      rememberDirectRun &&
+      (!waiter?.approval.directRunRemember ||
+        by !== "user" ||
+        decision !== "allow" ||
+        remember ||
+        preauthorize ||
+        rememberSecrets.length ||
+        connectorConsent ||
+        allowConversation ||
+        allowTaskWeb ||
+        allowSession ||
+        modelOptionId)
+    )
+      throw new RpcError(-32602, "Invalid direct-run consent");
+    const modelOption = waiter?.modelOptions?.find((option) => option.id === modelOptionId);
+    if (
+      modelOptionId &&
+      (!modelOption ||
+        !waiter?.evaluateModel ||
+        decision !== "allow" ||
+        by !== "user" ||
+        remember ||
+        preauthorize ||
+        rememberSecrets.length ||
+        connectorConsent ||
+        allowConversation ||
+        allowTaskWeb ||
+        allowSession)
+    )
+      throw new RpcError(-32602, "video_approval_changed");
     const storedPause = new ApprovalPausesRepo(this.deps.db).get(id);
     if (storedPause && this.pausedResolve) {
       // Persistent/session grants require the new run's current authority, not a stopped waiter.
       if (
         remember ||
+        rememberDirectRun ||
         preauthorize ||
         rememberSecrets.length ||
         connectorConsent ||
@@ -1014,6 +1157,14 @@ export class ApprovalService {
     }
     if (!waiter || this.repo.get(id)?.status !== "pending")
       throw new RpcError(-32602, "Approval is no longer pending");
+    // An automatic resolution (including the YOLO error path) must leave this card pending.
+    if (
+      by !== "user" &&
+      waiter.approval.category === "settings_change" &&
+      waiter.approval.explanation?.some((step) => step.code === SETTINGS_SECURITY_CONFIRM)
+    )
+      return { ok: true as const };
+    if (waiter.approval.connectorNetworkSite && by !== "user") return { ok: true as const };
     waiter.context.signal.throwIfAborted();
     if (preauthorize && (remember || decision !== "allow" || !waiter.approval.canPreauthorize))
       throw new RpcError(-32602, "Invalid routine consent");
@@ -1035,6 +1186,8 @@ export class ApprovalService {
           allowConversation,
           allowTaskWeb,
           allowSession,
+          modelOptionId,
+          rememberDirectRun,
         );
       throw new RpcError(-32602, "Approval has expired");
     }
@@ -1042,7 +1195,8 @@ export class ApprovalService {
       waiter.finish("denied");
       return { ok: true as const };
     }
-    const result = await waiter.evaluate();
+    const selection = modelOption && (await waiter.evaluateModel?.(modelOption.id));
+    const result = selection ? selection.result : await waiter.evaluate();
     waiter.context.signal.throwIfAborted();
     if (this.waiting.get(id) !== waiter || this.repo.get(id)?.status !== "pending")
       throw new RpcError(-32602, "Approval is no longer pending");
@@ -1064,10 +1218,13 @@ export class ApprovalService {
           allowConversation,
           allowTaskWeb,
           allowSession,
+          modelOptionId,
+          rememberDirectRun,
         );
       throw new RpcError(-32602, "Approval has expired");
     }
     if (result.decision === "deny") {
+      if (modelOption) throw new RpcError(-32602, "video_approval_changed");
       waiter.finish("denied", false, result);
       throw new RpcError(-32602, "Permission is now disallowed");
     }
@@ -1102,6 +1259,14 @@ export class ApprovalService {
         result.grantScope.connectorId !== waiter.approval.connectorConsent?.connectorId)
     )
       throw new RpcError(-32602, "Connector consent changed");
+    if (
+      rememberDirectRun &&
+      (result.decision !== "ask" ||
+        result.reason !== OUTSIDE_SANDBOX_REASON ||
+        result.risk !== "danger" ||
+        result.secretUses?.length)
+    )
+      throw new RpcError(-32602, "Direct-run consent changed");
     if (
       remember &&
       (!waiter.approval.canRemember || !result.canRemember || result.risk === "danger")
@@ -1138,7 +1303,10 @@ export class ApprovalService {
         allowConversation,
         allowTaskWeb,
         allowSession,
+        modelOption,
+        rememberDirectRun,
       );
+      selection?.commit();
       const sessionKey = allowSession ? this.webScope(waiter.context) : undefined;
       if (sessionKey && waiter.editorSessionShape) {
         // Bounded like the website consent above; eviction narrows authority and asks again.
@@ -1203,7 +1371,7 @@ export class ApprovalService {
   }
   cancel(runId?: string) {
     for (const waiter of [...this.waiting.values()])
-      if (!runId || waiter.context.runId === runId) waiter.finish("cancelled");
+      if (!runId || waiter.lifetimeRunId === runId) waiter.finish("cancelled");
   }
   async addWritableFolder(id: string, parent: AbortSignal) {
     const waiter = this.waiting.get(id);

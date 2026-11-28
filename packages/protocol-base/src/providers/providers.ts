@@ -1,10 +1,17 @@
 import { z } from "zod";
 import { CustomImageModelSchema, ImageApiSchema } from "../chat/media.ts";
+import { CustomVideoApiSchema, CustomVideoModelSchema } from "../chat/video-models.ts";
 import { SafeSecretSchema, WebUrlSchema } from "../core/values.ts";
 
 const name = z.string().min(1);
 const count = z.number().int().nonnegative().safe();
 export const ThinkingLevelSchema = z.enum(["off", "low", "medium", "high"]);
+export const ModelOverrideSchema = z.strictObject({
+  provider: name.max(200),
+  id: name.max(200),
+  thinkingLevel: ThinkingLevelSchema.optional(),
+});
+export type ModelOverride = z.infer<typeof ModelOverrideSchema>;
 export const DefaultModelSchema = z.strictObject({
   provider: name,
   id: name,
@@ -53,6 +60,8 @@ export const CustomProviderSchema = z.strictObject({
   headers: headers.optional(),
   compat: z.record(name, z.boolean()).optional(),
   models: z.array(CustomModelSchema).max(10000),
+  videoApi: CustomVideoApiSchema.optional(),
+  videoModels: z.array(CustomVideoModelSchema).max(200).optional(),
   imageApi: ImageApiSchema.optional(),
   imageModels: z.array(CustomImageModelSchema).max(200).optional(),
 });
@@ -142,6 +151,20 @@ export const ModelPreferenceSchema = z.strictObject({ provider: label, id: label
 export type ModelInfo = z.infer<typeof ModelInfoSchema>;
 export type ChatGPTSignIn = z.infer<typeof ChatGPTSignInSchema>;
 export type CustomProvider = z.infer<typeof CustomProviderSchema>;
+export type ModelPreference = z.infer<typeof ModelPreferenceSchema>;
+
+export function configuredVideoProviders<
+  T extends Pick<CustomProvider, "videoApi" | "videoModels"> & { id: string },
+>(providers: readonly T[], hasKey: (providerId: string) => boolean) {
+  return providers.filter(
+    (
+      provider,
+    ): provider is T & {
+      videoApi: NonNullable<T["videoApi"]>;
+      videoModels: NonNullable<T["videoModels"]>;
+    } => !!provider.videoApi && !!provider.videoModels?.length && hasKey(provider.id),
+  );
+}
 export type CustomProviderInfo = z.infer<typeof CustomProviderInfoSchema>;
 export type CustomModel = z.infer<typeof CustomModelSchema>;
 export type CustomModelCapabilities = z.infer<typeof CustomModelCapabilitiesSchema>;

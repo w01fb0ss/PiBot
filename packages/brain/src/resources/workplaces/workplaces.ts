@@ -2,7 +2,7 @@ import { realpath, stat } from "node:fs/promises";
 import { hostname } from "node:os";
 import { basename, isAbsolute, resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { windowsHostNames, windowsPathName } from "@pibot/execution";
+import { samePathSpelling, windowsHostNames, windowsPathName } from "@pibot/execution";
 import { containsPath } from "@pibot/policy";
 import {
   type ExecutionLocationTarget,
@@ -88,13 +88,14 @@ export class WorkplaceService {
     return this.withBlocked(await this.registered(botId, signal), signal);
   }
   private async registered(botId: string, signal: AbortSignal): Promise<Workplaces> {
-    if (!this.bots.get(botId)) throw new RpcError(-32602, "Unknown Bot");
-    const value = this.repo.list(botId);
-    await this.ensureHome(botId, signal);
-    return value;
+    await this.botHome(botId, signal);
+    return this.repo.list(botId);
   }
-  private async ensureHome(botId: string, signal: AbortSignal) {
+  async botHome(botId: string, parent = this.shutdown): Promise<string> {
+    if (!this.bots.get(botId)) throw new RpcError(-32602, "Unknown Bot");
+    const signal = AbortSignal.any([parent, this.shutdown, AbortSignal.timeout(20_000)]);
     await ensureOwnHome(this.dataDir, ["bots", botId, "home"], signal);
+    return this.repo.home(botId);
   }
   async groupHome(groupId: string, parent = this.shutdown) {
     IdSchema.parse(groupId);
@@ -117,7 +118,7 @@ export class WorkplaceService {
     create: boolean,
     parent: AbortSignal,
     defaultPath?: string,
-  ): Promise<string | null> {
+  ): Promise<{ path: string; displayPath?: string } | null> {
     if (!this.host.pickFolder) throw new RpcError(-32603, "Folder picker unavailable");
     // The host allows ten minutes in the dialog plus a short canonical-path check.
     const picking = AbortSignal.any([parent, this.shutdown, AbortSignal.timeout(630_000)]);
@@ -134,7 +135,12 @@ export class WorkplaceService {
     if (!(await abortable(stat(path), signal)).isDirectory())
       throw new RpcError(-32602, "Not a directory");
     signal.throwIfAborted();
-    return this.spelling(path);
+    return {
+      path: this.spelling(path),
+      ...(this.platform === "win32" && !samePathSpelling(resolve(selected), path)
+        ? { displayPath: this.spelling(selected) }
+        : {}),
+    };
   }
   /**
    * One spelling per folder: on Windows an admin share of this machine (`\\localhost\c$\...`) opens
@@ -197,14 +203,37 @@ export class WorkplaceService {
       }
     }
     if (remote?.path) throw new RpcError(-32602, "runner_folder_invalid");
-    const path = await this.pickPath(create, parent, defaultPath);
+    const selected = await this.pickPath(create, parent, defaultPath);
     parent.throwIfAborted();
-    if (!path) return { folder: null };
+    if (!selected) return { folder: null };
+    const { path, displayPath } = selected;
     if (!this.bots.get(botId)) throw new RpcError(-32602, "Unknown Bot");
+    if (displayPath) {
+      const signal = AbortSignal.any([parent, this.shutdown, AbortSignal.timeout(20_000)]);
+      await this.assertWritable?.([path], this.repo.home(botId), signal);
+      signal.throwIfAborted();
+    }
+    return {
+      folder: this.registerLocal(botId, { path, displayPath: displayPath ?? null }, association),
+    };
+  }
+  /** Persists a local folder already resolved by a picker or confirmed dispatch. */
+  registerLocal(
+    botId: string,
+    { path, displayPath }: { path: string; displayPath?: string | null },
+    association: "user" | "monitor" | "session" = "user",
+  ): WorkingFolder {
     try {
-      return { folder: this.repo.register(botId, path, basename(path) || path, association) };
+      return this.repo.register(
+        botId,
+        path,
+        basename(path) || path,
+        association,
+        "local",
+        displayPath,
+      );
     } catch (error) {
-      refuseFolderCapacity(error);
+      return refuseFolderCapacity(error);
     }
   }
   /** @deprecated Registers the picked folder and returns the registry (older clients). */
@@ -270,6 +299,7 @@ export class WorkplaceService {
     botId: string,
     parent = this.shutdown,
     place?: SelectionContext,
+    options: { annotateCommandReadBlocked?: boolean } = {},
   ): Promise<ResolvedWorkplace & { gone?: GoneFolder[] }> {
     const signal = AbortSignal.any([parent, this.shutdown, AbortSignal.timeout(20_000)]);
     // Only selected folders affect this decision. The registry's display annotations would
@@ -304,15 +334,16 @@ export class WorkplaceService {
         role,
       });
     }
-    const value = await this.withBlocked(
-      {
-        home: registered.home,
-        folders,
-        currentId: selection.primary,
-        revision: place?.revision ?? registered.revision ?? 0,
-      },
-      signal,
-    );
+    const selected = {
+      home: registered.home,
+      folders,
+      currentId: selection.primary,
+      revision: place?.revision ?? registered.revision ?? 0,
+    };
+    const value =
+      options.annotateCommandReadBlocked === false
+        ? selected
+        : await this.withBlocked(selected, signal);
     const cwd =
       value.currentId === "home"
         ? value.home
@@ -364,7 +395,7 @@ export class WorkplaceService {
     );
     return {
       value: resolved,
-      cwd: await abortable(realpath(cwd), signal),
+      cwd: boundary.primaryPath,
       roots,
       home,
       boundary,
@@ -435,7 +466,7 @@ export class WorkplaceService {
         }
         throw error;
       }
-      if (canonical !== resolve(folder.path))
+      if (!samePathSpelling(canonical, resolve(folder.path)))
         throw new RpcError(-32602, "Working folder changed; associate it again");
       roots.push(canonical);
       kept.push(folder);
@@ -470,7 +501,7 @@ export class WorkplaceService {
         signal.throwIfAborted();
         return undefined;
       });
-      if (resolved === resolve(root)) {
+      if (resolved && samePathSpelling(resolved, resolve(root))) {
         allowedRoot = resolved;
         break;
       }

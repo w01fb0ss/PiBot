@@ -9,8 +9,7 @@ export interface BackgroundDependencies {
   redactor: ExecRedactor;
   onMonitorFailure?(id: string): void;
   /**
-   * A cleanup that cannot be confirmed pauses new commands; each state is reported so the caller
-   * can log it and explain it (an unexplained pause looked like a policy failure).
+   * Report pending cleanup, including when Windows can still run other commands.
    */
   onDrain?(event: BackgroundDrainEvent): void;
 }
@@ -34,8 +33,7 @@ export type BackgroundDrainReason = "cleanup_unconfirmed" | "cleanup_unverified"
 
 export interface BackgroundDrainEvent {
   /**
-   * `stuck`: automatic checks ran out (or nothing identifies the tree), so the pause stays until a
-   * manual check proves it clean or Pi Bot restarts. Never a release: only `recovered` is.
+   * `stuck`: automatic checks ran out or nothing identifies the tree. `recovered` confirms exit.
    */
   phase: "paused" | "retrying" | "stuck" | "recovered";
   reason: BackgroundDrainReason;

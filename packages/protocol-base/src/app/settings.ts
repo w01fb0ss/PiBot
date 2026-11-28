@@ -91,7 +91,7 @@ export const SettingsSchema = z.strictObject({
       z.strictObject({
         pattern: OutsideCommandPatternSchema,
         folder: z.string().min(1).max(4096),
-        source: z.literal("auto"),
+        source: z.enum(["auto", "user"]),
         createdAt: z.number().int().nonnegative(),
       }),
     )
@@ -145,6 +145,7 @@ export const SettingsSchema = z.strictObject({
 });
 export const BrainBootstrapSchema = z.strictObject({
   dataDir: name,
+  dataDirDisplayPath: name.optional(),
   resourcesDir: name,
   version: name,
   platform: z.enum(["darwin", "win32", "linux"]),

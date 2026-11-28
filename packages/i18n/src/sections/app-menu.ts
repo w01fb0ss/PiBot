@@ -65,6 +65,8 @@ export const appMenuZh = {
   "appMenu.update.reason.mac_location":
     "请先把 Pi Bot 移到「应用程序」文件夹，才能在应用内更新；也可以前往官网下载。",
   "appMenu.update.reason.linux_format": "只有 AppImage 版本能在应用内更新，请前往官网下载。",
+  "appMenu.update.reason.linux_deb":
+    "请从官网下载新版 .deb 安装包，或在已配置 Pi Bot 软件源时使用 apt 更新。",
   "appMenu.update.update": "更新",
   "appMenu.update.later": "稍后",
   "appMenu.update.restart": "立即重启",
@@ -157,6 +159,8 @@ export const appMenuEn = {
     "Move Pi Bot to the Applications folder to update it in the app, or download from the website.",
   "appMenu.update.reason.linux_format":
     "Only the AppImage can update itself. Download the new version from the website.",
+  "appMenu.update.reason.linux_deb":
+    "Download the new .deb from the website, or update with apt if you have a Pi Bot package source configured.",
   "appMenu.update.update": "Update",
   "appMenu.update.later": "Later",
   "appMenu.update.restart": "Restart now",

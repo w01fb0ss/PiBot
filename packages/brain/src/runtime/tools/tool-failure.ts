@@ -52,7 +52,8 @@ export function toolFailure(
           ? "未发送：设置 › 权限 › 对外发送为不允许（也请核对当前 Bot / 群的权限）。请告诉用户在该处修改，不要猜测板名、路径或系统权限。 / Not sent: Settings > Permissions > Send out is set to Never (also check this Bot/group's permissions). Tell the user where to change it; do not blame the destination, paths or OS permissions."
           : "未发送：当前连接或发送授权不允许此操作。请在 设置 › 权限，以及左侧栏「连接」里点开该连接，核对权限与确认方式。 / Not sent: current connection or sending authorization does not allow this action. Check Settings > Permissions, and the connection's access and confirmation in the sidebar's Connections page.",
     };
-  if (error instanceof ConnectorToolError) return connectorError(error.code, error.serviceMessage);
+  if (error instanceof ConnectorToolError)
+    return connectorError(error.code, error.serviceMessage, error.blockedNetworkMessage);
   if (error instanceof ConnectorSchemaError) return connectorError(error.code);
   const authenticationFailed =
     isProxyAuthenticationFailure(error) ||
@@ -108,7 +109,7 @@ export function toolFailure(
                             ? "此主机不支持图片转换 / Image conversion is unsupported on this host"
                             : "附件格式或图片转换无效 / Invalid attachment or image conversion"
                       : error instanceof ExecError
-                        ? readableError(error, input.tool)
+                        ? readableError(error, input.tool, run.platform)
                         : "工具执行失败，请检查路径、权限或文件格式 / Tool execution failed; check the path, permissions, or file format";
   // Some runner errors retain their RPC control code (busy, unsupported, dispatchDenied).
   const remoteCheck =

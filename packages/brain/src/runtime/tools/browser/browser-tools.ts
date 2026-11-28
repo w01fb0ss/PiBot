@@ -7,6 +7,7 @@ import {
   BrowserViewportSchema,
   HostBrowserTabIdSchema,
   IdSchema,
+  optionalPageOffset,
 } from "@pibot/protocol-base";
 import { z } from "zod";
 
@@ -15,14 +16,17 @@ import { z } from "zod";
 const tab = HostBrowserTabIdSchema;
 const ref = BrowserRefSchema;
 const empty = z.strictObject({});
+const after = optionalPageOffset.describe(
+  "Omit after for the first page; never pass placeholders. For later pages use the sequence from the previous result.",
+);
 
 export const browserSchemas = {
-  browser_network: BrowserNetworkQuerySchema,
+  browser_network: BrowserNetworkQuerySchema.extend({ after }),
   browser_request: BrowserRequestSchema,
   browser_secret: BrowserSecretSchema,
   browser_diagnostics: z.strictObject({
     tab: tab.optional(),
-    after: z.number().int().nonnegative().safe().optional(),
+    after,
     limit: z.number().int().min(1).max(50).optional(),
   }),
   browser_inspect: z.strictObject({ tab: tab.optional(), ref, documentId: IdSchema.optional() }),

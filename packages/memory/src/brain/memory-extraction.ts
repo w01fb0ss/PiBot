@@ -165,7 +165,7 @@ export function extractionSource(
   const rows = db
     .prepare(
       `SELECT m.id, m.role, m.content FROM messages m
-      WHERE m.conversation_id=? AND m.rowid>? AND status='done' AND (m.role='assistant' OR (${memoryHumanMessageSql}))
+      WHERE m.conversation_id=? AND m.import_id IS NULL AND m.rowid>? AND status='done' AND (m.role='assistant' OR (${memoryHumanMessageSql}))
       AND (? IS NULL OR EXISTS (SELECT 1 FROM conversations c JOIN groups g ON g.id=c.group_id
         WHERE c.id=m.conversation_id AND c.kind='group' AND c.internal_task_id IS NULL
         AND g.id=? AND ((${memoryHumanMessageSql}) OR (m.role='assistant' AND m.bot_id=g.coordinator_bot_id

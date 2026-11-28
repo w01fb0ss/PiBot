@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { IdSchema } from "../core/ids.ts";
-import { AttachmentSchema, MAX_REPLY_ATTACHMENTS } from "./attachments.ts";
+import { AttachmentSchema } from "./attachments.ts";
+import { MAX_GENERATED_IMAGES } from "./media.ts";
 
 /** A bounded display snapshot; the source ID never grants file or conversation access. */
 export const MessageQuoteSchema = z.strictObject({
@@ -9,7 +10,7 @@ export const MessageQuoteSchema = z.strictObject({
   role: z.enum(["user", "assistant", "error"]),
   author: z.string().max(200),
   content: z.string().max(2000),
-  attachments: z.array(AttachmentSchema).max(MAX_REPLY_ATTACHMENTS),
+  attachments: z.array(AttachmentSchema).max(MAX_GENERATED_IMAGES),
 });
 export type MessageQuote = z.infer<typeof MessageQuoteSchema>;
 export function messageQuote(message: { usage: unknown }): MessageQuote | undefined {

@@ -10,6 +10,9 @@ import {
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { migrationSteps } from "./migration-steps.ts";
+import { readTransaction, transaction } from "./transactions.ts";
+
+export { readTransaction, transaction };
 
 /** Pre-create privately so SQLite also inherits 0600 for WAL/SHM, even under a permissive umask. */
 function privateDatabaseFile(path: string, create: boolean) {
@@ -50,20 +53,6 @@ export function openDatabase(path: string): DatabaseSync {
     return db;
   } catch (error) {
     db.close();
-    throw error;
-  }
-}
-
-export function transaction<T>(db: DatabaseSync, operation: () => T): T {
-  // Repo operations remain atomic when brain groups approval, grant and audit in one transaction.
-  const nested = db.isTransaction;
-  db.exec(nested ? "SAVEPOINT pibot_repo" : "BEGIN IMMEDIATE");
-  try {
-    const result = operation();
-    db.exec(nested ? "RELEASE pibot_repo" : "COMMIT");
-    return result;
-  } catch (error) {
-    db.exec(nested ? "ROLLBACK TO pibot_repo; RELEASE pibot_repo" : "ROLLBACK");
     throw error;
   }
 }

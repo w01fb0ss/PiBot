@@ -26,6 +26,9 @@ export function stepFailureReason(service: GroupService, run: Run | undefined, f
   if (run.status === "error" && run.errorCode === "permission_denied") return "permission_denied";
   // The member's own loop stopped only its run; the step names it instead of "interrupted".
   if (run.status === "error" && run.errorCode === "repeated_operation") return "repeated_operation";
+  // The request itself no longer fit the model's window: the same overflow as three compactions
+  // without progress, so it gets the same plain explanation and the narrower retry.
+  if (run.status === "error" && run.errorCode === "context_too_large") return "context_full";
   if (
     run.status === "error" &&
     ["agent_auth_failed", "agent_quota", "agent_rate_limited", "agent_model_unavailable"].includes(

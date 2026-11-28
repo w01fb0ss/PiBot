@@ -98,7 +98,7 @@ export async function startEmbeddedDesktop(options: {
   });
   let language = resolveLanguage("system", systemLocale);
   if (quitting) return;
-  const window = createWindow({
+  const { window, takeSkillDrop } = createWindow({
     systemLocale: process.platform === "win32" ? systemLocale : undefined,
     bounds: saved.state.bounds,
     outputDir,
@@ -236,6 +236,7 @@ export async function startEmbeddedDesktop(options: {
     updateProxy: updates.setProxy,
     systemLocale,
     window,
+    takeSkillDrop,
     computer,
     computerGuard,
     frames,

@@ -22,7 +22,19 @@ export function storedSessionFile(dataDir: string, file: string): string {
  * for the caller's own containment check.
  */
 export function resolveSessionFile(dataDir: string, stored: string): string {
-  if (isAbsolute(stored)) return stored;
+  if (isAbsolute(stored)) {
+    // A legacy absolute row that names another copy of a data directory (moved, restored or
+    // copied) points at this directory's own session of the same Bot and file name.
+    const tail = /[/\\](bots[/\\][^/\\\0\r\n]+[/\\]sessions[/\\][^/\\\0\r\n]+)$/.exec(stored)?.[1];
+    const local = tail?.split(/[/\\]/).join("/");
+    if (
+      local &&
+      STORED.test(local) &&
+      !local.split("/").some((part) => part === "." || part === "..")
+    )
+      return join(dataDir, ...local.split("/"));
+    return stored;
+  }
   const match = STORED.exec(stored);
   if (!match || stored.split("/").some((part) => part === "." || part === ".."))
     throw new AgentError("internal");

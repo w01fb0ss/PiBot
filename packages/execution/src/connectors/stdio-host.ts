@@ -15,6 +15,11 @@ import { parseHostViolations } from "../command/process.ts";
 import { checkedRoot, within } from "../core/paths.ts";
 import type { ExecRedactor } from "../core/types.ts";
 import { ExecError } from "../core/types.ts";
+import {
+  CONNECTOR_NETWORK_WAIT_MS,
+  type ConnectorNetworkFilter,
+  ConnectorNetworkRequestSchema,
+} from "../sandbox/connector-network.ts";
 import { classifySandboxBlock } from "../sandbox/sandbox-block.ts";
 import { SANDBOX_HOST_DIR } from "../sandbox/sandbox-config.ts";
 import { prepareSandboxHost } from "../sandbox/sandbox-host-launch.ts";
@@ -70,6 +75,7 @@ export interface SandboxedStdioOptions {
   /** Complete SRT boundary, built by the caller's own profile function. */
   config: SandboxRuntimeConfig;
   allowAll: boolean;
+  networkFilter?: ConnectorNetworkFilter;
   command: string;
   args: readonly string[];
   /** Payload environment of the server; HOME and TMPDIR are set here. */
@@ -113,7 +119,6 @@ export async function openSandboxedStdio(
   const host = await prepareSandboxHost({
     tempDir: options.tempDir,
     systemHome: options.systemHome,
-    commandEnv: options.env,
     ...(options.hostScriptPath ? { scriptPath: options.hostScriptPath } : {}),
   });
   const config = options.config;
@@ -184,9 +189,9 @@ export async function openSandboxedStdio(
     commandId,
     commandText: line,
     cwd: serverCwd,
-    shell: "/bin/bash",
     env: { ...options.env, HOME: home, TMPDIR: temp },
     stdioServer: true,
+    ...(options.networkFilter ? { connectorNetwork: true } : {}),
   });
 
   // The kernel names what it refused (a hidden script, the Keychain). Started before
@@ -205,10 +210,12 @@ export async function openSandboxedStdio(
   });
   const pid = child.pid;
   if (!pid) {
+    // A failed host spawn still emits an asynchronous error after returning without a pid.
+    child.once("error", () => {});
     child.unref();
     monitor?.dispose();
     await cleanup();
-    throw new ExecError("connector_server_unavailable", "process_spawn_failed");
+    throw new ExecError("connector_server_unavailable", "isolation_start_failed");
   }
 
   const stdio = child.stdio as unknown as import("node:stream").Writable[];
@@ -219,7 +226,7 @@ export async function openSandboxedStdio(
     child.unref();
     monitor?.dispose();
     await cleanup();
-    throw new ExecError("connector_server_unavailable", "process_spawn_failed");
+    throw new ExecError("connector_server_unavailable", "isolation_start_failed");
   }
   // A dead server reports through the response/status 'close' events; the read
   // sides must not crash the brain with an unhandled EPIPE. The request write
@@ -231,6 +238,7 @@ export async function openSandboxedStdio(
 
   /** The stream is dead (process gone or close started); new writes are refused. */
   let connectionClosed = false;
+  const networkLifetime = new AbortController();
   /** The private TMPDIR was actually removed; natural exit still requires this. */
   let cleanedUp = false;
   let closePromise: Promise<void> | undefined;
@@ -296,6 +304,7 @@ export async function openSandboxedStdio(
       config,
       platform: options.platform,
       succeeded: false,
+      quietLoginKeychainMetadata: retainKernelMonitor && options.home.kind === "real",
     });
     const own = exit?.own === true;
     return {
@@ -313,6 +322,7 @@ export async function openSandboxedStdio(
   const markClosed = () => {
     if (connectionClosed) return;
     connectionClosed = true;
+    networkLifetime.abort();
     for (const listener of closeListeners) listener();
   };
 
@@ -366,6 +376,7 @@ export async function openSandboxedStdio(
     // A server whose pipes already ended stopped by itself; the exit that follows is its own.
     if (!connectionClosed) stopRequested = true;
     connectionClosed = true;
+    networkLifetime.abort();
     if (child.exitCode === null && !child.killed) {
       // Ending stdin also makes the host stop its own group; signal the group
       // directly as well so close() does not depend on the host noticing.
@@ -478,16 +489,49 @@ export async function openSandboxedStdio(
       statusClosed = true;
     });
 
-  // After `ready` the only line the host sends on fd 3 is its proxy refusals, once, as it exits.
+  // Network decisions use the host-only status/control pipes, never the MCP JSON-RPC pipes.
+  const networkPending = new Map<number, AbortController>();
+  const networkLine = (line: string) => {
+    const filter = options.networkFilter;
+    if (!filter || networkLifetime.signal.aborted) return;
+    if (line.startsWith("network-cancel ")) {
+      networkPending.get(Number(line.slice(15)))?.abort();
+      return;
+    }
+    if (!line.startsWith("network ") || line.length > 512 || networkPending.size >= 32) return;
+    try {
+      const { id, ...attempt } = ConnectorNetworkRequestSchema.parse(JSON.parse(line.slice(8)));
+      if (networkPending.has(id)) return;
+      const controller = new AbortController();
+      networkPending.set(id, controller);
+      const signal = AbortSignal.any([
+        networkLifetime.signal,
+        controller.signal,
+        AbortSignal.timeout(CONNECTOR_NETWORK_WAIT_MS),
+      ]);
+      void filter(attempt, signal)
+        .catch(() => false) // Failure at the decision boundary refuses the request.
+        .then((allow) => {
+          if (!signal.aborted)
+            child.stdin?.write(`${JSON.stringify({ id, allow })}
+`);
+        })
+        .finally(() => networkPending.delete(id));
+    } catch {
+      // A malformed host frame can never authorize egress.
+    }
+  };
   let statusText = "";
   const afterReady = (text: string) => {
     if (statusText.length > VIOLATIONS_LINE_BYTES) return;
     statusText += text;
-    const newline = statusText.indexOf("\n");
-    if (newline < 0) return;
-    const line = statusText.slice(0, newline);
-    statusText = "";
-    if (line.startsWith("violations ")) proxyViolations = parseHostViolations(line.slice(11)) ?? [];
+    for (let newline = statusText.indexOf("\n"); newline >= 0; newline = statusText.indexOf("\n")) {
+      const line = statusText.slice(0, newline);
+      statusText = statusText.slice(newline + 1);
+      if (line.startsWith("violations "))
+        proxyViolations = parseHostViolations(line.slice(11)) ?? [];
+      else networkLine(line);
+    }
   };
 
   // One payload line, then the readiness report on fd 3; the channel stays

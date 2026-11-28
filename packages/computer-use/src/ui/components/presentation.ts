@@ -13,6 +13,35 @@ import type { TranslationKey } from "@pibot/i18n";
  * brain handlers for `computer.*` land in parallel tasks; a missing handler is a temporary
  * "not ready" state the user can retry, never a silent empty list.
  */
+const INSTALLED_APPS_UNAVAILABLE: Record<string, TranslationKey> = {
+  unsupported_platform: "computerUse.unavailable.unsupported_platform",
+  helper_unavailable: "computerUse.unavailable.helper_unavailable",
+  osascript_unavailable: "computerUse.unavailable.helper_unavailable",
+  non_interactive_session: "computerUse.unavailable.non_interactive_session",
+  wayland_limited: "computerUse.unavailable.wayland_limited",
+  driver_missing: "computerUse.unavailable.driver_missing",
+  permission_missing: "computerUse.unavailable.permission_missing",
+  permission_missing_desktop: "computerUse.unavailable.permission_missing_desktop",
+  runner: "computerUse.unavailable.runner",
+};
+
+/** Permanent platform limits stay explicit; transient driver/session/permission issues offer Retry. */
+export function isInstalledAppsRetryable(reason: string | undefined): boolean {
+  // Older runners can return "unsupported" for both a platform limit and a helper failure.
+  return reason !== "unsupported_platform";
+}
+
+/** Maps driver/service reason codes to localized copy; never echoes raw OS/driver strings. */
+export function installedAppsUnavailableText(reason: string | undefined, t: Translate) {
+  const key =
+    reason && Object.hasOwn(INSTALLED_APPS_UNAVAILABLE, reason)
+      ? INSTALLED_APPS_UNAVAILABLE[reason]
+      : undefined;
+  return key
+    ? t("computerUse.picker.unsupported", { reason: t(key) })
+    : t("computerUse.picker.unsupportedGeneric");
+}
+
 export function computerErrorKey(error: unknown): TranslationKey {
   return error instanceof RpcError && error.code === RpcErrorCodes.methodNotFound
     ? "computerUse.error.notReady"

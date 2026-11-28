@@ -4,7 +4,7 @@ import type { SettingsSectionId } from "./settings-sections.ts";
 
 export type { SettingsSectionId } from "./settings-sections.ts";
 /** Where to scroll inside a page: the default-model card, or the saved-passwords section. */
-export type SettingsTarget = "pi-model" | "passwords";
+export type SettingsTarget = "pi-model" | "passwords" | "network-proxy" | "direct-runs";
 /** `agent`: an external agent Bot's settings, program and sandbox; not in navigation events. */
 export type BotPanelTab = "details" | "agent" | "topics" | "memory" | "permissions";
 export interface MessageFocus {
@@ -21,17 +21,31 @@ export type View = {
     target?: { kind: "bot" | "group"; id: string };
   };
   /** Open the exact Bot/group copy in Connections › Skills, independent of catalog grouping. */
-  skillConnection?: { skillId: string; botId: string; groupId?: string; name: string };
+  skillConnection?: {
+    skillId: string;
+    botId: string;
+    groupId?: string;
+    name: string;
+    prepareRuntime?: boolean;
+    runtime?: "python" | "node";
+  };
+  /** Open the Knowledge tab focused on this knowledge source's Details panel. */
+  knowledgeSourceId?: string;
+  /** Opens the Connections page's Access tokens dialog, optionally focused on one shared token. */
+  tokens?: { secretName?: string };
   auditBotId?: string;
   auditGroupId?: string;
   botId?: string;
   topicId?: string;
+  /** Display hint for a linked group topic outside the current workspace. */
+  topicTitle?: string;
   draftId?: string;
   groupId?: string;
   /** Opens the group's skills and shared-memory tab from a scoped memory notice. */
   groupPanel?: "capabilities";
   threadId?: string;
   focus?: MessageFocus;
+  approvalFocus?: { id: string };
 };
 export type TeamOverlay =
   | { name: "team" }
@@ -62,8 +76,16 @@ export interface ShellDialog {
 
 export interface NavigationValue {
   /** `skillId`: the skills tab opens with this skill's detail expanded (teach "view this skill"). */
-  botPanel: { botId: string; tab: BotPanelTab; skillId?: string } | undefined;
+  botPanel:
+    | {
+        botId: string;
+        tab: BotPanelTab;
+        skillId?: string;
+        importedBatch?: { id: string; key: string };
+      }
+    | undefined;
   openBotPanel(botId: string, tab?: BotPanelTab, preserveChat?: boolean, skillId?: string): void;
+  openImportedTopic(botId: string, topicId: string, importId?: string): void;
   closeBotPanel(): void;
   openAudit(botId?: string, groupId?: string): void;
   closeAudit(): void;

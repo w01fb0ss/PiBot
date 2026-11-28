@@ -9,7 +9,9 @@ import {
   providerFamily,
 } from "@pibot/models-contract/full";
 import { providerIdentity } from "../../setup/operations.ts";
-import { customPresets } from "./custom-presets.ts";
+import { customPresets, type ImageProviderLabel } from "./custom-presets.ts";
+
+type PresetTranslator = (key: ImageProviderLabel) => string;
 
 export const providerGroups = [
   "common",
@@ -23,14 +25,21 @@ export const providerGroups = [
   "all",
 ] as const;
 
-function localCatalog(customName: string, paygLabel: string): Provider[] {
+function localCatalog(customName: string, paygLabel: string, t?: PresetTranslator): Provider[] {
   return [
     { id: "ollama", name: "Ollama" },
     { id: "lmstudio", name: "LM Studio" },
     { id: "vllm", name: "vLLM" },
     ...Object.entries(customPresets)
-      .filter(([id]) => id.endsWith("-api"))
-      .map(([id, preset]) => ({ id, name: `${preset.name} · ${paygLabel}` })),
+      .filter(([id, preset]) => id.endsWith("-api") || preset.imageApi)
+      .map(([id, preset]) => ({
+        id,
+        name: preset.label
+          ? (t?.(preset.label) ?? preset.name)
+          : preset.videoApi
+            ? preset.name
+            : `${preset.name} · ${paygLabel}`,
+      })),
     { id: "new-custom", name: customName },
   ].map((entry) => ({
     ...entry,
@@ -68,17 +77,25 @@ export function providerCatalog(
   providers: Provider[],
   customName: string,
   paygLabel = "API",
+  t?: PresetTranslator,
 ): Provider[] {
   // The only model sign-in left is the ChatGPT plan; any other OAuth entry is retired.
-  const entries = providers.filter(
-    (provider) =>
-      (provider.auth !== "oauth" || isChatGPTPlanProvider(provider.id)) &&
-      (provider.id !== "custom" || provider.configured),
-  );
+  const entries = providers
+    .map((provider) => {
+      const preset = customPresets[provider.id];
+      return preset?.label && t && provider.name === preset.name
+        ? { ...provider, name: t(preset.label) }
+        : provider;
+    })
+    .filter(
+      (provider) =>
+        (provider.auth !== "oauth" || isChatGPTPlanProvider(provider.id)) &&
+        (provider.id !== "custom" || provider.configured),
+    );
   const identities = new Set(entries.map(providerIdentity));
   return [
     ...entries,
-    ...localCatalog(customName, paygLabel).filter(
+    ...localCatalog(customName, paygLabel, t).filter(
       (entry) => !identities.has(providerIdentity(entry)),
     ),
   ];

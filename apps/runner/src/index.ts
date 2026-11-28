@@ -8,6 +8,7 @@ import { runnerExitCode, runnerFailure } from "./errors.ts";
 import { installFatalHandlers, type RunnerLifecycle } from "./fatal.ts";
 import { isolationFields } from "./isolation.ts";
 import { createRunnerLogger, type RunnerLogger } from "./logger.ts";
+import { runnerText } from "./messages.ts";
 import { OFFICIAL_RUNNER_RELAY, validateRunnerRelay } from "./network.ts";
 import { forgetPairedDesktop } from "./paired-desktop.ts";
 import { takeEnvironmentPassphrase } from "./passphrase.ts";
@@ -21,6 +22,13 @@ let logger: RunnerLogger | undefined;
 const lifecycle: RunnerLifecycle = { stage: "starting" };
 
 async function main(): Promise<number> {
+  const invalidArguments = () => {
+    const failure = runnerFailure(new Error("invalid_arguments"));
+    if (process.stderr.isTTY)
+      process.stderr.write(`${runnerText(failure.messageZh, failure.messageEn)}\n`);
+    else process.stderr.write(`${usage()}\n`);
+    return 2;
+  };
   let args: ReturnType<typeof parseArguments>;
   try {
     const cli = process.argv.slice(2);
@@ -32,8 +40,7 @@ async function main(): Promise<number> {
         : cli,
     );
   } catch {
-    process.stderr.write(`${usage()}\n`);
-    return 2;
+    return invalidArguments();
   }
   if (args.kind === "help") {
     process.stdout.write(`${usage()}\n`);
@@ -45,6 +52,14 @@ async function main(): Promise<number> {
   }
   const dataDir = args.dataDir ? resolve(args.dataDir) : runnerDataDir();
   if (args.relay) validateRunnerRelay(args.relay);
+  if (args.proxy) {
+    const { flagProxy } = await import("./proxy/route.ts");
+    try {
+      flagProxy(args.proxy);
+    } catch {
+      return invalidArguments();
+    }
+  }
   if (args.command === "tray") {
     const { runRunnerTray } = await import("./tray/index.ts");
     const { runnerInvocation } = await import("./linux-process.ts");
@@ -57,6 +72,7 @@ async function main(): Promise<number> {
       ownerArguments: [
         ...(args.name ? ["--name", args.name] : []),
         ...(args.relay ? ["--relay", args.relay] : []),
+        ...(args.proxy ? ["--proxy", args.proxy] : []),
         ...(args.logLevel ? ["--log-level", args.logLevel] : []),
       ],
       resourcesDir: appContents
@@ -77,6 +93,7 @@ async function main(): Promise<number> {
       arguments: [
         ...(args.name ? ["--name", args.name] : []),
         ...(args.relay ? ["--relay", args.relay] : []),
+        ...(args.proxy ? ["--proxy", args.proxy] : []),
         ...(args.logLevel ? ["--log-level", args.logLevel] : []),
         ...(args.listen ?? []).flatMap((address) => ["--listen", address]),
       ],
@@ -118,6 +135,14 @@ async function main(): Promise<number> {
     delete process.env.NAPI_RS_NATIVE_LIBRARY_PATH;
     delete process.env.NAPI_RS_FORCE_WASI;
     const { runRunner } = await import("./runtime.ts");
+    const { resolveRunnerProxy } = await import("./proxy/index.ts");
+    const proxy = await resolveRunnerProxy({
+      flag: args.proxy,
+      env: process.env,
+      platform: process.platform,
+      redactor,
+      logger,
+    });
     const { decodeRunnerPairCode } = await import("@pibot/link");
     if (args.code) {
       redactor.add(args.code);
@@ -138,13 +163,16 @@ async function main(): Promise<number> {
       pairCode: args.code,
       deviceName: args.name,
       listen: args.listen,
+      proxy,
       relay: validateRunnerRelay(
         decoded?.relay ?? args.relay ?? process.env.PIBOT_RUNNER_RELAY ?? OFFICIAL_RUNNER_RELAY,
       ),
       pairingOutput: (code) => {
         // Tray pairing reads the authenticated control port; losing its UI cannot break stdout.
         if (process.env.PIBOT_RUNNER_TRAY_PAIR !== "1")
-          process.stdout.write(`Pairing code (10 minutes, one use): ${code}\n`);
+          process.stdout.write(
+            `${process.stdout.isTTY ? runnerText("配对码（10 分钟内有效，只能用一次）", "Pairing code (10 minutes, one use)") : "Pairing code (10 minutes, one use)"}: ${code}\n`,
+          );
       },
     });
     return 0;
@@ -225,8 +253,11 @@ main()
     } catch {
       // The console line below still carries the code.
     }
-    process.stderr.write(
-      `${JSON.stringify({ level: "error", event: "runner.failed", ...failure })}\n`,
-      () => finish(runnerExitCode(error)),
-    );
+    const line = process.stderr.isTTY
+      ? runnerText(failure.messageZh, failure.messageEn)
+      : JSON.stringify({ level: "error", event: "runner.failed", ...failure });
+    const report = () => process.stderr.write(`${line}\n`, () => finish(runnerExitCode(error)));
+    if (process.env.PIBOT_RUNNER_TRAY_PAIR === "1" && process.connected && process.send)
+      process.send({ code: failure.code }, report);
+    else report();
   });

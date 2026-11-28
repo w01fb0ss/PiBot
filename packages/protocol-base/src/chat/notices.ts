@@ -9,6 +9,8 @@ import { IdSchema } from "../core/ids.ts";
 import { PageSchema } from "../core/page.ts";
 import { SandboxBlockKindSchema } from "../execution/sandbox-block.ts";
 import { DomainSchema } from "../permissions/settings.ts";
+import { DispatchModelSwitchSchema } from "../providers/dispatch-model.ts";
+import { SkillManagedRuntimeSchema } from "../skills/skills.ts";
 
 // Same shape as AutoCheckCommandSchema (auto-check.ts imports this file, so it is not reused).
 const checkCommand = z.string().min(1).max(1000);
@@ -66,7 +68,38 @@ export const ComputerHandoffNoticeSchema = z.strictObject({
   resolvedAt: z.iso.datetime().optional(),
 });
 
+const ChatDependencySchema = z.enum([
+  "git",
+  "libreoffice_missing",
+  "libreoffice_platform_unsupported",
+  "libreoffice_isolation_unavailable",
+  "libreoffice_cleanup_unconfirmed",
+  "libreoffice_timeout",
+  "libreoffice_failed",
+  "linux_bubblewrap_missing",
+  "linux_socat_missing",
+  "linux_userns_restricted",
+]);
+
+// The phone only receives the fixed handoff reason and its position in the chat.
+export const ChatDependencyNoticeSchema = z.strictObject({
+  id: IdSchema,
+  conversationId: IdSchema,
+  runId: IdSchema,
+  dependency: ChatDependencySchema,
+  createdAt: z.iso.datetime(),
+});
+export type ChatDependencyNotice = z.infer<typeof ChatDependencyNoticeSchema>;
+
 export const ChatNoticeSchema = z.discriminatedUnion("kind", [
+  DispatchModelSwitchSchema.extend({
+    id: IdSchema,
+    conversationId: IdSchema,
+    botId: IdSchema,
+    kind: z.literal("dispatch_model_switch"),
+    dispatchId: IdSchema,
+    createdAt: z.iso.datetime(),
+  }),
   z.strictObject({
     id: IdSchema,
     conversationId: IdSchema,
@@ -195,10 +228,23 @@ export const ChatNoticeSchema = z.discriminatedUnion("kind", [
     used: z.number().int().nonnegative().safe(),
     createdAt: z.iso.datetime(),
   }),
+  z.strictObject({
+    id: IdSchema,
+    conversationId: IdSchema,
+    botId: IdSchema,
+    kind: z.literal("group_verification"),
+    reason: z.enum([
+      "choose_reviewer",
+      "direct_completion",
+      "paused",
+      "round_limit",
+      "unavailable",
+    ]),
+    createdAt: z.iso.datetime(),
+  }),
   /**
-   * A warning an external agent printed about its own startup (Codex's "Under-development
-   * features enabled …" from the user's config) instead of a step inside the reply. Kept once per
-   * conversation per text, since the agent repeats it every turn.
+   * Warnings and recovery hints about the environment a Bot runs in. External agent startup
+   * warnings are kept once per conversation per text because the agent repeats them every turn.
    */
   z.strictObject({
     id: IdSchema,
@@ -209,8 +255,18 @@ export const ChatNoticeSchema = z.discriminatedUnion("kind", [
     runId: IdSchema,
     /** The agent's display name ("Codex", a custom agent's own name) when known. */
     agent: z.string().min(1).max(60).optional(),
+    skillRuntime: z
+      .strictObject({
+        runtime: SkillManagedRuntimeSchema.optional(),
+        skillId: IdSchema,
+        groupId: IdSchema.optional(),
+        name: z.string().min(1).max(80),
+      })
+      .optional(),
     /** Untrusted agent text: redacted, one line, capped; shown as plain text only. */
     text: z.string().min(1).max(300),
+    /** Fixed local dependency failures. Actions never take a command or a URL from the notice. */
+    dependency: ChatDependencySchema.optional(),
     /** Anchored diagnostic; permission actions must reread the brain's stored candidate. */
     sandbox: z
       .strictObject({
@@ -222,7 +278,13 @@ export const ChatNoticeSchema = z.discriminatedUnion("kind", [
         approvalId: IdSchema.optional(),
         approvalToolCallId: z.string().min(1).optional(),
         /** Brain-issued public-domain candidate, with the original permission owner. */
-        website: z.strictObject({ domain: DomainSchema, groupId: IdSchema.optional() }).optional(),
+        website: z
+          .strictObject({
+            domain: DomainSchema,
+            groupId: IdSchema.optional(),
+            retryUntil: z.iso.datetime().optional(),
+          })
+          .optional(),
       })
       .optional(),
     createdAt: z.iso.datetime(),
@@ -230,6 +292,10 @@ export const ChatNoticeSchema = z.discriminatedUnion("kind", [
 ]);
 
 export const ChatNoticeMethods = {
+  "chat.dependencyNotices": {
+    params: PageSchema.extend({ conversationId: IdSchema }),
+    result: z.array(ChatDependencyNoticeSchema).max(200),
+  },
   // Newest first, `before` is a notice id (same cursor rules as the other paged lists).
   "chat.notices": {
     params: PageSchema.extend({ conversationId: IdSchema }),
@@ -239,6 +305,7 @@ export const ChatNoticeMethods = {
 
 export const ChatNoticeEvents = {
   "chat.notice": ChatNoticeSchema,
+  "chat.dependencyNotice": ChatDependencyNoticeSchema,
 };
 
 export type ChatNotice = z.infer<typeof ChatNoticeSchema>;

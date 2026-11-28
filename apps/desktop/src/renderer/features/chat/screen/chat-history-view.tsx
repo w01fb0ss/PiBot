@@ -91,6 +91,7 @@ export function renderChatHistory(screen: ChatScreenModel) {
     name,
     notices,
     noticeBotName,
+    runId,
     busy,
     toolPaths,
     sendingBlocked,
@@ -178,7 +179,7 @@ export function renderChatHistory(screen: ChatScreenModel) {
           {!state.loading && !state.historyError && state.messages.length === 0 && (
             <section className={styles.empty}>
               <BotAvatar bot={state.bot} size={88} label={name} />
-              {topic.readOnly ? (
+              {topic.importSource ? (
                 <p>{t("conversationImport.emptyTopic")}</p>
               ) : !topic.locked ? (
                 <>
@@ -196,55 +197,69 @@ export function renderChatHistory(screen: ChatScreenModel) {
               ) : null}
             </section>
           )}
-          {state.messages.map((message, index) => (
-            <Fragment key={message.id}>
-              <ChatNoticeLines notices={notices.before.get(message.id)} botName={noticeBotName} />
-              <MessageTime
-                at={message.createdAt}
-                previousAt={state.messages[index - 1]?.createdAt}
-                firstTopicMessage={index === 0 && !state.hasMore}
-                today={timelineDay}
-              />
-              <ChatMessage
-                message={message}
-                preview={!state.historyReady || topic.locked}
-                highlighted={messageFocus.highlighted?.messageId === message.id}
-                focusToolCallId={
-                  messageFocus.highlighted?.messageId === message.id
-                    ? messageFocus.highlighted.toolCallId
-                    : undefined
-                }
-                turn={turns.get(message.id)}
-                name={name}
-                generatingLabel={
-                  message.runId && notices.waitingRuns.has(message.runId)
-                    ? t("computerHandoff.runWaiting")
-                    : undefined
-                }
-                busy={busy || sendingBlocked}
-                retry={retries.get(message.id)?.text}
-                retryAttachments={retries.get(message.id)?.ids}
-                onRetry={send}
-                userFooter={topic.locked ? undefined : userFooter(message)}
-                footer={
-                  <MessageExecutionCards
-                    message={message}
-                    cards={executionReplies.get(message.id)}
-                  />
-                }
-                onModelsSettings={modelsSettings}
-                onCredentialsSettings={credentialsSettings}
-                onWorkplaceSettings={workplaceSettings}
-                botId={state.bot?.id}
-                bot={state.bot}
-                activity={grouped.get(message.id) ?? emptyActivity}
-                toolPaths={toolPaths}
-                refreshApprovals={activity.refresh}
-                decideApproval={activity.decide}
-              />
-              <MessageMemoryNotices notices={memoryNotices} messageId={message.id} />
-            </Fragment>
-          ))}
+          {state.messages.map((message, index) => {
+            if (message.imported && !message.content && !message.attachments?.length) return null;
+            // Replies queued behind the active run are persisted as streaming; render them as
+            // queued until the active run settles and they take ownership of the topic.
+            const queued =
+              message.role === "assistant" &&
+              message.status === "streaming" &&
+              !!runId &&
+              !!message.runId &&
+              message.runId !== runId;
+            return (
+              <Fragment key={message.id}>
+                <ChatNoticeLines notices={notices.before.get(message.id)} botName={noticeBotName} />
+                <MessageTime
+                  at={message.createdAt}
+                  previousAt={state.messages[index - 1]?.createdAt}
+                  firstTopicMessage={index === 0 && !state.hasMore}
+                  today={timelineDay}
+                />
+                <ChatMessage
+                  message={message}
+                  preview={!state.historyReady || topic.locked}
+                  highlighted={messageFocus.highlighted?.messageId === message.id}
+                  focusToolCallId={
+                    messageFocus.highlighted?.messageId === message.id
+                      ? messageFocus.highlighted.toolCallId
+                      : undefined
+                  }
+                  turn={turns.get(message.id)}
+                  name={name}
+                  queued={queued}
+                  generatingLabel={
+                    queued
+                      ? t("chat.runQueued", { name })
+                      : message.runId && notices.waitingRuns.has(message.runId)
+                        ? t("computerHandoff.runWaiting")
+                        : undefined
+                  }
+                  busy={busy || sendingBlocked}
+                  retry={retries.get(message.id)?.text}
+                  retryAttachments={retries.get(message.id)?.ids}
+                  onRetry={send}
+                  userFooter={topic.locked ? undefined : userFooter(message)}
+                  footer={
+                    <MessageExecutionCards
+                      message={message}
+                      cards={executionReplies.get(message.id)}
+                    />
+                  }
+                  onModelsSettings={modelsSettings}
+                  onCredentialsSettings={credentialsSettings}
+                  onWorkplaceSettings={workplaceSettings}
+                  botId={state.bot?.id}
+                  bot={state.bot}
+                  activity={grouped.get(message.id) ?? emptyActivity}
+                  toolPaths={toolPaths}
+                  refreshApprovals={activity.refresh}
+                  decideApproval={activity.decide}
+                />
+                <MessageMemoryNotices notices={memoryNotices} message={message} />
+              </Fragment>
+            );
+          })}
           {/* A role Bot's starters stay offered until the user has written once. */}
           {!topic.locked &&
             !state.loading &&

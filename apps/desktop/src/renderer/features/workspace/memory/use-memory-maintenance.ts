@@ -23,6 +23,9 @@ export function useMemoryMaintenance(botId?: string, enabled = true) {
   useRpcEvent("settings.changed", () => {
     if (enabled) refresh();
   });
+  useRpcEvent("memory.dream.finished", () => {
+    if (enabled) refresh();
+  });
   useEffect(() => {
     if (!peer || !enabled) return;
     // The budget can reset at local midnight even when there is no new maintenance event.

@@ -8,6 +8,14 @@ import { extensionOf } from "./source.ts";
 // What leaves the app is exactly the cached copy (redacted text for text formats). Opening on
 // the phone is allowed (2026-10-22); opening on the computer is not offered.
 const types: Record<string, [mime: string, uti: string]> = {
+  mp4: ["video/mp4", "public.mpeg-4"],
+  webm: ["video/webm", "org.webmproject.webm"],
+  mov: ["video/quicktime", "com.apple.quicktime-movie"],
+  m4v: ["video/mp4", "com.apple.m4v-video"],
+  m4a: ["audio/mp4", "public.mpeg-4-audio"],
+  mp3: ["audio/mpeg", "public.mp3"],
+  wav: ["audio/wav", "com.microsoft.waveform-audio"],
+  ogg: ["audio/ogg", "org.xiph.ogg"],
   png: ["image/png", "public.png"],
   jpg: ["image/jpeg", "public.jpeg"],
   jpeg: ["image/jpeg", "public.jpeg"],

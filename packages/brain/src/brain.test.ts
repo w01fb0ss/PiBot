@@ -7,6 +7,7 @@ import type { AgentRuntime, AgentRuntimeDeps, BotSession, OpenSessionOptions } f
 import { AgentError, PI_VERSION } from "@pibot/agent";
 import {
   BaseInboxItemSchema,
+  type ConnectorTool,
   createEventEnvelopeSchema,
   createPeer,
   KernelEvents,
@@ -36,6 +37,9 @@ import {
   ManagedWorktreeMethods,
 } from "../../workspaces-contract/src/index.ts";
 import { type BrainHost, startBrain } from "./index.ts";
+import { ConnectorToolError } from "./runtime/tools/connectors/connector-tools.ts";
+import type { ConnectorsPort } from "./runtime/tools/connectors/port.ts";
+import type { SkillsPort } from "./runtime/tools/skills/port.ts";
 
 const factory = vi.hoisted(() => vi.fn());
 const TestEvents = {
@@ -123,6 +127,8 @@ describe("T8 brain", () => {
   let delta: ((event: { type: "delta"; text: string }) => void) | undefined;
   let env: NodeJS.ProcessEnv;
   let host: BrainHost;
+  let provideConnectors: (port: ConnectorsPort) => void;
+  let provideSkills: (commandEntries: NonNullable<SkillsPort["commandEntries"]>) => void;
 
   async function configure() {
     await peer.call("providers.setApiKey", { providerId: "openai", apiKey: testKey });
@@ -198,6 +204,7 @@ describe("T8 brain", () => {
           sessionFile: opts.sessionFile as string,
           prompt: (...args) => prompt(...args),
           abort,
+          canAppend: () => true,
           dispose: vi.fn(),
         };
       }),
@@ -221,6 +228,31 @@ describe("T8 brain", () => {
       brain = await startBrain({
         orchestration: createOrchestrationFactory(),
         capabilities: [
+          {
+            id: "test-connectors",
+            register(ctx) {
+              provideConnectors = ctx.connectors.provide;
+              provideSkills = (commandEntries) =>
+                ctx.skills.provide({
+                  commandEntries,
+                  root: () => join(dir, "skills"),
+                  promptEntries: async () => [],
+                  markUsedAt: () => undefined,
+                  create: vi.fn(),
+                  exportDocuments: async () => [],
+                  exportPackages: async () => [],
+                  propose: vi.fn(),
+                  inventory: async () => [],
+                  replace: vi.fn(),
+                  remove: vi.fn(),
+                  workflowSkill: vi.fn(),
+                  findWorkflow: async () => undefined,
+                  planMethodKeys: async () => [],
+                  workflowForFiles: async () => undefined,
+                });
+              return {};
+            },
+          },
           providersCapability(),
           memoryCapability(),
           credentialsCapability(),
@@ -238,7 +270,7 @@ describe("T8 brain", () => {
     }
     peer = createPeer(pair.client, { methods: TestMethods, events: TestEvents });
     botId = (await peer.call("bots.list", undefined))[0]?.id as string;
-  });
+  }, 60_000);
 
   afterEach(async () => {
     finish?.({ stopReason: "stop" });
@@ -262,6 +294,65 @@ describe("T8 brain", () => {
     expect(await history()).toEqual([]);
     expect(runtime.openSession).not.toHaveBeenCalled();
     expect(runtime.listModels).toHaveBeenCalledWith({ availableOnly: true });
+  });
+
+  it("answers plain and skill help locally without an available model", async () => {
+    await peer.call("settings.set", { language: "en" });
+    provideSkills((owner) =>
+      owner === botId ? [{ name: "Release notes", description: "Summarize merged changes" }] : [],
+    );
+    vi.mocked(runtime.listModels).mockClear();
+    const all = await peer.call("chat.send", { botId, text: "/help" });
+    const help = await peer.call("chat.send", { botId, text: "/Release notes 帮助" });
+    expect(all.localReply?.content).toContain("/Release notes · Summarize merged changes");
+    expect(help.localReply).toMatchObject({ status: "done", runId: null });
+    expect(help.localReply?.content).toContain("Connections › Skills");
+    expect(help.localReply?.content).toContain("Pi Bot may ask");
+    expect((await history()).map(({ id }) => id)).toEqual([
+      all.userMessageId,
+      all.assistantMessageId,
+      help.userMessageId,
+      help.assistantMessageId,
+    ]);
+    expect(runtime.listModels).not.toHaveBeenCalled();
+    expect(runtime.openSession).not.toHaveBeenCalled();
+    expect(prompt).not.toHaveBeenCalled();
+    await expect(peer.call("chat.send", { botId, text: "/Unknown help" })).rejects.toMatchObject({
+      message: "no_model",
+    });
+  });
+
+  it("lists only group-available skills and honors a qualified bot name without dispatching a run", async () => {
+    await peer.call("settings.set", { language: "zh" });
+    const member = await peer.call("bots.create", {
+      name: "Helper",
+      description: "Local fixture",
+      systemPrompt: "Fixture only",
+    });
+    const group = await peer.call("groups.create", {
+      name: "Help test",
+      botIds: [botId, member.id],
+    });
+    provideSkills((owner, scope) =>
+      owner === member.id
+        ? [{ name: scope === group.id ? "检查文档" : "私有技能", description: "检查格式" }]
+        : [],
+    );
+    const all = await peer.call("chat.send", { groupId: group.id, text: "/帮助" });
+    const help = await peer.call("chat.send", {
+      groupId: group.id,
+      text: "/检查文档 @Helper help",
+    });
+    expect(all.localReply?.content).toContain("/检查文档 @Helper");
+    expect(all.localReply?.content).not.toContain("私有技能");
+    expect(help.localReply?.content).toContain("连接 › 技能");
+    expect(help).toMatchObject({
+      groupId: group.id,
+      conversationId: group.conversationId,
+      runs: [],
+    });
+    expect(runtime.openSession).not.toHaveBeenCalled();
+    expect(prompt).not.toHaveBeenCalled();
   });
 
   it("streams, checkpoints at 500 ms, persists usage/stopReason, and reopens one DM session", async () => {
@@ -294,6 +385,125 @@ describe("T8 brain", () => {
     expect(opened[0]?.homeDir).toBe(join(dir, "bots", botId, "home"));
     expect(opened[0]?.systemPrompt).toContain("Commands: ask");
     expect(opened[0]?.systemPrompt).toContain("Files and commands obey workplace boundaries");
+  });
+
+  it("offers a selected connection for one turn and rechecks a shortcut call through the connector gate", async () => {
+    const connectorId = "00000000-0000-4000-8000-000000000001";
+    const schema = {
+      type: "object",
+      properties: { query: { type: "string" } },
+      required: ["query"],
+      additionalProperties: false,
+    };
+    const tool: ConnectorTool = {
+      connectorId,
+      catalogVersion: 4,
+      tool: "list_events",
+      description: "List matching events",
+      schema,
+      enabled: true,
+      readOnly: true,
+      suggestedReadOnly: true,
+      idempotentHint: false,
+    };
+    let assigned = true;
+    const resolveTool = vi.fn(() => {
+      throw new ConnectorToolError("connector_unavailable");
+    });
+    const dispatch = vi.fn();
+    provideConnectors({
+      commandCandidates: (target) =>
+        target.kind === "bot" && target.id === botId
+          ? [
+              {
+                command: { id: connectorId, name: "Team Calendar", kind: "mcp" },
+                available: assigned,
+              },
+              {
+                command: { id: "00000000-0000-4000-8000-000000000002", name: "Team", kind: "mcp" },
+                available: true,
+              },
+            ]
+          : [],
+      discoverToolsForBot: (_bot, input) => ({
+        items: input.connectorId ? [{ ...tool, connectorId: input.connectorId }] : [],
+        nextCursor: null,
+      }),
+      resolveTool,
+      dispatch,
+      get: vi.fn(),
+      access: vi.fn(),
+      tool: vi.fn(),
+      plugin: vi.fn(),
+      getConnector: vi.fn(),
+      capabilitySuggestions: () => [],
+      capabilityConnectors: () => [],
+      capabilityTools: () => [],
+      dispatchCapability: vi.fn(),
+      dispatchDraft: vi.fn(),
+    });
+    const help = await peer.call("chat.send", { botId, text: "/Team Calendar help" });
+    expect(help.localReply?.content).toContain("list\\_events");
+    expect(help.localReply?.content).toMatch(/Connections › MCP|连接 › MCP/u);
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(runtime.openSession).not.toHaveBeenCalled();
+    await configure();
+    const text = "/Team Calendar find this week's events";
+    const sent = await peer.call("chat.send", { botId, text });
+    await waitPrompt();
+    const ports = opened[0]?.localTools;
+    const alias = ports?.definitions.find((definition) =>
+      definition.name.startsWith("connection_list_events_"),
+    );
+    expect(alias?.parameters).toEqual(schema);
+    const context = await opened[0]?.context?.prepare(AbortSignal.timeout(5_000));
+    expect(context?.execution).toContain('The user selected "Team Calendar".');
+    expect(opened[0]?.systemPrompt).not.toContain('The user selected "Team Calendar".');
+    expect((await history())[2]?.content).toBe(text);
+    await expect(
+      peer.call("chat.append", {
+        botId,
+        topicId: sent.conversationId ?? "",
+        runId: sent.runId,
+        requestId: "00000000-0000-4000-8000-000000000003",
+        mode: "steer",
+        text,
+      }),
+    ).rejects.toMatchObject({ message: "append_unavailable" });
+    expect(await history()).toHaveLength(4);
+    assigned = false;
+    expect(
+      await ports?.authorize(
+        { id: "revoked", tool: alias?.name ?? "", input: { query: "this week" } },
+        AbortSignal.timeout(5_000),
+      ),
+    ).toMatchObject({ allow: false });
+    expect(resolveTool).toHaveBeenCalledWith(
+      botId,
+      {
+        connectorId,
+        catalogVersion: 4,
+        tool: "list_events",
+        args: { query: "this week" },
+      },
+      undefined,
+    );
+    expect(dispatch).not.toHaveBeenCalled();
+
+    delta?.({ type: "delta", text: "The connection is unavailable." });
+    finish?.({ stopReason: "stop" });
+    await vi.waitFor(async () => expect((await history())[3]?.status).toBe("done"));
+    const list = await peer.call("chat.send", { botId, text: "/help" });
+    expect(list.localReply?.content).not.toContain("/Team Calendar");
+    expect(list.localReply?.content).toContain("/Team");
+    delta = undefined;
+    await peer.call("chat.send", { botId, text });
+    await waitPrompt();
+    expect(opened[1]?.localTools?.definitions.some((value) => value.name === alias?.name)).toBe(
+      false,
+    );
+    const nextContext = await opened[1]?.context?.prepare(AbortSignal.timeout(5_000));
+    expect(nextContext?.execution).not.toContain("The user selected");
   });
 
   it("abort preserves partial output and releases the Bot", async () => {

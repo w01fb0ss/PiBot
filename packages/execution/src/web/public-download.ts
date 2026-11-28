@@ -13,7 +13,7 @@ export class PublicDownloadError extends Error {
   }
 }
 
-function target(input: string, uvAssetRedirect = false) {
+function target(input: string, uvAssetRedirect = false, video = false) {
   let url: URL;
   try {
     url = new URL(input);
@@ -33,6 +33,7 @@ function target(input: string, uvAssetRedirect = false) {
     url.username ||
     url.password ||
     (url.search &&
+      !video &&
       !(
         uvAssetRedirect &&
         ["objects.githubusercontent.com", "release-assets.githubusercontent.com"].includes(host)
@@ -48,7 +49,9 @@ function target(input: string, uvAssetRedirect = false) {
 export async function withPublicDownload<T>(
   options: {
     url: string;
-    hosts: ReadonlySet<string>;
+    hosts?: ReadonlySet<string>;
+    /** Video CDNs use signed URLs and redirects. Each hop still requires public HTTPS. */
+    video?: true;
     method: "HEAD" | "GET";
     signal: AbortSignal;
     proxy?: NetworkProxy;
@@ -59,11 +62,12 @@ export async function withPublicDownload<T>(
 ): Promise<T> {
   const { Agent, fetch } = createRequire(import.meta.url)("undici") as typeof import("undici");
   try {
-    let url = target(options.url);
+    let url = target(options.url, false, options.video);
     const uvRelease =
       options.uvRelease === true &&
-      url.hostname === "github.com" &&
-      /^\/astral-sh\/uv\/releases\/download\/\d+\.\d+\.\d+\/uv-[a-z0-9_-]+\.(?:zip|tar\.gz)$/.test(
+      ((url.hostname === "github.com" && url.pathname.startsWith("/astral-sh/")) ||
+        (url.hostname === "releases.astral.sh" && url.pathname.startsWith("/github/"))) &&
+      /^\/(?:astral-sh|github)\/uv\/releases\/download\/\d+\.\d+\.\d+\/uv-[a-z0-9_-]+\.(?:zip|tar\.gz)$/.test(
         url.pathname,
       );
     for (let hop = 0; hop <= 5; hop++) {
@@ -72,7 +76,7 @@ export async function withPublicDownload<T>(
       const host = url.hostname.replace(/^\[|\]$/g, "");
       if (
         url.protocol !== "https:" ||
-        !options.hosts.has(url.hostname) ||
+        (!options.video && !options.hosts?.has(url.hostname)) ||
         (url.port && url.port !== "443")
       )
         throw new PublicDownloadError("host_not_allowed");
@@ -110,8 +114,8 @@ export async function withPublicDownload<T>(
             redirect: "manual",
             credentials: "omit",
             headers: {
-              "User-Agent": "Pi Bot skill import",
-              Accept: uvRelease ? "application/octet-stream" : "application/zip",
+              "User-Agent": options.video ? "Pi Bot" : "Pi Bot skill import",
+              Accept: options.video || uvRelease ? "application/octet-stream" : "application/zip",
               "Accept-Encoding": "identity",
             },
           }),
@@ -120,7 +124,7 @@ export async function withPublicDownload<T>(
         if ([301, 302, 303, 307, 308].includes(response.status)) {
           const location = response.headers.get("location");
           if (!location || hop === 5) throw new PublicDownloadError("redirect_limit");
-          url = target(new URL(location, url).href, uvRelease);
+          url = target(new URL(location, url).href, uvRelease, options.video);
           continue;
         }
         return await consume(response);

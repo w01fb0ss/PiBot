@@ -31,7 +31,7 @@ async function isolatedBackground(s: Startup) {
   const denied = input.denyWriteRoots ?? [];
   s.state.stage = "alias_scan";
   const aliases = await verifyCommandAliases(
-    [...input.writeRoots, r.temp],
+    [...input.writeRoots, r.temp, ...(r.commandHome ? [r.commandHome] : [])],
     denied,
     signal,
     deps.options.aliasFileSystem,
@@ -45,6 +45,7 @@ async function isolatedBackground(s: Startup) {
     {
       dataDir: input.dataDir,
       botHome: input.botHome,
+      commandHome: r.commandHome !== undefined,
       skillGroupId: input.skillGroupId,
       skillPackageIds: input.skillPackageIds,
       skillEnvIds: input.skillEnv ? [input.skillEnv.id] : undefined,
@@ -62,7 +63,6 @@ async function isolatedBackground(s: Startup) {
   const host = await prepareSandboxHost({
     tempDir: deps.options.tempDir,
     systemHome: deps.options.systemHome,
-    commandEnv: r.env,
     args: deps.options.helperArgs?.sandbox,
   });
   try {
@@ -85,7 +85,6 @@ async function isolatedBackground(s: Startup) {
           command: tempCommand(input.command, r.temp),
           commandId: randomUUID(),
           cwd: r.cwd,
-          shell: r.env.SHELL as string,
           env: r.env,
           waitForDispatch: true,
           stdinPipe: true,
@@ -97,7 +96,11 @@ async function isolatedBackground(s: Startup) {
           await verifyScriptPins(input.scriptPins, signal);
           await verifyScriptInterpreters(
             input.scriptInterpreters,
-            { ...r, writeRoots: input.writeRoots, rootIdentities: input.rootIdentities },
+            {
+              ...r,
+              writeRoots: [...input.writeRoots, ...(r.commandHome ? [r.commandHome] : [])],
+              rootIdentities: input.rootIdentities,
+            },
             signal,
           );
           signal.throwIfAborted();
@@ -134,7 +137,11 @@ async function backgroundProcess(s: Startup, isolation: IsolationStatus) {
       await verifyScriptPins(input.scriptPins, signal);
       await verifyScriptInterpreters(
         input.scriptInterpreters,
-        { ...r, writeRoots: input.writeRoots, rootIdentities: input.rootIdentities },
+        {
+          ...r,
+          writeRoots: [...input.writeRoots, ...(r.commandHome ? [r.commandHome] : [])],
+          rootIdentities: input.rootIdentities,
+        },
         signal,
       );
       signal.throwIfAborted();

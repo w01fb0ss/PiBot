@@ -90,10 +90,16 @@ const names: Record<string, TranslationKey> = {
   workplace_use_runner: "tool.workplace_use_runner",
   delegate_to_agent: "tool.delegate_to_agent",
   team_list: "tool.team_list",
+  team_directory: "tool.team_directory",
   bot_manage: "tool.bot_manage",
   group_manage: "tool.group_manage",
+  catalog_install: "tool.catalog_install",
   send_to_bot: "tool.send_to_bot",
   send_to_group: "tool.send_to_group",
+  pi_health_check: "tool.pi_health_check",
+  pi_repair: "tool.pi_repair",
+  settings_read: "tool.settings_read",
+  settings_change: "tool.settings_change",
 };
 // A finished phone read names what came back ("读取了手机照片 3 张"), written by the
 // brain in the run's language; the row shows that sentence instead of the generic tool name.
@@ -107,11 +113,14 @@ const summaryLabels = new Set([
   "workplace_use_runner",
   // The finished row names the agent and how its work ended.
   "delegate_to_agent",
-  // The default Pi's management and hand-off steps name what they changed or whom they asked.
+  // The default Pi's management steps name what changed.
   "bot_manage",
   "group_manage",
-  "send_to_bot",
-  "send_to_group",
+  // The check names how many items it found; a repair names what it fixed.
+  "pi_health_check",
+  "pi_repair",
+  "settings_read",
+  "settings_change",
 ]);
 /** A row label taken from the tool's own summary (a skill use, a finished phone read). */
 export function toolSummaryLabel(tool: { tool: string; status: string; summary: string }) {
@@ -150,6 +159,33 @@ export function connectorToolLabel(
 /** Unknown tools use a neutral action rather than exposing an internal identifier. */
 export function toolDisplayName(tool: string, t: ReturnType<typeof createTranslator>) {
   return t(toolNameKey(tool));
+}
+
+const activeToolKeys: Record<string, TranslationKey> = {
+  run_command: "tool.active.command",
+  read_file: "tool.active.read",
+  write_file: "tool.active.write",
+  edit_file: "tool.active.edit",
+  find_files: "tool.active.search",
+  search_text: "tool.active.search",
+  web_search: "tool.active.search",
+  web_fetch: "tool.active.webpage",
+  browser_open: "tool.active.webpage",
+  browser_snapshot: "tool.active.webpage",
+};
+
+/** The active step's words, before the chat adds its step number. */
+export function activeToolLabel(
+  tool: string,
+  target: string | undefined,
+  t: ReturnType<typeof createTranslator>,
+) {
+  if (tool === "ui_tree") return t("chat.readingWindow");
+  const key = Object.hasOwn(activeToolKeys, tool) ? activeToolKeys[tool] : undefined;
+  const suffix = target ? ` ${target}` : "";
+  return key
+    ? t(key, { target: suffix })
+    : t("tool.executing", { action: toolDisplayName(tool, t), target: suffix });
 }
 
 export interface RunActivityText {
@@ -271,22 +307,34 @@ export function isPlanReadOnly(
   );
 }
 
+export function toolStatusKey(
+  tool: Pick<ToolCallRecord, "status" | "denialReason" | "approval">,
+): TranslationKey {
+  if (
+    tool.status === "blocked" &&
+    (tool.denialReason === "approval_user_denied" || tool.approval?.status === "denied")
+  )
+    return "tool.status.userDenied";
+  return `tool.status.${tool.status}`;
+}
+
 function stepOutcome(
   status?: ToolCallRecord["status"],
   approvalStatus?: Approval["status"],
   exitCode?: number | null,
+  denialReason?: string,
 ) {
   // Explicit rejection is a user decision, including legacy drafts recorded as tool errors.
   if (approvalStatus === "denied") return "denied";
   // Other durable terminal states win over intermediate approval snapshots.
-  if (status === "blocked") return "denied";
+  if (status === "blocked") return denialReason === "approval_user_denied" ? "denied" : "blocked";
   if (status === "aborted") return "aborted";
   // The step's own status decides. grep's "no matches" is recorded as a done step that
   // exits 1, so a non-zero code alone no longer means failure; only a record without a status (an
   // older draft) still falls back to it.
   if (status === "error") return "failed";
   if (status === undefined && typeof exitCode === "number" && exitCode !== 0) return "failed";
-  if (approvalStatus === "auto_denied") return "denied";
+  if (approvalStatus === "auto_denied") return "blocked";
   if (approvalStatus === "cancelled" || approvalStatus === "expired") return "aborted";
   return undefined;
 }
@@ -314,12 +362,12 @@ export function toolDenialReason(
     (step) => ["deny", "ask"].includes(step.effect) && step.code !== "current_policy_decision",
   );
   // A refusal that never had a card stores its own code; a known policy code names the
-  // reason, an unknown one leaves the row as plain "Denied".
+  // reason, an unknown one leaves the row as plain "Blocked".
   return last ? policyStepText(last, t) : policyCodeText(tool.denialReason ?? "", t);
 }
 
 export function toolGroupSummary(
-  tools: (Pick<ToolCallRecord, "tool" | "status" | "exitCode"> & {
+  tools: (Pick<ToolCallRecord, "tool" | "status" | "exitCode" | "denialReason"> & {
     approval?: Pick<Approval, "status" | "explanation">;
     summary?: string;
     output?: string;
@@ -330,7 +378,7 @@ export function toolGroupSummary(
   short = false,
 ) {
   const counts = new Map<TranslationKey, number>();
-  const outcomes = { failed: 0, denied: 0, aborted: 0 };
+  const outcomes = { failed: 0, denied: 0, blocked: 0, aborted: 0 };
   for (const tool of tools) {
     const name = toolNameKey(tool.tool);
     counts.set(name, (counts.get(name) ?? 0) + 1);
@@ -341,7 +389,7 @@ export function toolGroupSummary(
       : tool.summary &&
           isPlanReadOnly({ status: tool.status, summary: tool.summary, output: tool.output })
         ? undefined
-        : stepOutcome(tool.status, tool.approval?.status, tool.exitCode);
+        : stepOutcome(tool.status, tool.approval?.status, tool.exitCode, tool.denialReason);
     if (outcome) outcomes[outcome]++;
   }
   for (const approval of unmatched) {
@@ -370,7 +418,7 @@ export function toolGroupSummary(
   return [
     summary,
     ...(unmatched.length ? [t("tool.fold.approvals", { count: unmatched.length })] : []),
-    ...(["failed", "denied", "aborted"] as const).flatMap((outcome) =>
+    ...(["failed", "denied", "blocked", "aborted"] as const).flatMap((outcome) =>
       outcomes[outcome] ? [t(`tool.fold.${outcome}`, { count: outcomes[outcome] })] : [],
     ),
   ]

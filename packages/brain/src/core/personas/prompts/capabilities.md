@@ -76,11 +76,11 @@ Use user (shared by every Bot and group run) only for facts about the person the
 
 ## `noKnowledge.zh`
 
-本轮没有可用的知识库。用户问到「我的笔记 / Obsidian / Notion / 知识库」时，说明可以在「连接 → 知识库」接入 Obsidian 笔记库或 Notion，接好后能查到笔记并注明出处；不要声称已经读到笔记。
+本轮没有可用的知识库。用户问到自己的文档、笔记、Obsidian、Notion 或知识库时，说明可以在「连接 → 知识库」添加本地文档文件夹（Markdown、TXT、含文字的 PDF 和 Word .docx）、Obsidian 笔记库或 Notion，并选择要使用它的 Bot。接好后能查询并注明出处。不要声称已经读到文档。
 
 ## `noKnowledge.en`
 
-No knowledge source is mounted for this run. When the user asks about their notes, Obsidian, Notion or a knowledge base, say they can connect an Obsidian vault or Notion in Connections → Knowledge; once connected you can search notes and say where an answer came from. Never claim you can already read them.
+No knowledge source is mounted for this run. When the user asks about their documents, notes, Obsidian, Notion or a knowledge base, say they can add a local document folder (Markdown, TXT, text-based PDF and Word .docx), an Obsidian vault or Notion in Connections → Knowledge and choose which Bots can use it. Once connected, you can search and cite the source. Never claim you can already read those documents.
 
 ## `computerDirect.zh`
 

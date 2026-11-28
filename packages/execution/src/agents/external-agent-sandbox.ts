@@ -30,6 +30,10 @@ const EXCEPTIONS: Readonly<Record<string, "readWrite" | "readOnly">> = {
   ".claude.json": "readWrite",
   ".cursor": "readWrite",
   ".config/opencode": "readWrite",
+  // Antigravity: its sessions and logs, and its global customizations read only (hooks, MCP
+  // servers and plugins there run later outside any sandbox). The rest of ~/.gemini stays hidden.
+  ".gemini/antigravity-cli": "readWrite",
+  ".gemini/config": "readOnly",
   // The login keychain file only, never the Keychains folder (Claude and Cursor keep
   // their token there). Note: securityd then serves every item this program's ACL allows.
   "Library/Keychains/login.keychain-db": "readOnly",
@@ -49,6 +53,9 @@ const GRANT_WRITE_DENIES: Readonly<Record<string, readonly string[]>> = {
   ".opencode": ["bin"],
   // Codex's standalone installer keeps its releases here; ~/.local/bin/codex points into it.
   ".codex": ["packages"],
+  // Antigravity unpacks its bundled plugins (with sidecar programs) into `builtin` and stages its
+  // own updates in `updater`; both run later outside any sandbox.
+  ".gemini/antigravity-cli": ["builtin", "updater"],
 };
 /** Cursor resolves DNS itself. Never a directory: /var/run also holds docker.sock. */
 const UNIX_SOCKETS = new Set(["/var/run/mDNSResponder", "/private/var/run/mDNSResponder"]);
@@ -64,6 +71,8 @@ export interface AgentAllowanceInput {
   network: readonly string[];
   /** macOS: bind and accept on local ports, and connect to any loopback port (SRT switch). */
   localBinding?: boolean;
+  /** macOS: open pseudo-terminals (`/dev/ptmx`, `/dev/ttys*`; SRT switch). */
+  pty?: boolean;
 }
 
 export interface ExternalAgentSandboxInput {
@@ -327,7 +336,11 @@ export async function externalAgentSandboxConfig(
         ...temporary.denyRead,
       ],
       allowRead: [
-        ...[...new Set([...readable, ...adapterRoots, ...dataWork, ...relayReads])].map((path) => ({
+        // A writable grant inside a protected root (Antigravity's folder in ~/.gemini) is read
+        // back too; the rest of that root stays denied.
+        ...[
+          ...new Set([...readable, ...writable, ...adapterRoots, ...dataWork, ...relayReads]),
+        ].map((path) => ({
           path,
           literal: true,
         })),
@@ -351,6 +364,8 @@ export async function externalAgentSandboxConfig(
   if (input.platform === "darwin") {
     // Linux needs nothing: bubblewrap's own network namespace already allows a private bind.
     if (input.allowances.localBinding) value.network.allowLocalBinding = true;
+    // Linux needs nothing either: bubblewrap mounts a private /dev/pts for the sandbox.
+    if (input.allowances.pty) value.allowPty = true;
     value.network.allowMachLookup = [
       ...new Set([...SAFE_SYSTEM_SERVICES, ...input.allowances.machLookup]),
     ];

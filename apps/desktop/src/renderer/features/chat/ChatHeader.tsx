@@ -11,6 +11,7 @@ export function ChatHeader({
   state,
   folders,
   agentBadge,
+  modelOverride,
   panelOpen,
   onNewTopic,
   newTopicDisabled,
@@ -26,10 +27,11 @@ export function ChatHeader({
   bot?: Bot;
   onProfile(): void;
   state: "waiting" | "working" | "idle";
-  /** The conversation's folder picker, the last part of the subtitle line. */
+  /** The conversation's folder picker. */
   folders: ReactNode;
   /** An external agent's persistent marker (Windows: runs without sandbox), after the folder. */
   agentBadge?: ReactNode;
+  modelOverride?: ReactNode;
   panelOpen: boolean;
   onNewTopic(): void;
   newTopicDisabled: boolean;
@@ -91,6 +93,14 @@ export function ChatHeader({
               </span>
             )}
             <div className={styles.headerFolder}>{folders}</div>
+            {modelOverride && (
+              <>
+                <span className={styles.headerSeparator} aria-hidden="true">
+                  ·
+                </span>
+                {modelOverride}
+              </>
+            )}
             {agentBadge && (
               <>
                 <span className={styles.headerSeparator} aria-hidden="true">

@@ -1,5 +1,9 @@
-import type { ChatConfirmation, QueueInput } from "@pibot/brain/orchestration-kit";
-import { abortable, restoreWorkflow } from "@pibot/brain/orchestration-kit";
+import type {
+  ChatConfirmation,
+  QueueInput,
+  UserMessageDisplay,
+} from "@pibot/brain/orchestration-kit";
+import { abortable, restoreWorkflow, userMessageUsage } from "@pibot/brain/orchestration-kit";
 import { RpcError, type Run, UserQuestionPauseSchema } from "@pibot/protocol-base";
 import { MessagesRepo, RunRecoveryRepo, transaction } from "@pibot/storage";
 import { assertPlanWorkplace } from "./group-plan-workplace.ts";
@@ -24,6 +28,7 @@ export async function answerStepQuestion(
   sourceMessageId: string,
   text: string,
   confirmation: ChatConfirmation,
+  display: UserMessageDisplay,
 ) {
   const messages = new MessagesRepo(service.deps.db);
   const message = messages.get(sourceMessageId);
@@ -79,7 +84,11 @@ export async function answerStepQuestion(
     return { current, plan, task, budgetRootRunId: plan.budgetRootRunId };
   };
   assertCurrent();
-  const { bot } = await service.model(source.botId, signal);
+  const { bot } = await service.model(source.botId, signal, undefined, {
+    groupId: source.groupId,
+    conversationId: source.conversationId,
+    taskId: source.taskId,
+  });
   const identity = new RunRecoveryRepo(service.deps.db).get(source.id)?.workflow;
   const workflow = identity
     ? await abortable(
@@ -117,6 +126,7 @@ export async function answerStepQuestion(
       conversationId: source.conversationId,
       role: "user",
       content: service.deps.redactor.redact(text),
+      ...userMessageUsage(undefined, display),
       status: "done",
       markUnread: false,
     });

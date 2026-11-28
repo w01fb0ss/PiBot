@@ -340,6 +340,15 @@ export class MobileSession {
     this.loop = undefined;
     this.lifetime = undefined;
   }
+  reconnectNow() {
+    if (this.state.status === "online") return;
+    this.away = false;
+    this.lastError = undefined;
+    this.markResume();
+    clearTimeout(this.quietTimer);
+    this.wake.abort();
+    this.round?.abort();
+  }
   /** Connected or still trying; false once stopped. */
   running() {
     return !!this.lifetime && !this.lifetime.signal.aborted;
@@ -443,14 +452,14 @@ export class MobileSession {
           this.phoneSideDrop = false;
         } catch (error) {
           if (signal.aborted) break;
+          // A network change or a manual retry cut this attempt short.
+          if (round.signal.aborted) continue;
           const failure = reportLinkFailure(error, "session");
           const unavailable = error instanceof Error && error.message === "link_unavailable";
           if (unavailable) {
             this.publish({ status: "offline", peer: null, error: "unavailable" });
             return;
           }
-          // A network change cut this attempt short; it says nothing about the computer.
-          if (round.signal.aborted) continue;
           this.lastError = failure;
           // The relay answered and the computer is not in the room: that is definite.
           absent = failure === "room_empty";

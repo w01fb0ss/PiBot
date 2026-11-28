@@ -29,7 +29,7 @@ export function botSystemPrompt(
   capabilities: CapabilityFacts,
   capabilityTools: CapabilityToolRegistry,
   /** Knowledge libraries assigned to this Bot or group; empty when none are. */
-  knowledge: readonly { name: string; kind: string }[] = [],
+  knowledge: readonly { name: string; kind: string; writable?: boolean }[] = [],
 ) {
   const base =
     bot.isMain &&
@@ -84,22 +84,23 @@ export function botSystemPrompt(
  */
 export function knowledgeRule(
   language: "zh" | "en",
-  knowledge: readonly { name: string; kind: string }[],
+  knowledge: readonly { name: string; kind: string; writable?: boolean }[],
 ) {
   const list = knowledge
     .slice(0, 20)
     .map((entry) =>
       language === "zh"
-        ? `${entry.name}（${knowledgeKind(entry.kind)}）`
-        : `${entry.name} (${knowledgeKind(entry.kind)})`,
+        ? `${entry.name}（${knowledgeKind(entry.kind, language)}${entry.writable ? "，Bot 可修改" : ""}）`
+        : `${entry.name} (${knowledgeKind(entry.kind, language)}${entry.writable ? ", Bots can edit" : ""})`,
     );
   return language === "zh"
     ? botPrompts.knowledgeRule.zh({ list: list.join("、") })
     : botPrompts.knowledgeRule.en({ list: list.join(", ") });
 }
-function knowledgeKind(kind: string) {
+function knowledgeKind(kind: string, language: "zh" | "en") {
   if (kind === "obsidian") return "Obsidian";
   if (kind === "notion") return "Notion";
+  if (kind === "folder") return language === "zh" ? "本地文档文件夹" : "Local folder";
   return kind;
 }
 export function fallbackPersona(description: string, language: "zh" | "en") {

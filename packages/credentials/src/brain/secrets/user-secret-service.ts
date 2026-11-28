@@ -174,6 +174,20 @@ export class UserSecretService {
     await this.ready(signal);
     return abortable(this.store.get(scope, name), signal);
   }
+  choices(botId: string) {
+    if (!this.warmed) return [];
+    const names: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = this.meta.list({ cursor, limit: 100 });
+      for (const item of page.items) {
+        if (item.hasValue && this.assigned(item, botId)) names.push(item.name);
+        if (names.length === 200) return names;
+      }
+      cursor = page.nextCursor;
+    } while (cursor);
+    return names;
+  }
   metadata(name: string) {
     return this.meta.get(name);
   }

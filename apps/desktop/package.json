@@ -1,6 +1,6 @@
 {
   "name": "@pibot/desktop",
-  "version": "0.0.3",
+  "version": "0.1.0",
   "private": true,
   "homepage": "https://pibot.space",
   "license": "Apache-2.0",
@@ -88,6 +88,8 @@
     "@pibot/teams-contract": "workspace:*",
     "@pibot/tools": "workspace:*",
     "@pibot/ui": "workspace:*",
+    "@pibot/videos": "workspace:*",
+    "@pibot/videos-contract": "workspace:*",
     "@pibot/workspaces": "workspace:0.0.0",
     "@pibot/workspaces-contract": "workspace:*",
     "@trycua/cua-driver": "0.38.0",

@@ -1,19 +1,25 @@
-import type { ImagesFunction, Usage } from "@earendil-works/pi-ai";
+import type { ImagesFunction } from "@earendil-works/pi-ai";
 import { getAttributionHeaders } from "@earendil-works/pi-ai/utils/identity";
-import type { ImageContent } from "@pibot/protocol-base";
+import {
+  type CustomImageModel,
+  type ImageApi,
+  ImageContentSchema,
+  MAX_ATTACHMENTS,
+} from "@pibot/protocol-base";
 import { z } from "zod";
 import { AgentError, mapAgentError } from "../core/errors.ts";
 import type { ImageUrlFetch } from "../core/types.ts";
+import { isLoopbackHost } from "../network/network.ts";
+import { comfyImages } from "./comfyui.ts";
+import { dashscopeImages } from "./dashscope.ts";
 import { checkedImage, imageJson, standardImages } from "./image-response.ts";
 import { imageFromUrl } from "./image-url.ts";
+import { ImageTransport, type ProviderImageResult, responseValue } from "./provider-transport.ts";
+import { seedreamImages } from "./seedream.ts";
+import { xaiImages } from "./xai.ts";
 
-export type ImageWire =
-  | "openai-images"
-  | "google-images"
-  | "openrouter-images"
-  | "codex-images"
-  | "openai-chatgpt-images"
-  | "vertex-images";
+export type ImageWire = ImageApi | "openai-chatgpt-images" | "vertex-images";
+const references = z.array(ImageContentSchema).max(MAX_ATTACHMENTS);
 
 export function imageBase(base: string, wire: ImageWire): string {
   const url = new URL(base);
@@ -26,8 +32,16 @@ export function imageBase(base: string, wire: ImageWire): string {
   )
     throw new AgentError("provider_error");
   if (wire === "codex-images") return "https://chatgpt.com/backend-api/codex";
-  const version = wire === "google-images" ? "v1beta" : "v1";
   const pathname = url.pathname.replace(/\/+$/, "");
+  if (wire === "comfyui-images") return `${url.origin}${pathname}`;
+  if (wire === "seedream-images" || wire === "dashscope-images" || wire === "xai-images") {
+    if (url.protocol !== "https:" && !isLoopbackHost(url.hostname))
+      throw new AgentError("provider_error");
+    const suffix =
+      wire === "seedream-images" ? "/api/v3" : wire === "dashscope-images" ? "/api/v1" : "/v1";
+    return `${url.origin}${pathname.endsWith(suffix) ? pathname : `${pathname}${suffix}`}`;
+  }
+  const version = wire === "google-images" ? "v1beta" : "v1";
   // An explicit version is a user contract; don't silently guess another version.
   const explicit = pathname.match(/\/(v\d+(?:alpha|beta)?)(?:\/|$)/)?.[1];
   if (
@@ -103,17 +117,45 @@ const CHATGPT_RESPONSES_MODEL = "gpt-6-astra";
 export function imageAdapter(
   wire: ImageWire,
   ports: { fetchImageUrl?: ImageUrlFetch } = {},
+  models?: CustomImageModel[],
 ): ImagesFunction {
   return async (model, context, options) => {
     const timestamp = Date.now();
+    const deadline = AbortSignal.timeout(
+      Math.min(Math.max(options?.timeoutMs ?? 300_000, 1), 300_000),
+    );
     try {
-      const signal = options?.signal ?? AbortSignal.timeout(300_000);
+      const signal = options?.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
       signal.throwIfAborted();
       const prompt = context.input
         .flatMap((part) => (part.type === "text" ? [part.text] : []))
         .join("\n");
       const images = context.input.filter((part) => part.type === "image");
       const base = imageBase(model.baseUrl, wire);
+      const fetch = options?.fetch ?? globalThis.fetch;
+      const success = (result: ProviderImageResult) => ({
+        api: model.api,
+        provider: model.provider,
+        model: model.id,
+        timestamp,
+        stopReason: "stop" as const,
+        output: [
+          ...(result.text ? [{ type: "text" as const, text: result.text }] : []),
+          ...result.images,
+        ],
+        ...("usage" in result ? { usage: result.usage } : {}),
+      });
+      if (wire === "comfyui-images") {
+        const transport = new ImageTransport(base, signal, fetch, new Headers(), undefined, true);
+        return success(
+          await comfyImages(
+            transport,
+            prompt,
+            responseValue(references, images),
+            models?.find((entry) => entry.id === model.id),
+          ),
+        );
+      }
       const headers = new Headers();
       for (const [key, value] of Object.entries({
         ...getAttributionHeaders(model, options?.identity),
@@ -125,6 +167,24 @@ export function imageAdapter(
       if (key && key !== "pibot-keyless") {
         if (wire === "google-images") headers.set("x-goog-api-key", key);
         else headers.set("Authorization", `Bearer ${key}`);
+      }
+      if (wire === "seedream-images" || wire === "dashscope-images" || wire === "xai-images") {
+        if (!key || key === "pibot-keyless") throw new AgentError("auth_failed");
+        const transport = new ImageTransport(base, signal, fetch, headers, ports.fetchImageUrl);
+        const inputs = responseValue(references, images);
+        if (wire === "seedream-images")
+          return success(
+            await seedreamImages(
+              transport,
+              model.id,
+              prompt,
+              inputs,
+              models?.find((entry) => entry.id === model.id),
+            ),
+          );
+        if (wire === "dashscope-images")
+          return success(await dashscopeImages(transport, model.id, prompt, inputs));
+        return success(await xaiImages(transport, model.id, prompt, inputs));
       }
       let url: string;
       let body: BodyInit;
@@ -246,7 +306,6 @@ export function imageAdapter(
           });
         }
       }
-      const fetch = options?.fetch ?? globalThis.fetch;
       const response = await fetch(url, {
         method: "POST",
         headers,
@@ -255,7 +314,7 @@ export function imageAdapter(
         redirect: "error",
       });
       const value = await imageJson(response, signal);
-      let result: { text: string; images: ImageContent[]; usage?: Usage };
+      let result: ProviderImageResult;
       if (wire === "google-images") {
         const parsed = googleResponse.safeParse(value);
         if (!parsed.success) throw new AgentError("provider_error");
@@ -297,20 +356,13 @@ export function imageAdapter(
         );
       // The complete response has been decoded and validated. Brain retains its paid bytes,
       // then enforces cancellation before any workspace export or follow-up action.
-      return {
-        api: model.api,
-        provider: model.provider,
-        model: model.id,
-        timestamp,
-        stopReason: "stop",
-        output: [
-          ...(result.text ? [{ type: "text" as const, text: result.text }] : []),
-          ...result.images,
-        ],
-        ...("usage" in result ? { usage: result.usage } : {}),
-      };
+      return success(result);
     } catch (error) {
-      const code = options?.signal?.aborted ? "aborted" : mapAgentError(error);
+      const code = options?.signal?.aborted
+        ? "aborted"
+        : deadline.aborted
+          ? "image_timeout"
+          : mapAgentError(error);
       return {
         api: model.api,
         provider: model.provider,

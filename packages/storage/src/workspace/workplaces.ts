@@ -20,10 +20,18 @@ const MAX_SESSION_FOLDERS = 200;
 export const WORKPLACE_REGISTRY_LIMIT = MAX_USER_FOLDERS + MAX_SESSION_FOLDERS;
 
 const folderColumns =
-  "id, path, name, location, association, last_used_at AS lastUsedAt, hidden_at AS hiddenAt";
+  "id, path, name, location, association, last_used_at AS lastUsedAt, hidden_at AS hiddenAt, display_path AS displayPath";
 type FolderRow = WorkingFolder & { hiddenAt?: string | null };
 function folder(row: Record<string, unknown>): FolderRow {
-  const { lastUsedAt, hiddenAt, location, association, createdAt: _createdAt, ...rest } = row;
+  const {
+    lastUsedAt,
+    hiddenAt,
+    location,
+    association,
+    displayPath,
+    createdAt: _createdAt,
+    ...rest
+  } = row;
   const remote = typeof location === "string" && location !== "local";
   if (remote) {
     const prefix = `pibot-${location}:`;
@@ -37,6 +45,7 @@ function folder(row: Record<string, unknown>): FolderRow {
       ...(remote ? { location } : {}),
       ...(association === "user" || association === "monitor" ? { association } : {}),
       ...(lastUsedAt ? { lastUsedAt } : {}),
+      ...(displayPath ? { displayPath } : {}),
     }),
     hiddenAt: (hiddenAt as string | null) ?? null,
   };
@@ -171,8 +180,10 @@ export class WorkplacesRepo {
     name = basename(path) || path,
     association: "user" | "monitor" | "session" = "user",
     location: ExecutionLocationTarget = "local",
+    displayPath?: string | null,
   ): WorkingFolder {
     AbsolutePathSchema.parse(path);
+    if (displayPath != null) AbsolutePathSchema.parse(displayPath);
     const storagePath =
       location === "local" ? path : `pibot-${location}:${Buffer.from(path).toString("base64url")}`;
     return transaction(this.db, () => {
@@ -184,6 +195,18 @@ export class WorkplacesRepo {
       if (existing) {
         const row = folder(existing);
         const { hiddenAt: _hidden, ...value } = row;
+        if (
+          association !== "session" &&
+          location === "local" &&
+          displayPath !== undefined &&
+          (value.displayPath ?? null) !== displayPath
+        ) {
+          this.db
+            .prepare("UPDATE working_folders SET display_path=? WHERE bot_id=? AND id=?")
+            .run(displayPath, botId, row.id);
+          delete value.displayPath;
+          if (displayPath) value.displayPath = displayPath;
+        }
         const existingAssociation = String(existing.association ?? "user");
         if (existingAssociation === "session" && association !== "session") {
           this.requireRegistrationRoom(botId, association);
@@ -209,11 +232,12 @@ export class WorkplacesRepo {
         id: randomUUID(),
         path,
         name,
+        ...(displayPath ? { displayPath } : {}),
         ...(location !== "local" ? { location } : {}),
       });
       this.db
-        .prepare(`INSERT INTO working_folders(id, bot_id, path, name, position, created_at, association, last_used_at, location)
-        SELECT ?, ?, ?, ?, COALESCE(MAX(position), -1) + 1, ?, ?, NULL, ? FROM working_folders WHERE bot_id = ?`)
+        .prepare(`INSERT INTO working_folders(id, bot_id, path, name, position, created_at, association, last_used_at, location, display_path)
+        SELECT ?, ?, ?, ?, COALESCE(MAX(position), -1) + 1, ?, ?, NULL, ?, ? FROM working_folders WHERE bot_id = ?`)
         .run(
           value.id,
           botId,
@@ -222,6 +246,7 @@ export class WorkplacesRepo {
           new Date().toISOString(),
           association,
           location,
+          displayPath ?? null,
           botId,
         );
       this.bump(botId);
@@ -326,7 +351,7 @@ export class WorkplacesRepo {
       return UsedFolderSchema.parse({
         id: row.id,
         name: row.name,
-        path: folder(row).path,
+        path: row.displayPath ?? folder(row).path,
         association: row.association,
         lastUsedAt: row.lastUsedAt ?? row.createdAt ?? null,
         topics: titles

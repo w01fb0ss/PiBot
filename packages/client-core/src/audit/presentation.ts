@@ -4,6 +4,8 @@ import {
   type AuditKind,
   connectorAuditEvent,
   internalConnectorAuditEvents,
+  PI_REPAIR_ACTIONS,
+  type PiRepairAction,
 } from "@pibot/protocol";
 import { toolNameKey } from "../tools/presentation.ts";
 import { checkpointAuditResult, isFileCheckpoint } from "./checkpoint.ts";
@@ -113,12 +115,15 @@ const kindGroups: Record<AuditKind, readonly [AuditGroup, ...AuditGroup[]]> = {
   "external_agent.finished": ["run"],
   "external_agent.permission": ["approval"],
   "image.finished": ["web"],
+  "video.started": ["web"],
+  "video.finished": ["web"],
   "messages.read": ["run"],
   "grant.created": ["approval"],
   "grant.revoked": ["approval"],
   "policy.denied": ["approval", "send"],
   "oauth.changed": ["identity"],
   "provider.imported": ["run"],
+  "provider.video_model_changed": ["run"],
   "network.changed": ["web"],
   "permissions.changed": ["approval"],
   "search.sent": ["web"],
@@ -126,6 +131,8 @@ const kindGroups: Record<AuditKind, readonly [AuditGroup, ...AuditGroup[]]> = {
   "collaboration.completed": ["collaboration"],
   "collaboration.cancelled": ["collaboration"],
   "group.task.quiet": ["collaboration"],
+  "topic.model_override": ["run"],
+  "group.task.model_override": ["collaboration"],
   "group.workflow.started": ["collaboration"],
   "group.workflow.migrated": ["collaboration"],
   "group.workflow.recovered": ["collaboration"],
@@ -172,6 +179,10 @@ const kindGroups: Record<AuditKind, readonly [AuditGroup, ...AuditGroup[]]> = {
   "team.created": ["collaboration"],
   "pi.managed": ["collaboration"],
   "pi.dispatched": ["collaboration"],
+  "pi.dispatch_model": ["collaboration"],
+  "pi.health_checked": ["collaboration"],
+  "pi.repaired": ["collaboration"],
+  "pi.settings_changed": ["collaboration"],
   "team.exported": ["collaboration"],
   "builtin.updated": ["run"],
   "builtin.catalog": ["run"],
@@ -486,6 +497,14 @@ export function auditSummary(
       });
     case "image.started":
     case "image.finished":
+      if (
+        entry.kind === "image.finished" &&
+        detail.reasonCode === "image_replacement_approval_declined"
+      )
+        return t("media.audit.replacementDeclined", {
+          provider: auditImageProvider(detail, t),
+          model: safeAuditText(detail.modelId) || t("media.audit.unknownModel"),
+        });
       return t(entry.kind === "image.started" ? "media.audit.started" : "media.audit.finished", {
         provider: auditImageProvider(detail, t),
         model: safeAuditText(detail.modelId) || t("media.audit.unknownModel"),
@@ -562,6 +581,10 @@ export function auditSummary(
     case "runtime.drain_failed":
       return t("runtime.auditDrainFailed");
     case "runtime.commands_paused":
+      if (detail.reasonCode === "cleanup_confirmed")
+        return t("runtime.auditCommandCleanupConfirmed");
+      if (detail.reasonCode === "cleanup_unconfirmed")
+        return t("runtime.commandCleanupUnconfirmed");
       return t(
         detail.reasonCode === "recovered"
           ? "runtime.auditCommandsRecovered"
@@ -610,6 +633,11 @@ export function auditSummary(
     case "oauth.changed":
       return auditAuth(detail, t);
     case "permissions.changed":
+      if (
+        detail.reasonCode === "sandbox_outside_remembered" ||
+        detail.reasonCode === "sandbox_outside_remember_not_saved"
+      )
+        return auditReason(detail, t);
       return t("audit.permissions.updated");
     case "network.changed":
       return t(
@@ -643,11 +671,33 @@ export function auditSummary(
       return t("botBrowser.audit.localOpened", { target: detail.target ?? "localhost" });
     case "pi.managed":
       return t(piManagedKey(detail.reasonCode), { target: safeAuditText(detail.target) });
+    case "pi.dispatch_model": {
+      const change = detail.dispatchModelSwitch;
+      return change
+        ? t("dispatch.modelSwitch", {
+            ...change,
+            reason: t(`dispatch.modelReason.${change.reason}`),
+          })
+        : t("audit.pi.dispatch_model", {
+            model: safeAuditText([detail.providerId, detail.modelId].filter(Boolean).join("/")),
+          });
+    }
     case "pi.dispatched":
       return t("audit.pi.dispatched", {
         target: safeAuditText(detail.target),
         title: safeAuditText(detail.taskTitle),
       });
+    case "pi.settings_changed":
+      return t("audit.pi.settings_changed");
+    case "pi.health_checked":
+      return t("audit.pi.health_checked", { count: detail.piHealth?.total ?? 0 });
+    case "pi.repaired":
+      return t(
+        detail.piRepair?.outcome === "state_changed"
+          ? "audit.pi.repair_refused"
+          : "audit.pi.repaired",
+        { action: t(piRepairActionKey(detail.piRepair?.action)) },
+      );
     case "team.created":
     case "team.exported": {
       const counts = {
@@ -685,6 +735,11 @@ export function auditSummary(
         site: detail.domain ?? "—",
         label: detail.target ?? "—",
       });
+    case "topic.model_override":
+    case "group.task.model_override":
+      return detail.reasonCode === "clear"
+        ? t("audit.summary.modelOverride.clear")
+        : t("audit.summary.modelOverride.set", { model: safeAuditText(detail.modelId) });
     case "group.task.quiet":
       return t("audit.summary.group.task.quiet");
     case "collaboration.queued":
@@ -957,10 +1012,23 @@ export function auditResult(
     entry.kind === "skill.changed" ||
     entry.kind === "pi.managed" ||
     entry.kind === "pi.dispatched" ||
+    entry.kind === "pi.dispatch_model" ||
+    entry.kind === "pi.health_checked" ||
     entry.kind === "team.created" ||
     entry.kind === "team.exported"
   )
     return { text: t("audit.result.changed"), tone: "muted" };
+  if (entry.kind === "pi.repaired")
+    return detail.piRepair?.outcome === "fixed"
+      ? { text: t("piHealth.outcome.fixed"), tone: "ok" }
+      : {
+          text: t(
+            detail.piRepair?.outcome === "state_changed"
+              ? "piHealth.outcome.state_changed"
+              : "piHealth.outcome.failed",
+          ),
+          tone: "muted",
+        };
   if (entry.kind === "autocheck.finished") {
     const code = detail.reasonCode ?? "";
     const known = ["passed", "failed", "timeout", "blocked", "stopped"].includes(code);
@@ -1117,4 +1185,10 @@ function piManagedKey(code: string | undefined): TranslationKey {
   return (PI_MANAGED as readonly string[]).includes(code ?? "")
     ? (`audit.pi.${code as (typeof PI_MANAGED)[number]}` as const)
     : "audit.pi.changed";
+}
+
+function piRepairActionKey(action: string | undefined): TranslationKey {
+  return (PI_REPAIR_ACTIONS as readonly string[]).includes(action ?? "")
+    ? (`piHealth.action.${action as PiRepairAction}` as const)
+    : "tool.pi_repair";
 }

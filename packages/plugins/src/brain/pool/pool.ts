@@ -8,12 +8,15 @@ export interface ConnectorPoolTarget {
   open(signal: AbortSignal): Promise<ConnectorConnection>;
   /** Longer opening deadline for a target that waits on a person (an OS permission prompt). */
   openTimeoutMs?: number;
+  /** An isolated stdio server shares one network origin across all requests. */
+  serial?: boolean;
 }
 interface Entry {
   generation: number;
   controller: AbortController;
   ready: Promise<ConnectorConnection>;
   connection?: ConnectorConnection;
+  tail?: Promise<unknown>;
   calls: Set<Promise<unknown>>;
   lastUsed: number;
   stopping: boolean;
@@ -121,8 +124,10 @@ export class ConnectorPool {
     const combined = AbortSignal.any([signal, entry.controller.signal, timeout.signal]);
     entry.lastUsed = this.now();
     // Do not race the action against abort: settlement is not proof that remote work drained.
+    const previous = target.serial ? entry.tail : undefined;
     const pending = (async () => {
       const connection = await entry.ready;
+      if (previous) await previous;
       // Opening has its own deadline (it may wait on a permission prompt); this one bounds the call.
       timer = setTimeout(
         () => timeout.abort(new DOMException("Connector call timed out", "TimeoutError")),
@@ -132,6 +137,11 @@ export class ConnectorPool {
       combined.throwIfAborted();
       return action(connection, combined);
     })();
+    if (target.serial)
+      entry.tail = pending.then(
+        () => undefined,
+        () => undefined,
+      );
     entry.calls.add(pending);
     try {
       return await pending;

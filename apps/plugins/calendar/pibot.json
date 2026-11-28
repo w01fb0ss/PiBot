@@ -19,12 +19,12 @@
         "id": "system",
         "auth": "system",
         "capability": {
-          "zh": "macOS 系统框架 / Windows 经典 Outlook；写入需确认。",
-          "en": "macOS system frameworks / Windows classic Outlook; writes require confirmation."
+          "zh": "连接本机日历（macOS 日历或 Windows 经典版 Outlook）；修改日程前会请你确认。",
+          "en": "Connects to your local calendar (macOS Calendar or Windows classic Outlook); asks before making changes."
         },
         "help": {
-          "zh": "连接时会检查系统权限。Windows 需要经典 Outlook；新版 Outlook 不支持 COM。Linux EDS 驱动暂不可用。",
-          "en": "Connecting checks system access. Windows requires classic Outlook; new Outlook has no COM support. Linux EDS driver is currently unavailable."
+          "zh": "连接时会请求访问本机日历的权限。Windows 上仅支持经典版 Outlook（暂不支持新版 Outlook）；Linux 暂不支持本机日历。",
+          "en": "Connecting requests access to your local calendar. On Windows, classic Outlook is required (new Outlook isn't supported yet); local calendar isn't available on Linux yet."
         },
         "documentationUrl": "https://developer.apple.com/documentation/eventkit"
       }
@@ -73,12 +73,12 @@
         "en": "List available calendars"
       },
       "list_events": {
-        "zh": "一次读取最多31天的多个日历；calendarIds可传多个ID，省略即全部可读日历，不用逐个调用。统一分页并带日历名及可写标记；nextCursor沿用同一日期与ID，calendarId仅兼容单选、不可与calendarIds同传。",
-        "en": "Read up to 31 days across calendars in one call. Pass calendarIds or omit for all readable calendars; do not call once per calendar. Sorted pages include calendarName/calendarWritable; use nextCursor with the same range/IDs. Legacy calendarId is single-select only; do not combine with calendarIds."
+        "zh": "按时间范围查看日程（单次最多 31 天，支持同时查看多个日历）",
+        "en": "View calendar events in a date range (up to 31 days at a time across calendars)"
       },
       "create_event": {
-        "zh": "创建不含参会人的日程；无偏移ISO时间在确认前按本机时区确定化，夏令时歧义须明确偏移。用户拒绝即未创建，不自动重试。",
-        "en": "Create an event without attendees after user review. Offset-less ISO times use this computer's current time zone before review; DST ambiguity needs an explicit offset. User rejection means not created; do not retry automatically."
+        "zh": "新建一条本机日程，创建前会展示详情请你确认",
+        "en": "Create a new local calendar event; asks you to review details before saving"
       },
       "update_event": {
         "zh": "更新一条现有日程",

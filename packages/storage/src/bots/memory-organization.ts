@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import type { MemoryModelFallback } from "@pibot/protocol-base";
 import { transaction } from "../database/database.ts";
 import { nonNegativeCost } from "./memory-dream.ts";
 
@@ -38,6 +39,8 @@ export interface OrganizationTarget {
   lastDoneAt: string | null;
   lastAttemptAt: string | null;
   lastChangedAt: string | null;
+  /** Organization proposals (from this queue or Dream) the person has not answered yet. */
+  pendingCount: number;
 }
 
 const columns = `id, bot_id AS botId, scope, owner_id AS ownerId, status, reason, owner_initiated AS ownerInitiated,
@@ -174,13 +177,14 @@ export class MemoryOrganizationsRepo {
       costUsd?: number;
       proposals?: number;
       memoryCount?: number;
+      fallback?: MemoryModelFallback;
       error?: string | null;
     },
   ): void {
     this.db
       .prepare(
         `UPDATE memory_organizations SET status=?, model_provider=COALESCE(?,model_provider), model_id=COALESCE(?,model_id), tokens=COALESCE(?,tokens),
-        cost_usd=COALESCE(?,cost_usd), proposals=?, memory_count=?, error=?, finished_at=?
+        cost_usd=COALESCE(?,cost_usd), proposals=?, memory_count=?, error=?, finished_at=?, model_fallback=?
         WHERE id=? AND status='running'`,
       )
       .run(
@@ -193,11 +197,12 @@ export class MemoryOrganizationsRepo {
         patch.memoryCount ?? 0,
         patch.error ?? null,
         new Date().toISOString(),
+        patch.fallback ? JSON.stringify(patch.fallback) : null,
         id,
       );
   }
 
-  /** Persist the reservation/settlement even when the auxiliary call later fails. */
+  /** Keep billed usage even when the generated draft cannot be applied. */
   recordUsage(
     id: string,
     usage: { tokens: number; costUsd?: number; modelProvider: string; modelId: string },
@@ -208,6 +213,15 @@ export class MemoryOrganizationsRepo {
          WHERE id=? AND status='running'`,
       )
       .run(usage.tokens, nonNegativeCost(usage.costUsd), usage.modelProvider, usage.modelId, id);
+  }
+
+  deferForBudget(id: string) {
+    return (
+      this.db
+        .prepare(`UPDATE memory_organizations SET status='queued', started_at=NULL,
+      error='budget_exhausted' WHERE id=? AND status='running' AND tokens=0 AND cost_usd=0`)
+        .run(id).changes > 0
+    );
   }
 
   /**
@@ -221,12 +235,21 @@ export class MemoryOrganizationsRepo {
         SELECT o.scope AS scope, o.owner_id AS ownerId,
           (SELECT COUNT(*) FROM scoped_memories m
             WHERE m.scope=o.scope AND m.owner_id=o.owner_id AND m.archived_at IS NULL) AS activeCount,
-          (SELECT MAX(r.finished_at) FROM memory_organizations r
-            WHERE r.scope=o.scope AND r.owner_id=o.owner_id AND r.status='done') AS lastDoneAt,
+          (SELECT MAX(t) FROM (
+            SELECT r.finished_at AS t FROM memory_organizations r
+              WHERE r.scope=o.scope AND r.owner_id=o.owner_id AND r.status='done'
+            -- Dream reviews the same notes (every Bot's and the shared user notes); without this
+            -- a Bot's weekly pass repeated Dream's proposals minutes later (acceptance 2026-11-25).
+            UNION ALL SELECT d.finished_at FROM memory_dream_runs d
+              WHERE d.status IN ('done','limited') AND d.undone=0)) AS lastDoneAt,
           (SELECT MAX(r.created_at) FROM memory_organizations r
-            WHERE r.scope=o.scope AND r.owner_id=o.owner_id) AS lastAttemptAt,
+            WHERE r.scope=o.scope AND r.owner_id=o.owner_id
+              AND r.error IS NOT 'budget_exhausted') AS lastAttemptAt,
           (SELECT MAX(m.updated_at) FROM scoped_memories m
-            WHERE m.scope=o.scope AND m.owner_id=o.owner_id AND m.archived_at IS NULL) AS lastChangedAt
+            WHERE m.scope=o.scope AND m.owner_id=o.owner_id AND m.archived_at IS NULL) AS lastChangedAt,
+          (SELECT COUNT(*) FROM scoped_memory_proposals p
+            WHERE p.scope=o.scope AND p.owner_id=o.owner_id AND p.status='pending'
+              AND p.message_id IS NULL AND p.action IN ('update','remove')) AS pendingCount
         FROM o`,
       )
       .all(botId)
@@ -237,6 +260,7 @@ export class MemoryOrganizationsRepo {
         lastDoneAt: value.lastDoneAt == null ? null : String(value.lastDoneAt),
         lastAttemptAt: value.lastAttemptAt == null ? null : String(value.lastAttemptAt),
         lastChangedAt: value.lastChangedAt == null ? null : String(value.lastChangedAt),
+        pendingCount: Number(value.pendingCount ?? 0),
       }));
   }
 
@@ -262,7 +286,7 @@ export class MemoryOrganizationsRepo {
     const rows = this.db
       .prepare(
         `SELECT bot_id AS botId, COUNT(*) AS n FROM memory_organizations
-        WHERE created_at>=? AND status<>'queued' GROUP BY bot_id`,
+        WHERE created_at>=? AND status<>'queued' AND error IS NOT 'budget_exhausted' GROUP BY bot_id`,
       )
       .all(since);
     return new Map(rows.map((value) => [String(value.botId), Number(value.n)]));

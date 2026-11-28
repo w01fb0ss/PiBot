@@ -81,7 +81,7 @@ export const credentialsZh = {
   "credentials.card.secretNote": "Pi Bot 直接把账号和密码填进网页，Bot 看不到密码。",
   "credentials.card.multiNote": "这个网站存了多个账号，每次都由你来选。",
   "credentials.card.alwaysHint":
-    "一直允许：这个 Bot 以后在 {site} 用已存账号登录不再询问，可以在它的资料面板「权限与连接」里撤销。",
+    "一直允许：这个 Bot 以后在 {site} 用已存账号登录不再询问，可以在它的资料面板「权限」里撤销。",
   "credentials.card.routineAlwaysHint": "一直允许：这个例行任务以后在 {site} 自动登录不再询问。",
   "credentials.card.deniedHint": "拒绝后 Bot 会请你接管浏览器自己登录。",
   "credentials.grantLabel": "自动登录 · {site}",
@@ -183,7 +183,7 @@ export const credentialsEn: Record<keyof typeof credentialsZh, string> = {
   "credentials.card.multiNote":
     "Several accounts are saved for this site, so you choose each time.",
   "credentials.card.alwaysHint":
-    "Always allow: this Bot logs in to {site} with saved accounts without asking again. Revoke it in its profile under Permissions & connections.",
+    "Always allow: this Bot logs in to {site} with saved accounts without asking again. Revoke it in its profile under Permissions.",
   "credentials.card.routineAlwaysHint":
     "Always allow: this routine logs in to {site} without asking again.",
   "credentials.card.deniedHint":

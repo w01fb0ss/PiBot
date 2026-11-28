@@ -3,6 +3,8 @@ import { MessagesRepo } from "../workspace/repositories.ts";
 import type { InboxSource } from "./inbox.ts";
 
 // The same durable projection drives counts, keyset pages and sidebar waiting, including old cards.
+// A started plan that holds for the user's choice (no replans left, or a skipped repair) is
+// listed by its card, which carries the choice; a replacement in its chain shares the budget root.
 export const pendingPlanRows = `SELECT m.id,m.created_at AS at,m.id AS messageId,
   g.id AS groupId,g.name AS groupName FROM messages m
   JOIN conversations c ON c.id=m.conversation_id AND c.kind='group'
@@ -26,7 +28,13 @@ export const pendingPlanRows = `SELECT m.id,m.created_at AS at,m.id AS messageId
       AND EXISTS (SELECT 1 FROM group_workflow_steps s WHERE s.workflow_run_id=w.id
         AND s.status='blocked')
       AND NOT EXISTS (SELECT 1 FROM group_workflow_runs next WHERE next.group_id=w.group_id
-        AND next.cycle_id=w.cycle_id AND next.rowid>w.rowid))))
+        AND next.cycle_id=w.cycle_id AND next.rowid>w.rowid)))
+    OR (json_extract(m.usage,'$.groupPlan.status')='started' AND EXISTS (
+      SELECT 1 FROM group_workflow_runs w WHERE w.group_id=g.id AND w.cycle_id=cy.cycle_id
+      AND w.status IN ('running','waiting')
+      AND json_extract(w.workflow_json,'$.progress.hold.kind') IS NOT NULL
+      AND (w.id=json_extract(m.usage,'$.groupPlan.id')
+        OR w.budget_root_run_id=json_extract(m.usage,'$.groupPlan.budgetRootRunId')))))
   AND NOT EXISTS (SELECT 1 FROM messages newer WHERE newer.conversation_id=m.conversation_id
     AND newer.rowid>m.rowid AND json_extract(newer.usage,'$.groupPlan.cycleId')=cy.cycle_id)`;
 

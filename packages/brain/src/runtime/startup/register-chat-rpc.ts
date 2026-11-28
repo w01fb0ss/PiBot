@@ -1,5 +1,4 @@
-import { RpcError, RpcErrorCodes } from "@pibot/protocol-base";
-import { RunsRepo, transaction } from "@pibot/storage";
+import { RpcError, RpcErrorCodes, slashHelpRequest } from "@pibot/protocol-base";
 import { revealAttachment } from "../../conversations/attachments/attachment-reveal.ts";
 import { revealOverflow } from "../../conversations/attachments/overflow-reveal.ts";
 import type { ChatService } from "../../conversations/chat/chat.ts";
@@ -15,6 +14,9 @@ interface StartupContext {
   local: LocalService | undefined;
 }
 export function registerChatRpc(ctx: StartupContext) {
+  ctx.handle("chat.topicModel.set", ({ conversationId, override }, { signal }) =>
+    ctx.chat.setTopicModel(conversationId, override, signal),
+  );
   ctx.handle("chat.history", async ({ botId, topicId, groupId, threadId, before, limit }) => {
     if (groupId) {
       if (threadId && topicId && threadId !== topicId)
@@ -42,76 +44,64 @@ export function registerChatRpc(ctx: StartupContext) {
     await ctx.chat.attachments.open(id);
     return { ok: true };
   });
-  ctx.handle(
-    "chat.send",
-    async (
-      {
-        botId,
-        topicId,
-        newTopic,
-        initialMode,
-        replyToMessageId,
-        groupId,
-        threadId,
-        text,
-        attachments,
-        attachmentIds,
-        workplace,
-        mentions,
-      },
-      { source, phone },
-    ) => {
-      if (groupId)
-        return ctx.groups.send(
-          {
-            groupId,
-            topicId,
-            threadId,
-            text,
-            attachments,
-            attachmentIds,
-            mentions,
-            replyToMessageId,
-          },
-          undefined,
-          undefined,
-          { inputOrigin: source === "acp" ? "acp" : phone ? "phone" : "user" },
-        );
-      if (!botId) throw new RpcError(-32602, "Invalid chat target");
-      return ctx.chat.send(
-        botId,
-        text,
-        attachments,
-        attachmentIds,
-        topicId,
-        newTopic,
-        workplace,
-        initialMode,
-        replyToMessageId,
-        { inputOrigin: source === "acp" ? "acp" : phone ? "phone" : "user" },
+  ctx.handle("chat.send", async (params, { source, phone, phoneDeviceId, signal }) => {
+    const {
+      botId,
+      topicId,
+      newTopic,
+      initialMode,
+      replyToMessageId,
+      groupId,
+      threadId,
+      text,
+      attachments,
+      attachmentIds,
+      workplace,
+      mentions,
+      imageGeneration,
+    } = params;
+    const display = {
+      inputOrigin: source === "acp" ? "acp" : phone ? "phone" : "user",
+      phoneDeviceId,
+    } as const;
+    const help = source === "acp" ? undefined : slashHelpRequest(text);
+    if (help) {
+      const reply = ctx.chat.sendSlashHelp(params, help, display, signal);
+      if (reply) return reply;
+    }
+    if (groupId)
+      return ctx.groups.send(
+        {
+          groupId,
+          topicId,
+          threadId,
+          text,
+          attachments,
+          attachmentIds,
+          mentions,
+          replyToMessageId,
+        },
+        undefined,
+        undefined,
+        display,
       );
-    },
-  );
+    if (!botId) throw new RpcError(-32602, "Invalid chat target");
+    return ctx.chat.send(
+      botId,
+      text,
+      attachments,
+      attachmentIds,
+      topicId,
+      newTopic,
+      workplace,
+      initialMode,
+      replyToMessageId,
+      display,
+      imageGeneration,
+    );
+  });
   ctx.handle("chat.abort", async ({ runId }) => {
-    const local = ctx.local;
-    if (local)
-      transaction(local.deps.db, () => {
-        const runs = new RunsRepo(local.deps.db),
-          run = runs.get(runId);
-        if (run && runs.requestUserStop(runId))
-          local.approvals.audit.append({
-            botId: run.botId,
-            runId,
-            kind: "run.interrupted",
-            summary: "User requested stop / 用户请求停止",
-            detail: {
-              actor: "user",
-              reasonCode: "user_stop_requested",
-              conversationId: run.conversationId,
-            },
-          });
-      });
-    await ctx.chat.abort(runId);
+    await ctx.chat.userStop(runId);
     return { ok: true };
   });
   ctx.handle("chat.append", async (params) => ctx.chat.append(params));

@@ -11,6 +11,7 @@ import {
   type ImageDelivery,
   ImageDeliverySchema,
   type ImageWorkspaceDelivery,
+  MAX_GENERATED_IMAGES,
 } from "@pibot/images-contract/full";
 import { containsPath } from "@pibot/policy";
 import type { StoredAttachment } from "@pibot/storage";
@@ -61,7 +62,7 @@ export class ImageWorkspaceExporter {
   ): Promise<ImageDelivery> {
     if (
       !attachmentIds.length ||
-      attachmentIds.length > 5 ||
+      attachmentIds.length > MAX_GENERATED_IMAGES ||
       new Set(attachmentIds).size !== attachmentIds.length
     )
       throw new ExecError("invalid_input");

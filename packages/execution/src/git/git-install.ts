@@ -1,8 +1,10 @@
 import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access, readFile } from "node:fs/promises";
-import { posix } from "node:path";
-import { findGit, type GitProcessOptions } from "./git-process.ts";
+import { posix, win32 } from "node:path";
+import { findGit, type GitProcessOptions, gitEnvironment, gitSpawnError } from "./git-process.ts";
+
+export type ProtectionPackage = "bubblewrap" | "socat";
 
 export type GitPackageManager = "apt-get" | "dnf" | "pacman" | "zypper";
 
@@ -33,10 +35,10 @@ export type GitInstallOutcome =
   | { outcome: "denied" | "failed" | "no_elevation"; exitCode: number | null };
 
 const MANAGERS: Record<GitPackageManager, { args: string[]; distros: string[] }> = {
-  "apt-get": { args: ["install", "-y", "git"], distros: ["debian", "ubuntu"] },
-  dnf: { args: ["install", "-y", "git"], distros: ["fedora", "rhel", "centos"] },
-  pacman: { args: ["-S", "--noconfirm", "git"], distros: ["arch"] },
-  zypper: { args: ["--non-interactive", "install", "git"], distros: ["opensuse", "suse", "sles"] },
+  "apt-get": { args: ["install", "-y"], distros: ["debian", "ubuntu"] },
+  dnf: { args: ["install", "-y"], distros: ["fedora", "rhel", "centos"] },
+  pacman: { args: ["-S", "--noconfirm"], distros: ["arch"] },
+  zypper: { args: ["--non-interactive", "install"], distros: ["opensuse", "suse", "sles"] },
 };
 const ORDER = Object.keys(MANAGERS) as GitPackageManager[];
 // Fixed system locations only: a PATH lookup could pick a planted program that then runs as root.
@@ -92,6 +94,13 @@ export async function gitInstallPlan(platform: NodeJS.Platform): Promise<GitInst
       manualCommand: "xcode-select --install",
     };
   if (platform !== "linux") return { kind: "unsupported" };
+  return systemPackageInstallPlan("git");
+}
+
+/** Both installers share the fixed system paths and distribution lookup. */
+export async function systemPackageInstallPlan(
+  dependency: "git" | ProtectionPackage,
+): Promise<Extract<GitInstallPlan, { kind: "package" | "manual" }>> {
   const release = await readFile("/etc/os-release", "utf8").catch(() =>
     // Older systems keep it only under /usr/lib; neither existing just means no distro hint.
     readFile("/usr/lib/os-release", "utf8").catch(() => ""),
@@ -101,7 +110,7 @@ export async function gitInstallPlan(platform: NodeJS.Platform): Promise<GitInst
   for (const manager of candidates) {
     const program = await systemProgram(manager);
     if (!program) continue;
-    const args = MANAGERS[manager].args;
+    const args = [...MANAGERS[manager].args, dependency];
     const command = [manager, ...args].join(" ");
     const elevate = await systemProgram("pkexec");
     return {
@@ -118,12 +127,16 @@ export async function gitInstallPlan(platform: NodeJS.Platform): Promise<GitInst
 }
 
 /** `git --version` of a fixed executable, outside any repository; undefined when it cannot run. */
-export function gitVersion(program: string, signal: AbortSignal): Promise<string | undefined> {
-  return new Promise((resolve) => {
+export function gitVersion(
+  options: GitProcessOptions,
+  program: string,
+  signal: AbortSignal,
+): Promise<string | undefined> {
+  return new Promise<string | undefined>((resolve) => {
     let out = "";
     const child = spawn(program, ["--version"], {
-      cwd: "/",
-      env: { PATH: SYSTEM_BIN.join(":"), LC_ALL: "C", LANG: "C", GIT_CONFIG_NOSYSTEM: "1" },
+      cwd: options.platform === "win32" ? win32.dirname(program) : "/",
+      env: { ...gitEnvironment(options, program), GIT_CONFIG_NOSYSTEM: "1" },
       stdio: ["ignore", "pipe", "ignore"],
       signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
       windowsHide: true,
@@ -136,6 +149,10 @@ export function gitVersion(program: string, signal: AbortSignal): Promise<string
     child.once("close", (code) =>
       resolve(code === 0 ? /git version (\S{1,60})/.exec(out)?.[1] : undefined),
     );
+  }).catch((error: unknown) => {
+    if (signal.aborted || gitSpawnError(options.platform, error).code === "git_unavailable")
+      return undefined;
+    throw error;
   });
 }
 
@@ -145,7 +162,7 @@ export function gitVersion(program: string, signal: AbortSignal): Promise<string
  * macOS: xcode-select only opens Apple's installer window and returns; the caller then waits
  * for Git to appear. Linux: the package manager runs under pkexec and finishes before return.
  */
-export async function runGitInstaller(
+export async function runSystemInstaller(
   plan: GitInstallPlan,
   options: { platform: NodeJS.Platform; env: Readonly<NodeJS.ProcessEnv>; signal: AbortSignal },
 ): Promise<GitInstallOutcome> {
@@ -194,15 +211,20 @@ export async function runGitInstaller(
   };
 }
 
+export const runGitInstaller = runSystemInstaller;
+
 /** Polls the fixed Git locations until one appears, the deadline passes or the signal aborts. */
 export async function waitForGit(
-  options: Pick<GitProcessOptions, "platform" | "env" | "resourcesDir">,
+  options: GitProcessOptions,
   input: { signal: AbortSignal; timeoutMs: number; intervalMs?: number },
 ) {
   const deadline = Date.now() + input.timeoutMs;
   for (;;) {
+    if (input.signal.aborted) return undefined;
     const found = await findGit(options);
-    if (found || input.signal.aborted || Date.now() >= deadline) return found;
+    if (found && (await gitVersion(options, found, input.signal)) && !input.signal.aborted)
+      return found;
+    if (input.signal.aborted || Date.now() >= deadline) return undefined;
     await new Promise<void>((resolve) => {
       const timer = setTimeout(done, input.intervalMs ?? 3000);
       function done() {

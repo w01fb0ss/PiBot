@@ -18,6 +18,7 @@ import {
   SimilarMemoryError,
   sameMemoryRevision,
   similarMemoryId,
+  similarPendingAdd,
 } from "./memory-search.ts";
 
 const columns =
@@ -374,6 +375,7 @@ export class MemoriesRepo {
       if (change.action === "add") {
         const duplicate = this.similar(botId, text);
         if (duplicate) throw new SimilarMemoryError(duplicate);
+        if (similarPendingAdd(this.db, o, this.redact(text))) throw new SimilarMemoryError();
       }
       if (o.scope === "group" && this.proposals(botId, { limit: 100 }).length >= 100)
         throw new TypeError("group_memory_quota");

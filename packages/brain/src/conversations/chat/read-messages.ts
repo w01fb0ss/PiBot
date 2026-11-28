@@ -2,7 +2,6 @@ import { ExecError } from "@pibot/execution";
 import {
   type Attachment,
   CHAT_SEARCH_TARGET,
-  READ_MESSAGES_REFERENCE,
   type ReadMessagesInput,
   ReadMessagesResultSchema,
 } from "@pibot/protocol-base";
@@ -10,6 +9,7 @@ import { ReadMessagesRepo } from "@pibot/storage";
 import type { PreparedTool, ToolRunContext } from "../../core/local-types.ts";
 import type { LocalService } from "../../local-service.ts";
 import { searchMessages } from "./chat-search.ts";
+import { historyImport, historyReferenceText } from "./history-reference.ts";
 
 export function messageScope(
   local: LocalService,
@@ -105,18 +105,20 @@ function readPage(
       .replace(/[\uD800-\uDBFF]$/u, "");
   const items: Record<string, unknown>[] = [];
   let bytes = 1024;
-  for (const row of raw.slice(0, limit)) {
+  for (const { importSource, createdAt, ...row } of raw.slice(0, limit)) {
     signal.throwIfAborted();
     const content = local.deps.redactor.redact(String(row.content ?? ""));
+    const importedFrom = historyImport(importSource, createdAt);
     const item =
       input.mode === "list"
-        ? { ...row, title: safe(row.title, 200) }
+        ? { ...row, title: safe(row.title, 200), importedFrom }
         : {
             id: row.id,
             role: row.role,
             botId: row.botId,
             content: safe(content, 4000),
-            createdAt: row.createdAt,
+            createdAt,
+            importedFrom,
             truncated: !!row.truncated || content.length > 4000,
             attachments: (attachments.get(String(row.id)) ?? []).map((a) => ({
               ...a,
@@ -152,7 +154,10 @@ function readPage(
     },
   });
   return {
-    text: `${READ_MESSAGES_REFERENCE}\n${JSON.stringify(value)}`,
+    text: historyReferenceText(
+      JSON.stringify(value),
+      items.some((item) => item.importedFrom),
+    ),
     summary: "read_messages",
   };
 }

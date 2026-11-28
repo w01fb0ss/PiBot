@@ -278,11 +278,14 @@ export function fixedOutsideCommand(analysis: CommandAnalysis | undefined, platf
 
 /** Exact folder identity, never a prefix or a parent-folder grant. */
 export function automaticOutsidePatterns(
-  entries: readonly { pattern: string; folder: string }[],
+  entries: readonly { pattern: string; folder: string; source: "auto" | "user" }[],
   folder: string,
 ) {
-  return entries
-    .filter((entry) => entry.folder === folder)
-    .map((entry) => entry.pattern)
-    .slice(0, 32);
+  return (
+    entries
+      // rc2 saved some one-time approvals automatically. Only explicit choices carry forward.
+      .filter((entry) => entry.source === "user" && entry.folder === folder)
+      .map((entry) => entry.pattern)
+      .slice(0, 32)
+  );
 }

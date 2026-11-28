@@ -2,7 +2,7 @@ import type { TranslationKey } from "@pibot/i18n";
 import { approvalStyles, useRpc, useT } from "@pibot/renderer-kit";
 import { Button } from "@pibot/ui";
 import type { GitSetupStatus } from "@pibot/workspaces-contract";
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./git-install.module.css";
 
 const POLL_MS = 3000;
@@ -45,16 +45,15 @@ function WithCommand({ text, command }: { text: string; command: string }) {
  * 「Pi Bot 需要安装 Git」 (maintainers 2026-11-21), shown only where a feature just needed Git: a
  * group plan whose parallel steps had to take turns ("parallel") and the changes panel or its
  * commit ("changes"). macOS and Linux only; on Windows (Git ships with Pi Bot) the brain answers
- * "unsupported" and `fallback` renders instead. The click on 「安装」 is the confirmation.
+ * "unsupported" and the changes panel points to the official download. The click on 「安装」 is
+ * the confirmation.
  */
 export function GitInstallCard({
   context,
   onInstalled,
-  fallback = null,
 }: {
-  context: "parallel" | "changes";
+  context: "parallel" | "changes" | "command";
   onInstalled?: () => void;
-  fallback?: ReactNode;
 }) {
   const t = useT();
   const { peer } = useRpc();
@@ -62,6 +61,7 @@ export function GitInstallCard({
   const [dismissed, setDismissed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
+  const [copied, setCopied] = useState<"copied" | "failed">();
   const watched = useRef(false);
   const announced = useRef(false);
   const installed = useRef(onInstalled);
@@ -71,14 +71,17 @@ export function GitInstallCard({
     async (signal?: AbortSignal) => {
       if (!peer) return;
       const next = await peer.call("changes.gitStatus", {}, { timeoutMs: 20_000, signal });
-      if (!signal?.aborted) setStatus(next);
+      if (!signal?.aborted) {
+        setStatus(next);
+        setError(false);
+      }
     },
     [peer],
   );
   useEffect(() => {
     const abort = new AbortController();
     read(abort.signal).catch(() => {
-      // Without an answer the card stays hidden; the feature's own message still explains.
+      if (!abort.signal.aborted) setError(true);
     });
     return () => abort.abort();
   }, [read]);
@@ -117,11 +120,53 @@ export function GitInstallCard({
     }
   };
 
-  if (!status) return null;
-  if (status.state === "unsupported") return <>{fallback}</>;
+  if (!status)
+    return error || context === "command" ? (
+      <section className={styles.failed} aria-label={t("changes.git.title")}>
+        {context === "command" && <p>{t("changes.git.whyCommand")}</p>}
+        {error && <p role="alert">{t("changes.git.checkError")}</p>}
+        <Button
+          variant="secondary"
+          disabled={!peer || busy}
+          onClick={() => void act("changes.gitStatus")}
+        >
+          {t("changes.git.recheck")}
+        </Button>
+      </section>
+    ) : null;
+  if (status.state === "unsupported")
+    return context === "changes" ? (
+      <section className={styles.failed} aria-label={t("changes.repo.noGit")}>
+        <p className={styles.failedBody}>{t("changes.repo.noGitBody")}</p>
+        <div className={styles.failedActions}>
+          <a href="https://git-scm.com/downloads" target="_blank" rel="noreferrer">
+            {t("changes.repo.installGit")}
+          </a>
+          <Button
+            variant="secondary"
+            loading={busy}
+            disabled={!peer || busy}
+            onClick={() => {
+              watched.current = true;
+              void act("changes.gitStatus");
+            }}
+          >
+            {t("changes.git.recheck")}
+          </Button>
+        </div>
+        {error && <p role="alert">{t("changes.git.checkError")}</p>}
+      </section>
+    ) : null;
   const parallel = context === "parallel";
   if (status.state === "available") {
     // The changes panel only confirms an install it watched; a plan's card keeps its outcome.
+    if (context === "command")
+      return (
+        <section className={styles.failed} aria-label={t("changes.git.title")}>
+          <p role="status">{t("changes.git.commandAvailable")}</p>
+          <p>{t("changes.git.commandRepairMac")}</p>
+        </section>
+      );
     if (!parallel && !watched.current) return null;
     const key: TranslationKey = status.version
       ? parallel
@@ -147,7 +192,8 @@ export function GitInstallCard({
         )}
       </p>
     );
-  if (status.state === "failed")
+  const manual = status.installer === "manual";
+  if (status.state === "failed" || manual)
     // The title stays so the failure still says what it is about; another click on 重新安装
     // starts a fresh attempt (the brain still runs one installer at a time).
     return (
@@ -157,27 +203,61 @@ export function GitInstallCard({
           <strong>{t("changes.git.title")}</strong>
         </header>
         <p className={styles.failedBody}>
-          {status.reason
-            ? t("changes.git.notInstalledReason", {
-                reason: t(`changes.git.reason.${status.reason}`),
-              })
-            : t("changes.git.notInstalled")}
-          {/* English sentences carry their own trailing space; Chinese ones join directly. */}
-          {status.manualCommand ? (
-            <WithCommand
-              text={t("changes.git.failed", { command: MARK })}
-              command={status.manualCommand}
-            />
-          ) : (
-            t("changes.git.failedGeneric")
-          )}
+          {manual
+            ? t(
+                status.manualCommand
+                  ? "changes.git.manualAuthorization"
+                  : "changes.git.manualInstall",
+              )
+            : status.reason
+              ? t("changes.git.notInstalledReason", {
+                  reason: t(`changes.git.reason.${status.reason}`),
+                })
+              : t("changes.git.notInstalled")}
         </p>
+        {!manual && <p className={styles.failedBody}>{t("changes.git.failedGeneric")}</p>}
+        {status.installer === "xcode" && <p>{t("changes.git.commandRepairMac")}</p>}
+        {status.manualCommand && (
+          <details>
+            <summary>{t("changes.git.advanced")}</summary>
+            <p>
+              {manual ? (
+                <code>{status.manualCommand}</code>
+              ) : (
+                <WithCommand
+                  text={t("changes.git.failed", { command: MARK })}
+                  command={status.manualCommand}
+                />
+              )}
+            </p>
+          </details>
+        )}
         {error && (
           <p role="alert" className={approvalStyles.risk}>
             {t("changes.git.error")}
           </p>
         )}
         <div className={styles.failedActions}>
+          {status.manualCommand && (
+            <Button
+              variant="secondary"
+              onClick={() => {
+                const command = status.manualCommand;
+                if (!command) return;
+                void navigator.clipboard.writeText(command).then(
+                  () => setCopied("copied"),
+                  () => setCopied("failed"),
+                );
+              }}
+            >
+              {t("commandProtection.copy")}
+            </Button>
+          )}
+          {manual && !status.manualCommand && (
+            <a href="https://git-scm.com/downloads/linux" target="_blank" rel="noreferrer">
+              {t("changes.repo.installGit")}
+            </a>
+          )}
           <Button
             variant="secondary"
             className={styles.recheck}
@@ -186,26 +266,28 @@ export function GitInstallCard({
           >
             {t("changes.git.recheck")}
           </Button>
-          <Button
-            className={styles.recheck}
-            loading={busy}
-            disabled={!peer}
-            onClick={() => void act("changes.gitInstall")}
-          >
-            {t("changes.git.retry")}
-          </Button>
+          {copied && (
+            <span role="status">
+              {t(copied === "copied" ? "commandProtection.copied" : "messages.copyFailed")}
+            </span>
+          )}
+          {!manual && (
+            <Button
+              className={styles.recheck}
+              loading={busy}
+              disabled={!peer}
+              onClick={() => void act("changes.gitInstall")}
+            >
+              {t("changes.git.retry")}
+            </Button>
+          )}
         </div>
       </section>
     );
   if (dismissed) return null;
-  const what =
-    status.installer === "xcode" ? (
-      t("changes.git.whatMac")
-    ) : status.installer === "package" && status.command ? (
-      <WithCommand text={t("changes.git.whatLinux", { command: MARK })} command={status.command} />
-    ) : (
-      t("changes.git.whatLinuxGeneric")
-    );
+  const what = t(
+    status.installer === "xcode" ? "changes.git.whatMac" : "changes.git.whatLinuxGeneric",
+  );
   return (
     <section
       className={`${approvalStyles.approval} ${styles.card}`}
@@ -221,7 +303,15 @@ export function GitInstallCard({
       <dl className={approvalStyles.facts}>
         <div>
           <dt>{t("changes.git.why")}</dt>
-          <dd>{t(parallel ? "changes.git.whyParallel" : "changes.git.whyChanges")}</dd>
+          <dd>
+            {t(
+              parallel
+                ? "changes.git.whyParallel"
+                : context === "command"
+                  ? "changes.git.whyCommand"
+                  : "changes.git.whyChanges",
+            )}
+          </dd>
         </div>
         <div>
           <dt>{t("changes.git.what")}</dt>
@@ -233,6 +323,15 @@ export function GitInstallCard({
         </div>
       </dl>
       <p className={approvalStyles.warning}>{t("changes.git.note")}</p>
+      {context === "command" && status.installer === "xcode" && (
+        <p>{t("changes.git.commandRepairMac")}</p>
+      )}
+      {status.installer === "package" && status.command && (
+        <details>
+          <summary>{t("changes.git.advanced")}</summary>
+          <code>{status.command}</code>
+        </details>
+      )}
       <footer>
         {error && (
           <p role="alert" className={approvalStyles.risk}>

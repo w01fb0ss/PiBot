@@ -37,6 +37,16 @@ export class GroupBudgetGuard {
     ) as ExecutionLimits;
   }
 
+  costRemaining(root: string): number | undefined {
+    const scope = this.scope(root);
+    if (!scope) return;
+    const repo = new GroupExecutionLimitsRepo(this.db);
+    const limit = repo.get(scope.group.id).limits.costUsd;
+    if (limit === null) return;
+    const { totals } = repo.usage(scope.group.id, scope.group.conversationId, scope.cycleId, true);
+    return limit - totals.knownCostUsd;
+  }
+
   reason(root: string, modelAdmission = false, pricingKnown = true) {
     const scope = this.scope(root);
     if (!scope) return undefined;

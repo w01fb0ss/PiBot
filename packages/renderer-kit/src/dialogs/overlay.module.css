@@ -15,6 +15,11 @@
   box-shadow: var(--shadow-soft);
   animation: dialogIn 260ms var(--ease-out);
 }
+.dialog[open]:has(> .footer) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
 .dialog::backdrop {
   background: var(--overlay);
   backdrop-filter: blur(4px);
@@ -35,6 +40,7 @@
   z-index: 1;
   background: var(--wash);
   display: flex;
+  flex: none;
   align-items: center;
   gap: 10px;
   padding: 16px 16px 12px 22px;
@@ -53,10 +59,13 @@
   flex-direction: column;
   gap: 18px;
 }
+.dialog:has(> .footer) > .body {
+  min-height: 0;
+  overflow-y: auto;
+}
 .footer {
-  position: sticky;
-  bottom: 0;
   display: flex;
+  flex: none;
   flex-wrap: wrap;
   justify-content: flex-end;
   align-items: center;

@@ -53,7 +53,7 @@ export function GroupSettings({
   const members = new Map(data.bots.map((bot) => [bot.id, bot]));
   const coordinators = group.members.filter(({ botId }) => {
     const bot = members.get(botId);
-    return !!bot && bot.category !== "image";
+    return !!bot && bot.category !== "image" && bot.kind !== "agent";
   });
   const hasExternalAgent = group.members.some(({ botId }) => members.get(botId)?.kind === "agent");
   const locked = !data.identityReady || !data.membersReady || data.error;

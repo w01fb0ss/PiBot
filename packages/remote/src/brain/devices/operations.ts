@@ -1,8 +1,9 @@
 import type { IsolationStatus } from "@pibot/execution";
-import { runnerDeviceId, unbase64 } from "@pibot/link";
+import { runnerDeviceId, safetyCode, unbase64 } from "@pibot/link";
 import { RpcError, RpcErrorCodes } from "@pibot/protocol";
 import { transaction } from "@pibot/storage";
-import { pushScope, roomScope } from "../link/identity.ts";
+import type { DeviceRecord } from "../../store/index.ts";
+import { pushScope, roomScope, savedRemoteIdentity } from "../link/identity.ts";
 import type { RemoteLinkPort } from "../link/port.ts";
 import type { RemoteOfflineService } from "../offline/service.ts";
 import type { RemoteNotifications } from "../push/notifications.ts";
@@ -28,8 +29,26 @@ export class RemoteDeviceOperations {
     private readonly signal: () => AbortSignal,
     private readonly offline?: RemoteOfflineService,
   ) {}
-  private view(id: string) {
-    const d = this.r.devices.require(id);
+  private async desktopPublicKey() {
+    try {
+      const identity = await savedRemoteIdentity(this.r);
+      return identity && unbase64(identity.publicKey, 32);
+    } catch {
+      // The key store may be locked. Device management is still available.
+      return undefined;
+    }
+  }
+  private phoneCode(publicKey: string | null, desktopKey?: Uint8Array) {
+    if (!publicKey || desktopKey?.length !== 32) return undefined;
+    try {
+      return safetyCode(desktopKey, unbase64(publicKey, 32));
+    } catch {
+      // Legacy development transport keys have no compatible fingerprint.
+      return undefined;
+    }
+  }
+  private view(d: DeviceRecord, desktopKey?: Uint8Array) {
+    const id = d.id;
     const phoneData = this.connections.phoneData(id);
     return {
       ...(phoneData ? { phoneData } : {}),
@@ -39,6 +58,9 @@ export class RemoteDeviceOperations {
       // A revoked runner keeps its key only to receive the deletion, not as a live target.
       ...(d.kind === "runner" && d.publicKey && !d.revokedAt
         ? { target: `runner:${runnerDeviceId(unbase64(d.publicKey, 32))}` }
+        : {}),
+      ...(desktopKey && d.kind === "phone" && !d.revokedAt
+        ? { securityCode: this.phoneCode(d.publicKey, desktopKey) }
         : {}),
       createdAt: d.createdAt,
       lastSeenAt: d.lastSeenAt,
@@ -62,15 +84,24 @@ export class RemoteDeviceOperations {
   }
   list(params: Parameters<RemoteResources["devices"]["page"]>[0]) {
     const page = this.r.devices.page(params);
-    return { ...page, items: page.items.map((d) => this.view(d.id)) };
+    return { ...page, items: page.items.map((device) => this.view(device)) };
+  }
+  async listWithCodes(params: Parameters<RemoteResources["devices"]["page"]>[0]) {
+    const page = this.r.devices.page(params);
+    const desktopKey = page.items.some((d) => d.kind === "phone" && !d.revokedAt && d.publicKey)
+      ? await this.desktopPublicKey()
+      : undefined;
+    return { ...page, items: page.items.map((device) => this.view(device, desktopKey)) };
   }
   async rename(id: string, name: string) {
-    transaction(this.r.ctx.db, () => {
-      this.r.devices.rename(id, this.r.ctx.redactor.redact(name));
+    const device = transaction(this.r.ctx.db, () => {
+      const renamed = this.r.devices.rename(id, this.r.ctx.redactor.redact(name));
       this.r.audit(id, "devices.rename", "renamed", "user");
+      return renamed;
     });
     this.r.changed();
-    return this.view(id);
+    const desktopKey = device.kind === "phone" ? await this.desktopPublicKey() : undefined;
+    return this.view(device, desktopKey);
   }
   async revoke(id: string, removeAnyway = false) {
     const device = this.r.devices.require(id);

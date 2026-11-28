@@ -38,6 +38,7 @@ export const GroupMessageRow = memo(function GroupMessageRow({
   activity,
   refreshApprovals,
   decideApproval,
+  inlineApprovals,
   run,
   batch,
   collaborations,
@@ -69,6 +70,7 @@ export const GroupMessageRow = memo(function GroupMessageRow({
   activity: ActivityState;
   refreshApprovals?: ComponentProps<typeof ChatMessage>["refreshApprovals"];
   decideApproval?: ComponentProps<typeof ChatMessage>["decideApproval"];
+  inlineApprovals?: boolean;
   run?: GroupSnapshot["runs"][number];
   batch?: Assignments["batch"];
   collaborations?: Assignments["collaborations"];
@@ -146,7 +148,7 @@ export const GroupMessageRow = memo(function GroupMessageRow({
       bots={bots}
       openTasks={openTasks}
       openTask={openTask}
-      tasks={assignmentTasks}
+      tasks={inlineApprovals ? undefined : assignmentTasks}
       groupName={group?.name}
       onUserBubble={message.role === "user"}
     />
@@ -178,6 +180,7 @@ export const GroupMessageRow = memo(function GroupMessageRow({
         activity={presentation.activity}
         refreshApprovals={refreshApprovals}
         decideApproval={decideApproval}
+        inlineApprovals={inlineApprovals}
         heading={name}
         approvalContext={approvalContext}
         userFooter={
@@ -210,7 +213,12 @@ export const GroupMessageRow = memo(function GroupMessageRow({
               />
             )}
             {!thread && (
-              <GroupPlanCard message={message} bots={bots} sendChanges={sendPlanChanges} />
+              <GroupPlanCard
+                message={message}
+                bots={bots}
+                sendChanges={sendPlanChanges}
+                fillComposer={fillComposer}
+              />
             )}
             {!thread && group && <GroupPlanSave message={message} group={group} />}
             {assignments}

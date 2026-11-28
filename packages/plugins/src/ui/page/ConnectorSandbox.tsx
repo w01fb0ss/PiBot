@@ -6,8 +6,9 @@ import type {
   ConnectorDiagnostics,
   ConnectorStartFailure,
 } from "@pibot/plugins-contract/full";
-import { hostPlatform, useSettings } from "@pibot/renderer-kit";
-import { Switch } from "@pibot/ui";
+import { hostPlatform, useNavigation, useSettings } from "@pibot/renderer-kit";
+import { Button, Switch } from "@pibot/ui";
+import type { ReactNode } from "react";
 import styles from "./connectors.module.css";
 
 type Translate = ReturnType<typeof useSettings>["t"];
@@ -26,8 +27,19 @@ function denialText(t: Translate, denial: ConnectorStartFailure["denials"][numbe
 }
 
 /** The fixed reason, the process facts, the sandbox's refusals and the redacted stderr tail. */
-export function ConnectorStartFailureView({ failure }: { failure: ConnectorStartFailure }) {
+export function ConnectorStartFailureView({
+  failure,
+  children,
+}: {
+  failure: ConnectorStartFailure;
+  children: ReactNode;
+}) {
   const { t } = useSettings();
+  const navigation = useNavigation();
+  const missing = failure.reason === "command_not_found";
+  const launcher = missing ? failure.launcher : undefined;
+  const windows = hostPlatform() === "win32";
+  const launcherIssue = failure.launcherIssue;
   const facts = [
     t(
       failure.outsideSandbox
@@ -40,37 +52,79 @@ export function ConnectorStartFailureView({ failure }: { failure: ConnectorStart
       : undefined,
     failure.signal ? t("connectors.startFailure.signal", { signal: failure.signal }) : undefined,
   ].filter(Boolean);
-  const login = failure.reason === "password_prompt" || failure.reason === "login_required";
+
   return (
     <section className={`${styles.warn} ${styles.stack}`} aria-live="polite">
       <strong>{t("connectors.startFailure.title")}</strong>
       <p>
         {t(
-          failure.reason === "command_not_found" && hostPlatform() === "win32"
-            ? "connectors.startFailure.reason.command_not_found_windows"
-            : `connectors.startFailure.reason.${failure.reason}`,
+          launcher && launcherIssue
+            ? `connectors.startFailure.launcherIssue.${launcherIssue}`
+            : launcher
+              ? `connectors.startFailure.launcher.${launcher}`
+              : `connectors.startFailure.reason.${failure.reason}`,
+          { program: launcher ?? "" },
         )}
       </p>
-      {login && <p className={styles.note}>{t("connectors.startFailure.loginHint")}</p>}
-      <p className={styles.note}>{facts.join(" · ")}</p>
-      {failure.denials.length > 0 && (
-        <div>
-          <p className={styles.note}>{t("connectors.startFailure.denials")}</p>
-          <ul className={styles.failureList}>
-            {failure.denials.map((denial) => (
-              <li key={`${denial.kind}:${denial.rule}:${denial.target}`}>
-                {denialText(t, denial)}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      {failure.stderrTail.trim() && (
+      <div className={styles.row}>
+        {failure.reason === "sandbox_start_failed" && (
+          <Button variant="secondary" onClick={() => navigation.openSettings("permissions")}>
+            {t("settings.permissions")}
+          </Button>
+        )}
+        {launcher && !launcherIssue && (
+          <a
+            href={
+              launcher === "uvx"
+                ? "https://docs.astral.sh/uv/getting-started/installation/"
+                : "https://nodejs.org/en/download"
+            }
+            target="_blank"
+            rel="noreferrer"
+          >
+            {t(
+              launcher === "uvx"
+                ? "connectors.startFailure.installUv"
+                : "connectors.startFailure.installNode",
+            )}
+          </a>
+        )}
+      </div>
+      {missing && !launcherIssue && (
         <details>
-          <summary className={styles.note}>{t("connectors.startFailure.stderr")}</summary>
-          <pre className={styles.stderrTail}>{failure.stderrTail.trim()}</pre>
+          <summary>{t("connectors.startFailure.alreadyInstalled")}</summary>
+          <p>
+            {t(
+              windows
+                ? "connectors.startFailure.setupWindows"
+                : "connectors.startFailure.setupUnix",
+            )}
+          </p>
+          <Button variant="secondary" onClick={() => navigation.openSettings("permissions")}>
+            {t("settings.permissions")}
+          </Button>
         </details>
       )}
+      {children}
+      <details>
+        <summary>{t("connectors.startFailure.advanced")}</summary>
+        <p className={styles.note}>{facts.join(" · ")}</p>
+        {failure.denials.length > 0 && (
+          <div>
+            <p className={styles.note}>{t("connectors.startFailure.denials")}</p>
+            <ul className={styles.failureList}>
+              {failure.denials.map((denial) => (
+                <li key={`${denial.kind}:${denial.rule}:${denial.target}`}>
+                  {denialText(t, denial)}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {failure.stderrTail.trim() && (
+          <pre className={styles.stderrTail}>{failure.stderrTail.trim()}</pre>
+        )}
+      </details>
     </section>
   );
 }
@@ -114,6 +168,11 @@ export function ConnectorSandboxSection({
               : "connectors.outsideSandbox.on",
           )}
         </p>
+      )}
+      {diagnostics.needsReconfirm && (
+        <Button variant="secondary" disabled={disabled} onClick={() => toggle(true)}>
+          {t("connectors.recovery.reconfirm")}
+        </Button>
       )}
       <p className={styles.note}>{t("connectors.outsideSandbox.note")}</p>
     </section>

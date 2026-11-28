@@ -11,7 +11,7 @@ import { isManagedCleanupFailure } from "../managed/managed-failure.ts";
 import type { groupWorkplace } from "../runtime.ts";
 import type { GroupMemberWorktrees } from "./group-member-worktrees.ts";
 import { seedStepOutput } from "./group-step-output.ts";
-import { groupWorktreeAuthority } from "./group-worktree-authority.ts";
+import { groupWorktreeAuthority, UnansweredWorktreeApproval } from "./group-worktree-authority.ts";
 import { createMemberWorktree } from "./group-worktree-create.ts";
 import type { WorktreeHost } from "./group-worktree-host.ts";
 
@@ -74,6 +74,7 @@ export async function prepareStepWorktree(
   const folder = `${location ?? "local"}\0${primary}`;
   const turns = (reason: string) => owner.takeTurns(context, task.id, reason, folder);
   const setupFailed = (error: unknown) => {
+    if (error instanceof UnansweredWorktreeApproval) throw error;
     // Only the prepare limit is a setup failure; a stop or shutdown ends the step as before, and
     // so does an approval nobody answered in time (that is the person's decision, not a setup).
     const timedOut = signal.reason instanceof Error && signal.reason.name === "TimeoutError";
@@ -141,6 +142,7 @@ export async function prepareStepWorktree(
         [managed],
         signal,
         "create",
+        { planStep: true },
       );
     } catch (error) {
       // Windows retest 2026-11-21: the policy check's own 10 s limit fired right after a brain
@@ -170,7 +172,9 @@ export async function prepareStepWorktree(
   }
   let active: Awaited<ReturnType<typeof createMemberWorktree>>;
   try {
-    active = await createMemberWorktree(owner, host, context, group, place, signal);
+    active = await createMemberWorktree(owner, host, context, group, place, signal, {
+      planStep: true,
+    });
   } catch (error) {
     if (error instanceof RpcError && TURNS.has(error.message)) return turns(error.message);
     return setupFailed(error);

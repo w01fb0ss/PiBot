@@ -137,6 +137,7 @@ function Routes() {
           name: "chat",
           groupId: navigation.groupId,
           ...(navigation.threadId ? { threadId: navigation.threadId } : {}),
+          ...(navigation.messageId ? { focus: { messageId: navigation.messageId } } : {}),
         });
       else if ("botId" in navigation && navigation.botId)
         navigate({ name: "chat", botId: navigation.botId, draftId: crypto.randomUUID() });

@@ -10,28 +10,56 @@ import {
 import {
   ADDED_MODELS_LIMIT,
   AddedModelIdSchema,
+  type BuiltinVideoCatalogModel,
+  type BuiltinVideoModel,
+  BuiltinVideoModelsSchema,
+  type BuiltinVideoProviderId,
+  BuiltinVideoProviderIdSchema,
   CHATGPT_PLAN_PROVIDERS,
   type CustomProvider,
   type CustomProviderInfo,
   CustomProviderSchema,
+  configuredVideoProviders,
+  imageApiRequiresKey,
   MAGPIE_PROVIDER,
   magpiePort,
   RpcError,
   RpcErrorCodes,
+  type VideoProviderConfig,
+  validImageModelOptions,
 } from "@pibot/models-contract/full";
 import { assertSafeSecretValue, keyHint, type Redactor, type SecretCipher } from "@pibot/secrets";
 import { type SecretStore, transaction } from "@pibot/storage";
 import { z } from "zod";
 import { ProvidersRepo } from "../../store/index.ts";
+import {
+  builtinVideoModels,
+  builtinVideoProvider,
+  discoverBuiltinVideos,
+  type TestVideoBaseUrls,
+} from "./builtin-videos.ts";
 
 export const providerScope = (id: string) => `provider:${id}`;
+const VideoCatalogSchema = z.strictObject({
+  models: BuiltinVideoModelsSchema,
+  fallback: z.boolean(),
+  cached: z.literal(true).optional(),
+});
+type VideoCatalog = z.infer<typeof VideoCatalogSchema>;
+const DisabledVideosSchema = z.array(BuiltinVideoModelsSchema.element.shape.id).max(2000);
 const AddedModelsSchema = z.array(AddedModelIdSchema).max(ADDED_MODELS_LIMIT);
+
+function withCachedPricing(model: BuiltinVideoModel, cached: boolean): BuiltinVideoCatalogModel {
+  return cached ? { ...model, cachedPricing: true as const } : model;
+}
 
 function validMagpieConfig(config: Omit<CustomProvider, "apiKey">): boolean {
   return (
     magpiePort(config.baseUrl) !== undefined &&
     config.api === "openai-completions" &&
     !config.headers &&
+    !config.videoApi &&
+    !config.videoModels?.length &&
     !config.imageApi &&
     !config.imageModels?.length
   );
@@ -52,12 +80,212 @@ export class ProviderStore {
     private readonly cipher: SecretCipher,
     private readonly redactor: Redactor,
     secrets: SecretStore,
+    private readonly testVideoBases: TestVideoBaseUrls = {},
+    private readonly fetchCatalog?: typeof fetch,
   ) {
     this.repo = new ProvidersRepo(db);
     this.secrets = secrets;
   }
 
   configs = (): CustomProviderConfig[] => structuredClone([...this.custom.values()]);
+
+  private usesBuiltinVideoKey(id: BuiltinVideoProviderId) {
+    const row = this.repo.get(id);
+    const selected = row?.config.selectedAuth;
+    return (
+      row?.kind !== "custom" &&
+      (selected === undefined || selected === "apiKey") &&
+      this.secrets.has(providerScope(id), "apiKey")
+    );
+  }
+
+  private savedVideoModels(id: BuiltinVideoProviderId) {
+    const parsed = BuiltinVideoModelsSchema.safeParse(this.repo.get(id)?.config.videoModels);
+    return parsed.success ? parsed.data : [];
+  }
+
+  private enabledVideoModels(id: BuiltinVideoProviderId, catalog = this.savedVideoCatalog(id)) {
+    return builtinVideoModels(id, this.savedVideoModels(id)).map((model) =>
+      withCachedPricing(model, !catalog || catalog.fallback || !!catalog.cached),
+    );
+  }
+
+  videoProviders = (): VideoProviderConfig[] => {
+    const custom = configuredVideoProviders([...this.custom.values()], (id) =>
+      this.secrets.has(providerScope(id), "apiKey"),
+    ).map(({ id, name, baseUrl, videoApi, videoModels }) => ({
+      id,
+      name,
+      baseUrl,
+      videoApi,
+      videoModels: structuredClone(videoModels),
+    }));
+    const builtin = BuiltinVideoProviderIdSchema.options.flatMap((id) => {
+      if (!this.usesBuiltinVideoKey(id)) return [];
+      const videoModels = this.enabledVideoModels(id);
+      return videoModels.length
+        ? [{ ...builtinVideoProvider(id, this.testVideoBases), videoModels }]
+        : [];
+    });
+    return [...custom, ...builtin];
+  };
+
+  private async discoverVideoModels(id: BuiltinVideoProviderId, signal: AbortSignal) {
+    if (!this.usesBuiltinVideoKey(id))
+      throw new RpcError(RpcErrorCodes.invalidParams, "video_model_unavailable");
+    const key = await this.secrets.get(providerScope(id), "apiKey");
+    if (!key || !this.usesBuiltinVideoKey(id))
+      throw new RpcError(RpcErrorCodes.invalidParams, "video_model_unavailable");
+    const provider = builtinVideoProvider(id, this.testVideoBases);
+    try {
+      const { models, fallback } = await discoverBuiltinVideos(
+        provider,
+        key,
+        AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+        this.fetchCatalog,
+      );
+      return { models: models.filter(({ id }) => this.redactor.redact(id) === id), fallback };
+    } catch {
+      signal.throwIfAborted();
+      throw new RpcError(RpcErrorCodes.invalidParams, "provider_error");
+    }
+  }
+
+  private savedVideoCatalog(id: BuiltinVideoProviderId) {
+    const parsed = VideoCatalogSchema.safeParse(this.repo.get(id)?.config.videoCatalog);
+    return parsed.success ? parsed.data : undefined;
+  }
+
+  videoOptions(id: BuiltinVideoProviderId) {
+    if (!this.usesBuiltinVideoKey(id)) return [];
+    const catalog = this.savedVideoCatalog(id);
+    const entries = new Map(
+      builtinVideoModels(id, catalog?.models ?? []).map((model) => [
+        model.id,
+        { ...withCachedPricing(model, !!catalog?.cached), enabled: false },
+      ]),
+    );
+    for (const model of this.enabledVideoModels(id, catalog))
+      entries.set(model.id, { ...model, enabled: true });
+    return [...entries.values()];
+  }
+
+  videoModelsToEnable = () =>
+    BuiltinVideoProviderIdSchema.options.flatMap((providerId) =>
+      this.videoOptions(providerId).flatMap(({ enabled, ...model }) =>
+        enabled ? [] : [{ kind: "enable_video_model" as const, providerId, model }],
+      ),
+    );
+
+  private async refreshVideoCatalog(id: BuiltinVideoProviderId, signal: AbortSignal) {
+    signal.throwIfAborted();
+    let catalog: VideoCatalog | undefined;
+    try {
+      catalog = await this.discoverVideoModels(id, signal);
+    } catch (error) {
+      signal.throwIfAborted();
+      if (!(error instanceof RpcError)) throw error;
+    }
+    signal.throwIfAborted();
+    const previous = this.savedVideoCatalog(id);
+    // An outage or fallback does not confirm which models are still offered or what they cost.
+    if ((!catalog || catalog.fallback) && previous && !previous.fallback)
+      catalog = { ...previous, cached: true };
+    if (!catalog) return false;
+    const config = { ...this.repo.get(id)?.config };
+    const saved = this.savedVideoModels(id);
+    const disabled = new Set(DisabledVideosSchema.safeParse(config.disabledVideoModels).data ?? []);
+    const next =
+      catalog.fallback || catalog.cached
+        ? saved
+        : catalog.models.filter(({ id }) => !disabled.has(id));
+    if (
+      JSON.stringify(catalog) !== JSON.stringify(config.videoCatalog) ||
+      JSON.stringify(next) !== JSON.stringify(saved)
+    ) {
+      this.repo.upsert({
+        id,
+        kind: "builtin",
+        config: { ...config, videoCatalog: catalog, videoModels: next },
+      });
+    }
+    return true;
+  }
+
+  refreshVideoCatalogs(signal: AbortSignal) {
+    return this.serialize(async () => {
+      const results = await Promise.allSettled(
+        BuiltinVideoProviderIdSchema.options
+          .filter((id) => this.usesBuiltinVideoKey(id))
+          .map((id) => this.refreshVideoCatalog(id, signal)),
+      );
+      signal.throwIfAborted();
+      for (const result of results) if (result.status === "rejected") throw result.reason;
+    });
+  }
+
+  async listVideoModels(id: BuiltinVideoProviderId, refresh: boolean, signal: AbortSignal) {
+    return this.serialize(async () => {
+      if (!this.usesBuiltinVideoKey(id))
+        throw new RpcError(RpcErrorCodes.invalidParams, "video_model_unavailable");
+      const refreshed = refresh ? await this.refreshVideoCatalog(id, signal) : undefined;
+      signal.throwIfAborted();
+      const catalog = this.savedVideoCatalog(id);
+      return {
+        models: this.videoOptions(id),
+        fallback: catalog?.fallback ?? false,
+        unavailable: refreshed === false || !catalog || !!catalog.cached,
+      };
+    });
+  }
+
+  async setVideoModel(
+    id: BuiltinVideoProviderId,
+    modelId: string,
+    enabled: boolean,
+    signal: AbortSignal,
+    recordChange?: () => void,
+  ) {
+    signal.throwIfAborted();
+    if (!this.usesBuiltinVideoKey(id))
+      throw new RpcError(RpcErrorCodes.invalidParams, "video_model_unavailable");
+    const saved = this.savedVideoModels(id);
+    if (saved.some((model) => model.id === modelId) === enabled) return false;
+    const next = saved.filter((model) => model.id !== modelId);
+    let cachedCatalog: VideoCatalog | undefined;
+    if (enabled) {
+      const discovered = await this.discoverVideoModels(id, signal);
+      const previous = this.savedVideoCatalog(id);
+      if (discovered.fallback && previous && !previous.fallback)
+        cachedCatalog = { ...previous, cached: true };
+      const candidate = (cachedCatalog ?? discovered).models.find((model) => model.id === modelId);
+      if (!candidate) throw new RpcError(RpcErrorCodes.invalidParams, "video_model_unavailable");
+      next.push(candidate);
+    }
+    signal.throwIfAborted();
+    const config = { ...this.repo.get(id)?.config };
+    const disabled = new Set(DisabledVideosSchema.safeParse(config.disabledVideoModels).data ?? []);
+    if (enabled) disabled.delete(modelId);
+    else disabled.add(modelId);
+    const parsed = BuiltinVideoModelsSchema.safeParse(next);
+    const disabledModels = DisabledVideosSchema.safeParse([...disabled]);
+    if (!parsed.success || !disabledModels.success)
+      throw new RpcError(RpcErrorCodes.invalidParams, "video_model_unavailable");
+    transaction(this.db, () => {
+      this.repo.upsert({
+        id,
+        kind: "builtin",
+        config: {
+          ...config,
+          ...(cachedCatalog && { videoCatalog: cachedCatalog }),
+          videoModels: parsed.data,
+          disabledVideoModels: disabledModels.data,
+        },
+      });
+      recordChange?.();
+    });
+    return true;
+  }
 
   updateModelLimits(
     id: string,
@@ -114,7 +342,18 @@ export class ProviderStore {
 
   /** Non-secret fields only; built field by field so new secret fields cannot leak by default. */
   info(id: string): CustomProviderInfo {
-    const { name, baseUrl, api, compat, models, headers, imageApi, imageModels } = this.get(id);
+    const {
+      name,
+      baseUrl,
+      api,
+      compat,
+      models,
+      headers,
+      imageApi,
+      imageModels,
+      videoApi,
+      videoModels,
+    } = this.get(id);
     return {
       id,
       name,
@@ -122,6 +361,8 @@ export class ProviderStore {
       api,
       ...(compat ? { compat } : {}),
       models,
+      ...(videoApi ? { videoApi } : {}),
+      ...(videoModels ? { videoModels } : {}),
       ...(imageApi ? { imageApi } : {}),
       ...(imageModels ? { imageModels } : {}),
       hasApiKey: this.secrets.has(providerScope(id), "apiKey"),
@@ -195,7 +436,8 @@ export class ProviderStore {
       throw new RpcError(-32602, "Provider is unavailable");
   }
 
-  async setKey(id: string, value: string): Promise<void> {
+  async setKey(id: string, value: string, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
     if (id === MAGPIE_PROVIDER.id) throw new RpcError(-32602, "magpie_requires_local_setup");
     this.assertWritable(id);
     assertSupportedCredential(value);
@@ -208,10 +450,17 @@ export class ProviderStore {
       });
   }
 
+  refreshVideoCatalogForKey(id: string, signal: AbortSignal) {
+    const builtin = BuiltinVideoProviderIdSchema.safeParse(id);
+    if (builtin.success && this.usesBuiltinVideoKey(builtin.data))
+      return this.refreshVideoCatalog(builtin.data, signal);
+  }
+
   async upsert(input: CustomProvider, afterWrite?: (providerId: string) => void): Promise<string> {
     if (
-      (!input.models.length && !input.imageModels?.length) ||
-      (!!input.imageModels?.length && !input.imageApi)
+      (!input.models.length && !input.imageModels?.length && !input.videoModels?.length) ||
+      (!!input.imageModels?.length && !input.imageApi) ||
+      input.imageModels?.some((model) => !validImageModelOptions(input.imageApi, model))
     )
       throw new RpcError(-32602, "image_model_unavailable");
     const imageIds = new Set(input.imageModels?.map((model) => model.id));
@@ -220,6 +469,14 @@ export class ProviderStore {
       input.models.some((model) => imageIds.has(model.id))
     )
       throw new RpcError(-32602, "image_mode_mismatch");
+    const videos = new Set(input.videoModels?.map((model) => model.id));
+    if (
+      (videos.size > 0 && !input.videoApi) ||
+      videos.size !== (input.videoModels?.length ?? 0) ||
+      input.models.some((model) => videos.has(model.id)) ||
+      [...videos].some((id) => imageIds.has(id))
+    )
+      throw new RpcError(-32602, "video_model_invalid");
     const id = input.id ?? randomUUID();
     if (["openai-codex", "github-copilot", ...CHATGPT_PLAN_PROVIDERS].includes(id))
       throw new RpcError(-32602, "subscription_unsupported");
@@ -246,9 +503,26 @@ export class ProviderStore {
     if (
       url.username ||
       url.password ||
+      ((config.videoApi || config.imageApi) && (url.search || url.hash)) ||
       [...url.searchParams.keys()].some((name) => /key|token|secret|password|auth/i.test(name))
     )
       throw new RpcError(-32602, "Put credentials in API Key or headers");
+    const previous = this.custom.get(id);
+    if (
+      previous &&
+      (imageApiRequiresKey(previous.imageApi) || imageApiRequiresKey(config.imageApi)) &&
+      new URL(previous.baseUrl).origin !== url.origin &&
+      ((!apiKey && this.secrets.has(providerScope(id), "apiKey")) ||
+        (headers === undefined && this.secrets.has(providerScope(id), "headers")))
+    )
+      throw new RpcError(-32602, "Replace saved credentials when changing the service origin");
+    if (
+      config.imageApi === "comfyui-images" &&
+      !config.models.length &&
+      !config.videoModels?.length &&
+      (apiKey || Object.keys(headers ?? {}).length)
+    )
+      throw new RpcError(-32602, "ComfyUI requires no credentials");
     if (apiKey) this.redactor.add(apiKey);
     this.registerHeaders(headers);
     if (this.redactor.redact(JSON.stringify(config)) !== JSON.stringify(config))
@@ -288,7 +562,6 @@ export class ProviderStore {
     });
     for (const entry of pending) this.redactor.add(entry.value);
     this.registerHeaders(headers);
-    const previous = this.custom.get(id);
     this.custom.set(id, { ...config, headers: headers ?? previous?.headers });
     if (headers !== undefined) this.lockedHeaders.delete(id);
     return id;

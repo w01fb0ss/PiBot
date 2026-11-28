@@ -6,29 +6,44 @@ import type { Logger } from "@pibot/observability";
 import {
   type AgentErrorCode,
   type AttachmentInput,
+  type Bot,
   type ExecutionMode,
   type FolderSelection,
   type KernelEvents,
   type KernelMethodParams,
+  type KernelMethodResults,
   type KernelMethods,
+  type ModelOverride,
   type Peer,
   RpcError,
+  RpcErrorCodes,
 } from "@pibot/protocol-base";
 import {
+  AuditRepo,
   BotsRepo,
   ChatAdditionsRepo,
   ConversationsRepo,
+  DispatchModelRoutesRepo,
+  GroupTasksRepo,
+  GroupTopicsRepo,
   MessagesRepo,
   RunsRepo,
   SettingsRepo,
   TopicFoldersRepo,
+  TopicsRepo,
   transaction,
 } from "@pibot/storage";
 import { abortable } from "../../core/abort.ts";
+import { activeGroup } from "../../core/group-access.ts";
 import { resolvePersonaLanguage } from "../../core/personas/language.ts";
 import type { BrainRedactor } from "../../core/privacy.ts";
 import type { LocalService } from "../../local-service.ts";
+import {
+  type DispatchTopicOptions,
+  verifyDispatchFolder,
+} from "../../resources/workplaces/dispatch-folder.ts";
 import { attachmentModelForBot, validateImageInputs } from "../../runtime/media/image-preflight.ts";
+import { topicModel, validateModelOverride } from "../../runtime/models/run-model.ts";
 import { republishQueuedWorkflows } from "../../runtime/queue/queued-recovery.ts";
 import { RunQueue } from "../../runtime/queue/run-queue.ts";
 import type { WorkflowRun } from "../../runtime/workflows/workflow-prepare.ts";
@@ -37,6 +52,7 @@ import type { AttachmentHost } from "../attachments/attachment-types.ts";
 import { AttachmentService, type PreparedAttachments } from "../attachments/attachments.ts";
 import { ChatAdditionService } from "./chat-additions.ts";
 import { quotedAttachmentIds, quotedPrompt, resolveMessageQuote } from "./message-quote.ts";
+import { slashHelpText } from "./slash-help.ts";
 import { type UserMessageDisplay, userMessageUsage } from "./user-message-display.ts";
 
 type BusinessPeer = Peer<typeof KernelMethods, typeof KernelEvents>;
@@ -104,6 +120,7 @@ export class ChatService {
       logger,
       redactor,
       queue: this.queue,
+      local,
       attachments: this.attachments,
       preparing: this.preparing,
       preflights: this.preflights,
@@ -124,6 +141,12 @@ export class ChatService {
   private interactive = true;
   topicBusy(botId: string, topicId: string) {
     return this.preparing.has(`${botId}:${topicId}`) || this.queue.topicBusy(topicId);
+  }
+  /** Persisted work is checked separately when a caller needs to match a whole import. */
+  hasBusyTopic(matches: (topicId: string) => boolean) {
+    for (const key of this.preparing.keys())
+      if (matches(key.slice(key.lastIndexOf(":") + 1))) return true;
+    return this.queue.hasBusyTopic(matches);
   }
   async changeTopicWorkplace<T>(botId: string, topicId: string, action: () => Promise<T>) {
     if (this.preparing.has(`${botId}:${topicId}`))
@@ -172,6 +195,85 @@ export class ChatService {
     return pending;
   }
 
+  async setTopicModel(
+    conversationId: string,
+    override: ModelOverride | null,
+    request?: AbortSignal,
+  ) {
+    const target = () => {
+      const topic = this.conversations.get(conversationId);
+      if (!topic || topic.archivedAt || topic.readOnly || this.conversations.isInternal(topic.id))
+        throw new RpcError(RpcErrorCodes.invalidParams, "model_override_topic_unavailable");
+      let botId = topic.botId;
+      if (topic.groupId) {
+        const group = activeGroup(this.db, topic.groupId, undefined, topic.id);
+        if (override && new GroupTopicsRepo(this.db).isAcp(group.id, topic.threadOf ?? topic.id))
+          throw new RpcError(RpcErrorCodes.unsupported, "model_override_external_agent");
+        botId =
+          topic.kind === "thread"
+            ? (new GroupTasksRepo(this.db, (text) => this.redactor.redact(text)).forThread(topic.id)
+                ?.assigneeBotId ?? null)
+            : group.coordinatorBotId;
+      }
+      const bot = botId ? this.bots.get(botId) : undefined;
+      if (!bot || bot.archivedAt)
+        throw new RpcError(RpcErrorCodes.invalidParams, "model_override_topic_unavailable");
+      return { topic, bot };
+    };
+    const { topic, bot } = target();
+    const signal = AbortSignal.any([
+      this.shutdown.signal,
+      AbortSignal.timeout(25_000),
+      ...(request ? [request] : []),
+    ]);
+    if (override)
+      await validateModelOverride(
+        {
+          agent: this.agent,
+          credentials: this.requireCredentials,
+          images: this.local?.imageProvider,
+        },
+        bot,
+        override,
+        () => this.conversations.hasImages(conversationId),
+        signal,
+      );
+    signal.throwIfAborted();
+    const result = transaction(this.db, () => {
+      const current = target();
+      if (
+        current.bot.id !== bot.id ||
+        current.bot.kind !== bot.kind ||
+        current.bot.category !== bot.category ||
+        JSON.stringify(current.topic.modelOverride) !== JSON.stringify(topic.modelOverride)
+      )
+        throw new RpcError(RpcErrorCodes.busy, "model_override_changed");
+      this.conversations.setTopicModel(conversationId, override);
+      new DispatchModelRoutesRepo(this.db).clear(conversationId, "topic");
+      new AuditRepo(this.db, this.redactor).append({
+        botId: bot.id,
+        kind: "topic.model_override",
+        summary: override
+          ? "Topic model set / 已设置话题模型"
+          : "Topic model cleared / 已恢复话题模型",
+        detail: {
+          actor: "user",
+          conversationId,
+          groupId: topic.groupId ?? undefined,
+          reasonCode: override ? "set" : "clear",
+          ...(override ? { providerId: override.provider, modelId: override.id } : {}),
+        },
+      });
+      return this.conversations.get(conversationId) ?? topic;
+    });
+    if (topic.groupId)
+      this.peer.emit("groups.changed", { groupId: topic.groupId, reason: "updated" });
+    this.peer.emit("sidebar.changed", {
+      conversationKey: topic.groupId ? `group:${topic.groupId}` : `dm:${bot.id}`,
+    });
+    return result;
+  }
+
   private error(
     runId: string,
     messageId: string,
@@ -187,6 +289,149 @@ export class ChatService {
     });
   }
 
+  sendSlashHelp(
+    params: KernelMethodParams["chat.send"],
+    request: { command?: string },
+    display: UserMessageDisplay,
+    requestSignal: AbortSignal,
+  ): KernelMethodResults["chat.send"] | undefined {
+    const local = this.local;
+    if (
+      !local ||
+      params.attachments?.length ||
+      params.attachmentIds?.length ||
+      params.imageGeneration
+    )
+      return undefined;
+    if (this.stopping || !this.interactive)
+      throw new RpcError(-32001, "Interactive client unavailable");
+    const { groupId, threadId, topicId, newTopic, initialMode, workplace, replyToMessageId } =
+      params;
+    const lookup = (id: string) => {
+      const bot = this.bots.get(id);
+      return bot && !bot.archivedAt && !this.retired.has(id) ? bot : undefined;
+    };
+    let bots: Bot[];
+    let speaker: Bot;
+    let conversationId: string | undefined;
+    let quote: ReturnType<typeof resolveMessageQuote>;
+    if (groupId) {
+      const group = activeGroup(this.db, groupId, undefined, threadId ?? topicId);
+      if (topicId && topicId !== (threadId ?? group.conversationId))
+        throw new RpcError(-32602, "group_topic_stale");
+      conversationId = threadId ?? group.conversationId;
+      const task = threadId
+        ? new GroupTasksRepo(this.db, (text) => text).forThread(threadId)
+        : undefined;
+      if (threadId && (!task || task.groupId !== groupId))
+        throw new RpcError(-32602, "Task is missing");
+      quote = resolveMessageQuote(
+        this.db,
+        replyToMessageId,
+        { groupId, conversationId },
+        this.redactor,
+      );
+      const scopedId = task?.assigneeBotId ?? quote?.botId;
+      const bot = lookup(scopedId ?? group.coordinatorBotId);
+      if (!bot) throw new RpcError(-32602, "Unknown active Bot");
+      speaker = bot;
+      bots = [
+        bot,
+        ...(scopedId
+          ? []
+          : group.members.flatMap(({ botId }) => {
+              const member = lookup(botId);
+              return member && member.id !== bot.id ? [member] : [];
+            })),
+      ];
+    } else {
+      const bot = params.botId ? lookup(params.botId) : undefined;
+      if (!bot) throw new RpcError(-32602, "Unknown active Bot");
+      if (bot.kind === "agent" || bot.category === "image") return undefined;
+      const selected = newTopic
+        ? undefined
+        : topicId
+          ? this.conversations.get(topicId)
+          : this.conversations.currentDm(bot.id);
+      if (
+        !newTopic &&
+        (selected?.kind !== "dm" ||
+          selected.botId !== bot.id ||
+          selected.archivedAt ||
+          local.tasks.tasks.isInternalConversation(selected.id))
+      )
+        throw new RpcError(-32602, "Unknown topic");
+      if (workplace) this.validateFolders(bot.id, workplace);
+      conversationId = selected?.id;
+      speaker = bot;
+      bots = [bot];
+      quote = resolveMessageQuote(
+        this.db,
+        replyToMessageId,
+        { botId: bot.id, conversationId, importedSource: newTopic },
+        this.redactor,
+      );
+    }
+    const signal = AbortSignal.any([requestSignal, this.shutdown.signal]);
+    const body = slashHelpText(
+      local,
+      { bots, defaultBotId: speaker.id, groupId, conversationId, initialMode },
+      request,
+      this.language(),
+      signal,
+    );
+    if (!body) return undefined;
+    signal.throwIfAborted();
+    const [id, user, reply] = transaction(this.db, () => {
+      const selection = workplace ?? (newTopic ? local.workplaces.initial(speaker.id) : undefined);
+      const id =
+        conversationId ??
+        this.conversations.create({
+          botId: speaker.id,
+          ...(selection ? { workplace: selection } : {}),
+        }).id;
+      if (newTopic) {
+        this.conversations.switchTopic(speaker.id, id);
+        if (initialMode)
+          local.execution.initialize({ botId: speaker.id, conversationId: id }, initialMode);
+      }
+      const user = this.messages.create({
+        conversationId: id,
+        role: "user",
+        content: this.redactor.redact(params.text),
+        status: "done",
+        markUnread: false,
+        ...userMessageUsage(quote, display),
+      });
+      const reply = this.messages.create({
+        conversationId: id,
+        botId: speaker.id,
+        role: "assistant",
+        content: body,
+        status: "done",
+        usage: { chatReplyTo: user.id },
+        markUnread: false,
+      });
+      return [id, user, reply] as const;
+    });
+    this.openConversation(id);
+    if (groupId) this.peer.emit("groups.changed", { groupId, reason: "updated" });
+    this.peer.emit("sidebar.changed", {
+      conversationKey: groupId ? `group:${groupId}` : `dm:${speaker.id}`,
+    });
+    return {
+      conversationId: id,
+      groupId,
+      threadId,
+      ...(quote ? { quote } : {}),
+      userMessageId: user.id,
+      assistantMessageId: reply.id,
+      runId: reply.id,
+      localReply: reply,
+      ...(groupId ? { runs: [] } : {}),
+    };
+  }
+
   send(
     botId: string,
     text: string,
@@ -199,6 +444,8 @@ export class ChatService {
     replyToMessageId?: string,
     /** Internal callers only (never an RPC input): how the user's bubble shows this text. */
     display?: UserMessageDisplay,
+    imageGeneration?: KernelMethodParams["chat.send"]["imageGeneration"],
+    dispatchTopic?: DispatchTopicOptions,
   ) {
     const pending = this.prepare(
       botId,
@@ -213,6 +460,8 @@ export class ChatService {
       replyToMessageId,
       undefined,
       display,
+      imageGeneration,
+      dispatchTopic,
     );
     this.preflights.set(pending, botId);
     void pending.finally(() => this.preflights.delete(pending)).catch(() => {});
@@ -351,7 +600,11 @@ export class ChatService {
     replyToMessageId?: string,
     workflow?: WorkflowRun,
     display?: UserMessageDisplay,
+    imageGeneration?: KernelMethodParams["chat.send"]["imageGeneration"],
+    dispatchTopic?: DispatchTopicOptions,
   ) {
+    if (dispatchTopic && (!newTopic || !this.local))
+      throw new RpcError(-32602, "dispatch_topic_unavailable");
     if (topicId && this.local?.tasks.tasks.isInternalConversation(topicId))
       throw new RpcError(-32602, "Unknown topic");
     if (initialMode && !newTopic) throw new RpcError(-32602, "Initial mode requires a new topic");
@@ -361,6 +614,8 @@ export class ChatService {
     const bot = this.bots.get(botId);
     if (!bot || bot.archivedAt || this.retired.has(botId))
       throw new RpcError(-32602, "Unknown active Bot");
+    if (imageGeneration && bot.category !== "image")
+      throw new RpcError(-32602, "image_unsupported");
     const selected = newTopic
       ? undefined
       : topicId
@@ -368,7 +623,6 @@ export class ChatService {
         : this.conversations.currentDm(botId);
     if (!newTopic && (selected?.kind !== "dm" || selected.botId !== botId || selected.archivedAt))
       throw new RpcError(-32602, "Unknown topic");
-    if (selected?.readOnly) throw new RpcError(-32602, "import_topic_read_only");
     if (selected) this.queue.assertTopicAdmission(selected.id);
     // The folders chosen on a new-topic draft must be this Bot's registered folders.
     if (workplace) this.validateFolders(botId, workplace);
@@ -388,6 +642,7 @@ export class ChatService {
     const signal = AbortSignal.any([
       controller.signal,
       ...(confirmation ? [confirmation.signal] : []),
+      ...(dispatchTopic ? [dispatchTopic.signal] : []),
       this.shutdown.signal,
       AbortSignal.timeout(25_000),
     ]);
@@ -399,18 +654,28 @@ export class ChatService {
         newTopic && this.local ? (workplace ?? this.local.workplaces.initial(botId)) : null;
       if (folders?.writable?.length && this.local)
         await this.local.workplaces.context(botId, signal, { selection: folders });
-      if (bot.modelProvider && this.requireCredentials)
-        await abortable(this.requireCredentials(bot.modelProvider), signal);
-      const model = await attachmentModelForBot(
-        this.agent,
-        bot,
-        signal,
-        this.local?.imageProvider,
-      ).catch((error: unknown) => {
-        if (error instanceof RpcError && error.message === "no_model")
-          this.error(runId, randomUUID(), "no_model", { botId, conversationId: selected?.id });
-        throw error;
-      });
+      const effective = selected ? topicModel(bot, selected) : bot;
+      const deferredDispatchModel =
+        !!dispatchTopic?.model ||
+        (!!dispatchTopic &&
+          !imageGeneration &&
+          bot.kind !== "agent" &&
+          !!this.local?.models?.dispatchModels);
+      if (!deferredDispatchModel && effective.modelProvider && this.requireCredentials)
+        await abortable(this.requireCredentials(effective.modelProvider), signal);
+      // Pi's dispatch carries no attachments. The queued run owns its live model selection.
+      const model = deferredDispatchModel
+        ? { input: ["text" as const], contextWindow: 0 }
+        : await attachmentModelForBot(
+            this.agent,
+            effective,
+            signal,
+            this.local?.imageProvider,
+          ).catch((error: unknown) => {
+            if (error instanceof RpcError && error.message === "no_model")
+              this.error(runId, randomUUID(), "no_model", { botId, conversationId: selected?.id });
+            throw error;
+          });
       if (this.stopping) throw new RpcError(-32001, "Brain stopping");
       const quote = resolveMessageQuote(
         this.db,
@@ -430,7 +695,15 @@ export class ChatService {
         model,
         signal,
       );
-      await validateImageInputs(this.agent, bot, prepared, signal, this.local?.imageProvider);
+      if (!deferredDispatchModel)
+        await validateImageInputs(
+          this.agent,
+          effective,
+          prepared,
+          signal,
+          this.local?.imageProvider,
+          imageGeneration,
+        );
       if (this.stopping) throw new RpcError(-32001, "Brain stopping");
       signal.throwIfAborted();
       const currentBot = this.bots.get(botId);
@@ -454,6 +727,9 @@ export class ChatService {
         )
           throw new RpcError(-32602, "routine_proposal_unavailable");
       }
+      const dispatchFolder = dispatchTopic?.folder;
+      if (dispatchFolder && this.local)
+        await verifyDispatchFolder(this.local, botId, dispatchFolder, signal);
       const previousTopic = newTopic ? this.conversations.currentDmIfPresent(botId)?.id : undefined;
       const [conversation, user, record] = transaction(this.db, () => {
         resolveMessageQuote(
@@ -464,12 +740,26 @@ export class ChatService {
           quote,
         );
         confirmation?.commit();
-        if (workplace) this.validateFolders(botId, workplace);
+        dispatchTopic?.assertCurrent();
+        signal.throwIfAborted();
+        const registered =
+          dispatchFolder && this.local?.workplaces.registerLocal(botId, dispatchFolder);
+        const selection = registered ? { primary: registered.id, readonly: [] } : workplace;
+        if (selection) this.validateFolders(botId, selection);
         const conversation = newTopic
-          ? this.conversations.create({ botId, ...(workplace ? { workplace } : {}) })
-          : selected;
-        if (!conversation) throw new RpcError(-32602, "Unknown topic");
+          ? this.conversations.create({ botId, ...(selection ? { workplace: selection } : {}) })
+          : selected && this.conversations.get(selected.id);
+        if (!conversation || conversation.archivedAt) throw new RpcError(-32602, "Unknown topic");
+        if (JSON.stringify(conversation.modelOverride) !== JSON.stringify(selected?.modelOverride))
+          throw new RpcError(RpcErrorCodes.busy, "model_override_changed");
         if (newTopic) this.conversations.switchTopic(botId, conversation.id);
+        if (dispatchTopic) {
+          new TopicsRepo(this.db).rename(botId, conversation.id, dispatchTopic.title);
+          dispatchTopic.recordWorkplace?.(conversation.id);
+          if (dispatchTopic.model)
+            this.conversations.setTopicModel(conversation.id, dispatchTopic.model);
+          dispatchTopic.recordModels?.(conversation.id);
+        }
         if (initialMode) {
           if (!this.local) throw new RpcError(-32001, "Execution service unavailable");
           this.local.execution.initialize({ botId, conversationId: conversation.id }, initialMode);
@@ -504,6 +794,7 @@ export class ChatService {
         userMessageId: user.id,
         text: [quotedPrompt(text, quote), prepared.text].filter(Boolean).join("\n\n"),
         images: prepared.images,
+        imageGeneration,
         ...(workflow ? { workflow } : {}),
       });
       this.peer.emit("sidebar.changed", { conversationKey: `dm:${botId}` });
@@ -538,6 +829,31 @@ export class ChatService {
   async abort(runId: string): Promise<void> {
     await this.abortRoutine?.(runId);
     await this.queue.abortTree(runId, { code: "user_stopped" });
+  }
+  /**
+   * The person's stop (the stop button, or Pi's repair on their request): the intent is recorded
+   * and audited with the run's state, then the run tree is aborted.
+   */
+  async userStop(runId: string): Promise<void> {
+    const local = this.local;
+    if (local)
+      transaction(this.db, () => {
+        const runs = new RunsRepo(this.db),
+          run = runs.get(runId);
+        if (run && runs.requestUserStop(runId))
+          local.approvals.audit.append({
+            botId: run.botId,
+            runId,
+            kind: "run.interrupted",
+            summary: "User requested stop / 用户请求停止",
+            detail: {
+              actor: "user",
+              reasonCode: "user_stop_requested",
+              conversationId: run.conversationId,
+            },
+          });
+      });
+    await this.abort(runId);
   }
   async stop() {
     this.stopping = true;

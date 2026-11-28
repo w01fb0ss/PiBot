@@ -1,11 +1,32 @@
 import { z } from "zod";
 import { IdSchema } from "../core/ids.ts";
-import { DomainSchema } from "../permissions/settings.ts";
 import { CapabilityIdSchema } from "../tools/capabilities.ts";
 import { DraftBindingSchema } from "./drafts.ts";
+import { ConnectorNetworkSiteSchema } from "./network.ts";
 
 export const CONNECTOR_IMPORT_MAX_BYTES = 1024 * 1024;
 export const CONNECTOR_IMPORT_MAX_SERVERS = 100;
+export const CONNECTOR_STARTUP_MAX_SECONDS = 180;
+export const ConnectorStartupWaitSchema = z
+  .number()
+  .int()
+  .min(1)
+  .max(CONNECTOR_STARTUP_MAX_SECONDS);
+export function isConnectorPackageRunner(command: string): boolean {
+  return /^(?:npx|uvx|pnpm|bunx|uv|npm)(?:\.(?:exe|cmd|bat))?$/i.test(
+    command.split(/[\\/]/).at(-1) ?? "",
+  );
+}
+
+export function connectorStartupSeconds(server: {
+  startupTimeoutSec?: number;
+  command?: string;
+}): number {
+  return (
+    server.startupTimeoutSec ??
+    (server.command && isConnectorPackageRunner(server.command) ? 120 : 30)
+  );
+}
 const time = z.iso.datetime();
 const count = z.number().int().nonnegative().safe();
 const revision = count.positive();
@@ -19,6 +40,7 @@ const plain = z
 const serverId = z.string().regex(/^[a-z][a-z0-9.-]{0,63}$/);
 const localizedText = z.strictObject({ zh: plain, en: plain });
 const secretName = z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/);
+export const ConnectorEnvNameSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/);
 const configValue = z
   .string()
   .max(4096)
@@ -30,7 +52,7 @@ const serverAuth = z.strictObject({
 const commonServer = {
   id: serverId,
   auth: serverAuth,
-  networkDomains: z.array(DomainSchema).max(64).default([]),
+  networkDomains: z.array(ConnectorNetworkSiteSchema).max(64).default([]),
   startupTimeoutSec: z.number().int().min(1).max(300).optional(),
 };
 
@@ -82,7 +104,7 @@ export const ConnectorServerSchema = z.discriminatedUnion("transport", [
       .default([]),
     env: z
       .record(
-        secretName,
+        ConnectorEnvNameSchema,
         configValue.refine((value) => !/[\r\n]/.test(value)),
       )
       .refine((value) => Object.keys(value).length <= 64)
@@ -108,6 +130,14 @@ export const ConnectorManifestSchema = z.strictObject({
       "Duplicate server id",
     ),
 });
+export const ConnectorCommandSchema = z.strictObject({
+  id: IdSchema,
+  name: z.string().min(1).max(200),
+  token: z.string().min(1).max(240),
+  kind: z.enum(["app", "mcp"]),
+});
+export type ConnectorCommand = z.infer<typeof ConnectorCommandSchema>;
+
 export const ConnectorStatusSchema = z.enum([
   "disabled",
   "starting",
@@ -185,6 +215,11 @@ export const ConnectorStartReasonSchema = z.enum([
   "exited",
   "protocol_error",
   "outside_sandbox_reconfirm",
+  /** Exec refused the folder it would start in before any process existed. */
+  "location_refused",
+  /** Exec refused its saved start settings (for example an environment variable name). */
+  "config_invalid",
+  "proxy_scheme",
   "unknown",
 ]);
 export type ConnectorStartReason = z.infer<typeof ConnectorStartReasonSchema>;
@@ -192,6 +227,8 @@ export type ConnectorStartReason = z.infer<typeof ConnectorStartReasonSchema>;
 export const ConnectorStartFailureSchema = z.strictObject({
   phase: z.enum(["start", "initialize", "discover"]),
   reason: ConnectorStartReasonSchema,
+  launcher: z.enum(["node", "npx", "uvx"]).optional(),
+  launcherIssue: z.enum(["configured_path", "windows_wrapper"]).optional(),
   exitCode: z.number().int().safe().nullable(),
   signal: z
     .string()
@@ -222,6 +259,10 @@ export const ConnectorDiagnosticsSchema = z.strictObject({
   /** Why the detail panel suggests the switch; never turns it on by itself. */
   suggestion: z.enum(["ai_config_path", "sandbox_start_failed"]).nullable(),
   lastFailure: ConnectorStartFailureSchema.nullable(),
+  loginCommand: z.string().min(1).max(4096).optional(),
+  loginGuide: z
+    .url({ protocol: /^https$/, hostname: /^(?:www\.npmjs\.com|pypi\.org)$/ })
+    .optional(),
 });
 export type ConnectorDiagnostics = z.output<typeof ConnectorDiagnosticsSchema>;
 export const ConnectorToolRefSchema = z.strictObject({

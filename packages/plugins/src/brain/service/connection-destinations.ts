@@ -2,6 +2,7 @@ import type { ConnectionDestination } from "@pibot/plugins-contract/full";
 import { ConnectionDestinationSchema } from "@pibot/plugins-contract/full";
 import type { ConnectionActivityRepo, ConnectorsRepo, PluginsRepo } from "../../store/index.ts";
 import type { PluginRegistry } from "../apps/registry.ts";
+import { connectorWebsites } from "./connector-network.ts";
 
 type Category = ConnectionDestination["categories"][number];
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
@@ -24,6 +25,7 @@ export function connectionDestinations(
     plugins: PluginsRepo;
     registry: PluginRegistry;
     activity: ConnectionActivityRepo;
+    platform?: NodeJS.Platform;
   },
   id: string,
 ): { items: ConnectionDestination[] } {
@@ -44,6 +46,9 @@ export function connectionDestinations(
     ...(remote && credential ? (["credential"] as const) : []),
   ];
   const lastAt = latest(last.call, last.sent);
+  const websites = connectorWebsites(deps, connector);
+  if (websites.mode === "unisolated") return { items: [] };
+  if (websites.mode === "remote" && !websites.remote.allowed) return { items: [] };
   const hosts = new Set<string>();
   let local = false;
   if (server.transport === "http") {
@@ -51,7 +56,8 @@ export function connectionDestinations(
     if (LOOPBACK.has(host)) local = true;
     else hosts.add(host);
   }
-  for (const domain of server.networkDomains) if (!LOOPBACK.has(domain)) hosts.add(domain);
+  if (websites.mode === "sandbox")
+    for (const site of [...websites.declared, ...websites.domains]) hosts.add(site);
   // A local process with no declared domain is kept off the network by the command sandbox.
   if (server.transport !== "http" && hosts.size === 0) local = true;
   const items: ConnectionDestination[] = [

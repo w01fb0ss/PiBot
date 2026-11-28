@@ -1,3 +1,4 @@
+import type { GroupTask } from "@pibot/protocol";
 import { useMemo } from "react";
 import { useRuntime } from "../../../runtime/context.tsx";
 import {
@@ -59,9 +60,8 @@ export function useGroupPlan(scope: ChatScope | undefined) {
   };
 }
 /**
- * Task threads of the group's current topic that are still open. A member's run inside a task
- * asks for approval in its thread, which the group chat does not show, so the chat matches its
- * approval cards against these threads (the desktop shows them on the task's row).
+ * Open tasks for the plan sheet's links to approvals, and for matching pending approvals
+ * on older computers that do not publish the group approval timeline.
  */
 export function useGroupThreads(scope: ChatScope | undefined) {
   const runtime = useRuntime();
@@ -69,10 +69,19 @@ export function useGroupThreads(scope: ChatScope | undefined) {
   const state = useRemoteValue(
     group ? `groupthreads:${scopeKey(group)}` : undefined,
     async (signal) => {
-      const tasks = await readGroupTasks(runtime, (group as ChatScope).id, "open", signal);
-      return tasks.map((task) => task.threadConversationId);
+      if (!group) return [];
+      const tasks: GroupTask[] = [];
+      let before: string | undefined;
+      for (;;) {
+        const page = await readGroupTasks(runtime, group.id, "open", signal, before);
+        tasks.push(...page);
+        if (page.length < 30) return tasks;
+        const next = page.at(-1)?.id;
+        if (!next || next === before) throw new Error("Repeated group task cursor");
+        before = next;
+      }
     },
     ["group.task", "groups.changed", "approval.requested"],
   );
-  return useMemo(() => new Set(state.value ?? []), [state.value]);
+  return state.value ?? [];
 }

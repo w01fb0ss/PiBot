@@ -9,6 +9,7 @@ import type {
 
 declare global {
   interface Window {
+    readonly pibotSkillDrop?: (files: File[]) => Promise<string | null>;
     readonly pibotStartup?: {
       readonly titleOverlay?: boolean;
       locale(): Promise<string>;

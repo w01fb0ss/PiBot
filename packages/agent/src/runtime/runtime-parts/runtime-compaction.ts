@@ -102,7 +102,8 @@ export function createCompactionOperations({
       const accounting = new RequestAccounting();
       const state: CompactionState = {
         signal: request.signal,
-        summaryModel: (signal) => summaryModel(runtime, model, signal),
+        summaryModel: async (signal) =>
+          request.compactWithSelectedModel ? model : summaryModel(runtime, model, signal),
         unattended: request.fork,
         redact: request.redact,
         cache: checkpointCache,

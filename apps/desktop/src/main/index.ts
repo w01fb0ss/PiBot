@@ -1,7 +1,7 @@
 import { mkdirSync, realpathSync } from "node:fs";
 import { enableCompileCache, flushCompileCache } from "node:module";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { resolveDataDir } from "@pibot/storage/data-dir";
 import { app } from "electron";
@@ -32,7 +32,11 @@ app.on("web-contents-created", (_event, contents) => {
   contents.setWebRTCIPHandlingPolicy("disable_non_proxied_udp");
 });
 const entryAtMs = Math.round(performance.now());
-const originalEnv = Object.freeze({ ...process.env });
+const { PIBOT_DATA_DIR_DISPLAY_PATH: inheritedDataDirDisplayPath, ...entryEnv } = process.env;
+// Feed CLI-only launches through the same data-root and child-launch logic as env overrides.
+if (!entryEnv.PIBOT_DATA_DIR && app.commandLine.hasSwitch("user-data-dir"))
+  entryEnv.PIBOT_DATA_DIR = app.commandLine.getSwitchValue("user-data-dir");
+const originalEnv = Object.freeze(entryEnv);
 const dev = !app.isPackaged;
 const background = process.argv.includes("--pibot-background");
 const embedded = false;
@@ -90,7 +94,23 @@ if (process.argv.includes("--sandbox-doctor")) {
       dev,
     });
     mkdirSync(requested, { recursive: true, mode: 0o700 });
-    const dataDir = realpathSync(requested);
+    // Use the same Windows identity as the brain's asynchronous filesystem checks and journals.
+    const dataDir =
+      process.platform === "win32" ? realpathSync.native(requested) : realpathSync(requested);
+    // A paired process pins the actual root in PIBOT_DATA_DIR and forwards its display spelling
+    // separately. Keep that hint tied to the same root if the drive's mapping has changed.
+    let dataDirDisplayPath: string | undefined;
+    if (process.platform === "win32") {
+      dataDirDisplayPath = resolve(requested);
+      if (inheritedDataDirDisplayPath && isAbsolute(inheritedDataDirDisplayPath)) {
+        try {
+          if (realpathSync.native(inheritedDataDirDisplayPath) === dataDir)
+            dataDirDisplayPath = inheritedDataDirDisplayPath;
+        } catch {
+          // The alias may have disappeared; the resolved data directory is still available.
+        }
+      }
+    }
     app.setName(dev ? "Pi Bot Dev" : "Pi Bot");
     if (process.platform === "win32" && !dev) app.setAppUserModelId("app.pibot.desktop");
     const roleDir = background || embedded ? dataDir : join(dataDir, "gui-instance");
@@ -139,6 +159,7 @@ if (process.argv.includes("--sandbox-doctor")) {
               ownerLaunchAtMs = Math.round(performance.now());
               prelaunch = prelaunchBackground({
                 dataDir,
+                dataDirDisplayPath,
                 version,
                 dev,
                 env: originalEnv,
@@ -185,6 +206,7 @@ if (process.argv.includes("--sandbox-doctor")) {
             mainLogger = logger;
           },
           dataDir,
+          dataDirDisplayPath,
           version,
           dev,
           background,

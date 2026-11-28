@@ -18,19 +18,32 @@ export type RoutineNotice = {
  */
 export interface UserMessageDisplay {
   inputOrigin?: "user" | "acp" | "phone";
+  phoneDeviceId?: string;
   forward?: MessageForward;
   /** The default Pi sent this message on the person's request (display label only). */
   dispatch?: MessageDispatch;
   routineNotice?: RoutineNotice;
+  /**
+   * The fix the person tapped on the default Pi's health-check card. The text stays plain words;
+   * this carries the exact item and fix for the program (the repair tool reads it), never the model.
+   */
+  repairRequest?: { check: string; item: string; action: string };
+  /** The user's answer without the prompt and option description supplied to the model. */
+  questionAnswerText?: string;
 }
 
 /** The `usage` fields of a new user message (quote snapshot and display hints), if any. */
 export function userMessageUsage(quote: MessageQuote | undefined, display?: UserMessageDisplay) {
   const usage = {
+    ...(display?.phoneDeviceId ? { phoneDeviceId: display.phoneDeviceId } : {}),
     ...(display?.inputOrigin ? { inputOrigin: display.inputOrigin } : {}),
     ...(quote ? { messageQuote: quote } : {}),
     ...(display?.forward ? { forward: display.forward } : {}),
     ...(display?.dispatch ? { dispatch: display.dispatch } : {}),
+    ...(display?.repairRequest ? { repairRequest: display.repairRequest } : {}),
+    ...(display?.questionAnswerText !== undefined
+      ? { questionAnswerText: display.questionAnswerText }
+      : {}),
     ...(display?.routineNotice ? { systemEvent: true, routineNotice: display.routineNotice } : {}),
   };
   return Object.keys(usage).length ? { usage } : {};

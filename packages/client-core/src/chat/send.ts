@@ -5,8 +5,9 @@ import {
   type Message,
   RpcError,
   RpcErrorCodes,
+  slashHelpRequest,
 } from "@pibot/protocol";
-import { activeRun, currentImageModel } from "./selectors.ts";
+import { activeRun } from "./selectors.ts";
 import type { ChatSession } from "./session.ts";
 
 export async function send(
@@ -27,7 +28,6 @@ export async function send(
     this.state.historyError ||
     this.state.metadataLoading ||
     this.state.metadataError ||
-    (bot.category === "image" && !currentImageModel(this.state)) ||
     this.state.pending ||
     (activeRun(this.state) && !mode) ||
     this.uncertainAppend ||
@@ -42,8 +42,20 @@ export async function send(
   // Image HTTP requests have no live session; followUp is a new queued run.
   // A pending approval keeps the current run alive; a new request belongs to the durable
   // run queue, never the SDK steering buffer that may discard input when a tool is refused.
-  if (currentRun && mode && mode !== "queue" && bot.category !== "image" && !replyToMessageId)
-    return this.append(currentRun, mode, text, attachments, attachmentIds);
+  // When chat.append reports append_unavailable (phase cannot append and nothing persisted),
+  // fall through to chat.send so the message queues as the next turn of the same topic.
+  if (
+    currentRun &&
+    mode &&
+    mode !== "queue" &&
+    bot.category !== "image" &&
+    !replyToMessageId &&
+    (bot.kind === "agent" || attachments.length || attachmentIds.length || !slashHelpRequest(text))
+  ) {
+    const appended = await this.append(currentRun, mode, text, attachments, attachmentIds);
+    if (appended !== "fallback_queue") return appended;
+    if (this.disposed) return false;
+  }
   this.earlyEvents = [];
   this.earlySize = 0;
   // An older history request can return a checkpoint of the newly accepted send.
@@ -63,7 +75,7 @@ export async function send(
       // Empty legacy sends lack identity until authoritative history; never invent a Bot UUID as conversation ID.
       conversationId:
         result.conversationId ?? this.target.topicId ?? this.state.conversationId ?? "",
-      runId: result.runId,
+      runId: result.localReply ? null : result.runId,
       errorCode: null,
       usage: null,
       createdAt: now,
@@ -81,7 +93,7 @@ export async function send(
         status: "done",
         ...(result.attachments ? { attachments: result.attachments } : {}),
       },
-      {
+      result.localReply ?? {
         ...base,
         id: result.assistantMessageId,
         usage: { chatReplyTo: result.userMessageId },

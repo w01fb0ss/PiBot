@@ -91,7 +91,7 @@ export function remoteCapability(options: RemoteOptions = {}): BrainCapability {
         return { ok: true };
       });
       ctx.rpc.handle("devices.endpoints", async (params) => endpointDevices(service, params));
-      ctx.rpc.handle("devices.list", async (params) => service.list(params));
+      ctx.rpc.handle("devices.list", (params) => service.listWithCodes(params));
       ctx.rpc.handle("devices.rename", ({ id, name }) => service.rename(id, name));
       ctx.rpc.handle("devices.revoke", ({ id, removeAnyway }) => service.revoke(id, removeAnyway));
       // Which models and Bots each phone may use while the computer is unreachable.

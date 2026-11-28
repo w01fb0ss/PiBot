@@ -33,6 +33,7 @@ export function ToolActivity({
   refresh,
   decide,
   focusToolCallId,
+  inlineApprovals,
   slim = false,
 }: {
   messageId: string;
@@ -48,6 +49,7 @@ export function ToolActivity({
   refresh(): Promise<void>;
   decide: ApprovalDecision;
   focusToolCallId?: string;
+  inlineApprovals?: boolean;
   /** Maintainers 2026-11-13 (layout A): under a direct chat's sentence the finished steps are one quiet line. */
   slim?: boolean;
 }) {
@@ -57,7 +59,8 @@ export function ToolActivity({
   // A step moves from current to history without losing the user's explicit choice.
   const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set());
   const contentId = useId();
-  const { steps, unmatched } = toolSteps(messageId, records, live, approvals);
+  const { steps, unmatched: unattached } = toolSteps(messageId, records, live, approvals);
+  const unmatched = inlineApprovals ? [] : unattached;
   const ended = messageStatus !== "streaming";
   // Computer steps are read once per run and only when the reply used computer or browser tools.
   const computer = steps.some((step) => isComputerTool(step.tool.tool));
@@ -91,7 +94,10 @@ export function ToolActivity({
         (step) => !needsAttention(step) && ["pending", "running"].includes(step.tool.status),
       );
   const isPinned = (step: (typeof steps)[number]) =>
-    opened.has(step.tool.toolCallId) || !!sandboxNotices(runId, step.tool.toolCallId)?.length;
+    opened.has(step.tool.toolCallId) ||
+    step.tool.denialReason === "external_agent_explicit_always_required" ||
+    !!step.tool.settingsAction ||
+    !!sandboxNotices(runId, step.tool.toolCallId)?.length;
   const pinned = grouped.filter(isPinned);
   const folded = grouped.filter((step) => !isPinned(step));
   // Allowed by YOLO (no card, or a card YOLO let through) reads that way, not "You allowed".
@@ -134,7 +140,8 @@ export function ToolActivity({
         )
       }
     >
-      {step.approval &&
+      {!inlineApprovals &&
+        step.approval &&
         !yoloOf(step) &&
         ("id" in step.approval ? (
           <ApprovalCard

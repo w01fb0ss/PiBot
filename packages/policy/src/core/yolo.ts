@@ -1,6 +1,7 @@
 import { BOT_SEND_CONFIRMATION_REASON, WINDOWS_ORDINARY_COMMAND } from "./confirmation-reasons.ts";
 import { yoloMustAsk } from "./connection-confirmation.ts";
 import { createPolicyTrace, explainPolicyResult } from "./explain.ts";
+import { PI_REPAIR_CONFIRM } from "./pi-manager.ts";
 import type { PolicyResult } from "./types.ts";
 
 /** Reason code for a decision the conversation's YOLO switch allowed. */
@@ -33,7 +34,10 @@ export function applyYolo(
     (yoloMustAsk(result) && !explicitUnisolated) ||
     // Owner decision 2026-10-23: spending money is never implied by "stop asking"; only a
     // remembered paid_image grant or a routine pre-approval skips the paid card.
-    result.reason === "paid_generation_confirmation";
+    result.reason === "paid_generation_confirmation" ||
+    // Owner decision 2026-11-25: stopping a live run, ending a plan or closing a task is never
+    // implied by "stop asking" either; Pi's repair card stays.
+    result.reason === PI_REPAIR_CONFIRM;
   const last = result.explanation?.findLast((step) => step.effect !== "info");
   if (unchanged && last?.effect === result.decision) return result;
   // Brain can still supply legacy results (phase one). Never copy its free-form reason text.

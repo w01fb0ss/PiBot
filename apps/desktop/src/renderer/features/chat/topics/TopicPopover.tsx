@@ -91,7 +91,7 @@ export function TopicPopover({
         onClick={() => setOpen((value) => !value)}
       >
         <span>{title}</span>
-        <Icon name="chevron" size={12} />
+        <Icon name="chevron" size={12} className={styles.chevron} />
       </button>
       {open &&
         createPortal(

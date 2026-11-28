@@ -9,55 +9,26 @@ export interface IsolationRemedy {
   en: string;
 }
 
-/** Shared wording contains no host values; the same sysctl advice is shown on every surface. */
+/** A host-wide namespace restriction needs a host whose policy permits isolation. */
 export const linuxUserNamespaceRemedies = {
   linux_userns_disabled: {
-    zh: "kernel.unprivileged_userns_clone=0 禁止非特权用户命名空间。请让管理员确认本机安全策略后运行 sudo sysctl -w kernel.unprivileged_userns_clone=1，然后重新启动 Pi Bot 或执行端；这会允许本机其他程序创建用户命名空间。",
-    en: "kernel.unprivileged_userns_clone=0 disables unprivileged user namespaces. Ask an administrator to review the security policy, then run sudo sysctl -w kernel.unprivileged_userns_clone=1 and restart Pi Bot or the runner. This also enables user namespaces for other programs.",
+    zh: "本机的安全策略（kernel.unprivileged_userns_clone=0）禁止创建非特权用户命名空间。请在支持非特权用户命名空间的主机上运行 Pi Bot 或执行端。",
+    en: "This host's security policy (kernel.unprivileged_userns_clone=0) blocks unprivileged user namespaces. Run Pi Bot or the runner on a host that supports them.",
   },
   linux_userns_limit_zero: {
-    zh: "user.max_user_namespaces=0 禁止创建用户命名空间。请让管理员按本机安全策略设置非零额度，例如 sudo sysctl -w user.max_user_namespaces=15000，然后重新启动 Pi Bot 或执行端；这会允许本机其他程序创建用户命名空间。",
-    en: "user.max_user_namespaces=0 prevents user namespace creation. Ask an administrator to set a nonzero limit under the local security policy, for example sudo sysctl -w user.max_user_namespaces=15000, then restart Pi Bot or the runner. This also permits user namespaces for other programs.",
+    zh: "本机的安全策略（user.max_user_namespaces=0）禁止创建用户命名空间。请在允许创建用户命名空间的主机上运行 Pi Bot 或执行端。",
+    en: "This host's security policy (user.max_user_namespaces=0) blocks user namespace creation. Run Pi Bot or the runner on a host that permits user namespaces.",
   },
-} as const;
-
-export const linuxUserNamespacePersistence = {
-  zh: "sysctl -w 只对当前系统运行有效；如需持久化，由管理员将相应设置写入 /etc/sysctl.d/ 下的文件。启用 user namespace 会允许非特权程序使用该内核能力。",
-  en: "sysctl -w lasts for the current boot only. For persistence, an administrator can write the setting under /etc/sysctl.d/. Enabling user namespaces lets unprivileged programs use this kernel capability.",
-} as const;
-
-/**
- * Only the desktop ships as an AppImage. The runner reuses the same AppArmor profile
- * advice but has no AppImage entry, so its wording must not tell the operator to launch one.
- */
-function appArmorRemedy(
-  profile: string,
-  configuration: string,
-  restart: { zh: string; en: string },
-): IsolationRemedy {
-  const command = `sudo apparmor_parser -r ${configuration}`;
-  return {
-    zh: `实际沙箱探测失败，系统同时启用了 AppArmor 的非特权 user namespace 限制（linux_userns_restricted）。管理员可把下方 profile 保存到 ${configuration}，再运行 ${command}，${restart.zh}。\n\n${profile}\n\n另一种办法：sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0。这会放宽本机所有程序的限制，削弱这条路径上的 AppArmor 保护。${linuxUserNamespacePersistence.zh}`,
-    en: `The actual sandbox probe failed while AppArmor restricts unprivileged user namespaces (linux_userns_restricted). An administrator can save the profile below to ${configuration}, run ${command}, and ${restart.en}.\n\n${profile}\n\nAlternatively: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0. This relaxes the restriction for every application and weakens AppArmor protection along this path. ${linuxUserNamespacePersistence.en}`,
-  };
-}
-
-const appImageRestart = {
-  zh: "然后从原入口重新启动（AppImage 请从原 AppImage 启动，不要直接运行临时挂载目录的二进制）",
-  en: "then restart from the original entry (for AppImage, launch the original AppImage rather than a binary in its temporary mount)",
-} as const;
-
-const runnerRestart = {
-  zh: "然后重新启动执行端（pibot runner）",
-  en: "then restart the execution device's pibot runner",
 } as const;
 
 /** A template only: the host escapes the local AppImage path before substitution in the dialog. */
-export const linuxAppImageRemedy = appArmorRemedy(
-  'abi <abi/4.0>,\ninclude <tunables/global>\nprofile pibot "{appImagePath}" flags=(unconfined) {\n  userns,\n}',
-  "/etc/apparmor.d/pibot",
-  appImageRestart,
-);
+const appImageProfile =
+  'abi <abi/4.0>,\ninclude <tunables/global>\nprofile pi-bot-appimage "{appImagePath}" flags=(unconfined) {\n  userns,\n}';
+
+export const linuxAppImageRemedy: IsolationRemedy = {
+  zh: `管理员可将下方配置保存为新文件 /etc/apparmor.d/pi-bot-appimage，再运行 sudo apparmor_parser -r /etc/apparmor.d/pi-bot-appimage，然后从同一位置重新打开 Pi Bot。请勿覆盖已有文件。若文件或配置名称已被使用，请为新配置选用另外的名称，并在命令中使用新文件路径。\n\n${appImageProfile}`,
+  en: `An administrator can save the profile below as a new file at /etc/apparmor.d/pi-bot-appimage, run sudo apparmor_parser -r /etc/apparmor.d/pi-bot-appimage, then reopen Pi Bot from the same location. Do not overwrite existing files. If the file or profile name is already in use, choose a unique name for the new profile and use the new file path in the command.\n\n${appImageProfile}`,
+};
 
 /** AppArmor quoted path syntax still treats glob characters specially. Never generate a wildcard. */
 export function appArmorExecutable(path: string | undefined): string {
@@ -66,55 +37,40 @@ export function appArmorExecutable(path: string | undefined): string {
   return path.replace(/[\\"*?[\]{}^]/g, (character) => `\\${character}`);
 }
 
-const bwrapAppArmorRemedy = (restart: { zh: string; en: string }) =>
-  appArmorRemedy(
-    "abi <abi/4.0>,\ninclude <tunables/global>\nprofile bwrap /usr/bin/bwrap flags=(unconfined) {\n  userns,\n  include if exists <local/bwrap>\n}",
-    "/etc/apparmor.d/bwrap",
-    restart,
-  );
-
 export const linuxIsolationRemedies = {
   ...linuxUserNamespaceRemedies,
-  linux_userns_restricted: bwrapAppArmorRemedy(appImageRestart),
+  linux_userns_restricted: {
+    zh: "沙箱探测在创建用户命名空间或设置其权限时失败。请让管理员运行 sudo journalctl -k -g 'apparmor=\"DENIED\"'，确认 AppArmor 拒绝记录中显示的程序和配置。若 /usr/bin/bwrap 已有允许 userns 的 /etc/apparmor.d/bwrap 配置但未加载，可运行 sudo apparmor_parser -r /etc/apparmor.d/bwrap。若被拒绝的是其他程序，由管理员按其实际路径检查配置。修复后重启 Pi Bot 或执行端。",
+    en: "The sandbox probe failed while creating a user namespace or setting up its permissions. Ask an administrator to run sudo journalctl -k -g 'apparmor=\"DENIED\"' and check which executable and profile AppArmor names. If /usr/bin/bwrap already has a userns-enabled profile at /etc/apparmor.d/bwrap and it has yet to load, run sudo apparmor_parser -r /etc/apparmor.d/bwrap. For another executable, have the administrator review the profile attached to its exact path. Restart Pi Bot or the runner after the fix.",
+  },
+  linux_ripgrep_unavailable: {
+    zh: "无法执行命令隔离所需的 ripgrep。请检查安装包完整性以及随包提供的 rg 是否可执行，然后重启 Pi Bot 或执行端。",
+    en: "Command isolation could not find or execute ripgrep. Check the package integrity and whether its bundled rg is executable, then restart Pi Bot or the runner.",
+  },
+  linux_sandbox_host_unavailable: {
+    zh: "命令隔离的宿主进程无法载入随包提供的资源。请重新安装 Pi Bot 或执行端，然后重启。",
+    en: "The command isolation host could not load its bundled resources. Reinstall Pi Bot or the runner, then restart it.",
+  },
   linux_bubblewrap_missing: {
-    zh: "没有找到 bubblewrap（bwrap），命令隔离需要它。请安装（Debian/Ubuntu：sudo apt install bubblewrap；Fedora：sudo dnf install bubblewrap），然后重启执行端的 pibot runner。",
-    en: "bubblewrap (bwrap) is missing and command isolation needs it. Install it (Debian/Ubuntu: sudo apt install bubblewrap; Fedora: sudo dnf install bubblewrap), then restart pibot runner on the execution device.",
+    zh: "命令隔离在宿主进程的 PATH 中找不到 bubblewrap（bwrap）。已安装时，请检查启动环境的 PATH。未安装时，Debian/Ubuntu 可运行 sudo apt install bubblewrap，Fedora 可运行 sudo dnf install bubblewrap。修复后重启 Pi Bot 或执行端。",
+    en: "The isolation host could not find bubblewrap (bwrap) on its PATH. If installed, check the launch environment's PATH. To install it, run sudo apt install bubblewrap on Debian/Ubuntu or sudo dnf install bubblewrap on Fedora. Restart Pi Bot or the runner after the fix.",
   },
   linux_socat_missing: {
-    zh: "没有找到 socat，命令隔离用它转发沙箱内的网络访问。请安装（Debian/Ubuntu：sudo apt install socat；Fedora：sudo dnf install socat），然后重启执行端的 pibot runner。",
-    en: "socat is missing; command isolation uses it to forward network access inside the sandbox. Install it (Debian/Ubuntu: sudo apt install socat; Fedora: sudo dnf install socat), then restart pibot runner on the execution device.",
+    zh: "命令隔离在宿主进程的 PATH 中找不到 socat。已安装时，请检查启动环境的 PATH。未安装时，Debian/Ubuntu 可运行 sudo apt install socat，Fedora 可运行 sudo dnf install socat。修复后重启 Pi Bot 或执行端。",
+    en: "The isolation host could not find socat on its PATH. If installed, check the launch environment's PATH. To install it, run sudo apt install socat on Debian/Ubuntu or sudo dnf install socat on Fedora. Restart Pi Bot or the runner after the fix.",
   },
   linux_seccomp_helper_unavailable: {
     zh: "无法执行命令隔离的 apply-seccomp 辅助程序。请确认安装包完整、辅助程序可执行，且其目录在沙箱内只读可见；可重新安装执行端后重启。不要开放整个临时目录，也不要关闭沙箱。",
     en: "The apply-seccomp isolation helper could not run. Check package integrity, executable permissions, and readonly visibility of its directory inside the sandbox; reinstall the execution device package and restart if needed. Keep the rest of the temporary directory hidden and the sandbox enabled.",
   },
   sandbox_dependencies_or_runtime_unavailable: {
-    zh: "隔离组件缺失或无法启动。请确认已安装 bubblewrap 和 socat，并查看执行端日志里的隔离信息（pibot runner status 也会显示）。",
-    en: "The isolation components are missing or failed to start. Check that bubblewrap and socat are installed and read the isolation entry in the execution device's log (pibot runner status shows it too).",
+    zh: "隔离探测失败。请查看 pibot runner status 中的失败阶段和报错摘要；若失败发生在沙箱内，请让管理员检查同一时间的内核拒绝日志。",
+    en: "The isolation probe failed. Check pibot runner status for the failing stage and error summary. If the failure occurred inside the sandbox, ask an administrator to check the kernel audit log for denials at that time.",
   },
 } satisfies Record<string, IsolationRemedy>;
 
-/** The runner has no AppImage, so its remedy text must not mention one. */
-export const linuxRunnerIsolationRemedies = {
-  ...linuxIsolationRemedies,
-  linux_userns_restricted: bwrapAppArmorRemedy(runnerRestart),
-} satisfies Record<string, IsolationRemedy>;
-
-function remedyFrom(
-  remedies: Record<string, IsolationRemedy>,
-  reason: string | undefined,
-): IsolationRemedy | undefined {
-  return reason && Object.hasOwn(remedies, reason) ? remedies[reason] : undefined;
-}
-
 /** Only Linux codes carry a concrete fix; other platforms report their state without one. */
 export function linuxIsolationRemedy(reason: string | undefined): IsolationRemedy | undefined {
-  return remedyFrom(linuxIsolationRemedies, reason);
-}
-
-/** Same codes for the headless runner, with fixes that apply to a service, not an AppImage. */
-export function linuxRunnerIsolationRemedy(
-  reason: string | undefined,
-): IsolationRemedy | undefined {
-  return remedyFrom(linuxRunnerIsolationRemedies, reason);
+  const remedies: Record<string, IsolationRemedy> = linuxIsolationRemedies;
+  return reason && Object.hasOwn(remedies, reason) ? remedies[reason] : undefined;
 }

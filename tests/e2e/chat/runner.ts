@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import type { AcceptanceResult } from "../supervisor.ts";
 import { dmDone, type Fixture, fixture, groupIdle, sessionEntries, until } from "./harness.ts";
+import { importedTopicScenario } from "./imported-topics.ts";
 import { parallelToolScenarios } from "./parallel-tools.ts";
+import { runVideoScenario } from "./video.ts";
 
 // ASCII keeps the SDK's chars/4 cut-point estimate aligned with the runtime's CJK-aware budget.
 // The history outgrows keepRecentTokens so the older turn is worth checkpointing, and the two
@@ -35,6 +37,8 @@ async function exercise(root: string, name: string, scenario: string, action: Ex
 
 export async function runAcceptance(root: string) {
   const results: AcceptanceResult[] = [];
+  if (process.argv[2] === "video") return [await runVideoScenario(root)];
+  if (process.argv[2] === "imported-topics") return [await importedTopicScenario(root)];
   const exerciseCase = async (name: string, scenario: string, action: ExerciseAction) => {
     const result = await exercise(root, name, scenario, action);
     if (result) results.push(result);
@@ -337,5 +341,6 @@ export async function runAcceptance(root: string) {
     assert(messages.some((message) => message.id === receipt.assistantMessageId));
   });
   await parallelToolScenarios(exerciseCase);
+  if (!process.argv[2]) results.push(await importedTopicScenario(root));
   return results;
 }

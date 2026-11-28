@@ -10,6 +10,7 @@ const output = $.NSFileHandle.fileHandleWithStandardOutput;
 const events = [];
 let partial = "",
   paired = false,
+  connecting = false,
   window,
   field,
   status,
@@ -38,6 +39,7 @@ ObjC.registerSubclass({
     pair: {
       types: ["void", []],
       implementation: () => {
+        if (connecting) return;
         if (paired) {
           const alert = $.NSAlert.alloc.init;
           alert.messageText = l("更换已配对的电脑？", "Replace the paired computer?");
@@ -47,18 +49,33 @@ ObjC.registerSubclass({
         }
         const prompt = $.NSAlert.alloc.init;
         prompt.messageText = l(
-          "粘贴电脑上「添加执行端」给出的配对码：",
-          "Paste the code from Add runner on your computer:",
+          "在主电脑的「设置 › 设备 › 添加设备 › 另一台电脑 / 服务器」复制配对码，再粘贴到这里。",
+          "On your main computer, go to Settings › Devices › Add device › Another computer / server. Copy the pairing code and paste it here.",
         );
         const input = $.NSTextField.alloc.initWithFrame($.NSMakeRect(0, 0, 420, 26));
         prompt.accessoryView = input;
         prompt.addButtonWithTitle(l("配对", "Pair"));
         prompt.addButtonWithTitle(l("取消", "Cancel"));
-        prompt.addButtonWithTitle(l("显示本机配对码（旧方式）", "Show local code (legacy)"));
+        prompt.addButtonWithTitle(l("显示本机配对码", "Show code from this computer"));
         const result = prompt.runModal;
         if (result === $.NSAlertFirstButtonReturn)
           emit("pair-code:" + ObjC.unwrap(input.stringValue));
         else if (result === $.NSAlertThirdButtonReturn) emit("pair");
+      },
+    },
+    unpair: {
+      types: ["void", []],
+      implementation: () => {
+        const alert = $.NSAlert.alloc.init;
+        if (!paired || connecting) return;
+        alert.messageText = l("解除配对？", "Unpair this computer?");
+        alert.informativeText = l(
+          "这台执行端会停止接收已配对设备的任务。要再次使用，请重新配对。",
+          "Pi Bot Runner will stop accepting work from paired devices. Pair again to use it.",
+        );
+        alert.addButtonWithTitle(l("解除配对", "Unpair"));
+        alert.addButtonWithTitle(l("取消", "Cancel"));
+        if (alert.runModal === $.NSAlertFirstButtonReturn) emit("unpair");
       },
     },
     login: {
@@ -123,7 +140,11 @@ const menu = $.NSMenu.alloc.init;
 const state = item("Pi Bot Runner");
 state.enabled = false;
 menu.addItem(state);
-menu.addItem(item(l("配对…", "Pair…"), "pair", actions));
+const pairItem = item(l("配对…", "Pair…"), "pair", actions);
+const unpairItem = item(l("解除配对…", "Unpair…"), "unpair", actions);
+unpairItem.hidden = true;
+menu.addItem(pairItem);
+menu.addItem(unpairItem);
 menu.addItem(item(l("打开日志", "Open logs"), "logs", actions));
 const permissions = item(l("权限", "Permissions"));
 const permissionsMenu = $.NSMenu.alloc.init;
@@ -172,32 +193,43 @@ function apply(value) {
   }
   if (value.error) {
     const alert = $.NSAlert.alloc.init;
-    alert.messageText =
-      value.error === "runner_pair_failed"
-        ? l(
-            "配对码无效或已过期，请在电脑上重新生成",
-            "Invalid or expired code. Generate a new code on your computer.",
-          )
-        : l("操作失败，请查看日志。", "Operation failed. Open logs for details.");
+    alert.messageText = l(value.error.zh, value.error.en);
     alert.runModal;
+  }
+  if (typeof value.connecting === "boolean") {
+    connecting = value.connecting;
+    if (connecting) {
+      state.title = l("正在连接…", "Connecting…");
+      status.button.toolTip = state.title;
+    }
   }
   if (value.status) {
     const s = value.status;
     paired = s.paired;
+    unpairItem.hidden = !paired;
     const tasks = (s.runningCommands || 0) + (s.backgroundTasks || 0);
-    const label =
-      (s.name || "") +
-      " · " +
-      (!paired
+    const paths = {
+      lan: l("同一网络直连", "Direct on the same network"),
+      address: l("直连", "Direct"),
+      punched: l("跨网络直连", "Direct across networks"),
+      relay: l("经中继转发", "Via relay"),
+    };
+    const label = connecting
+      ? l("正在连接…", "Connecting…")
+      : !paired
         ? l("未配对", "Unpaired")
-        : s.connection === "online"
-          ? l("在线", "Online")
-          : l("离线", "Offline")) +
-      " · " +
-      (s.path || "") +
-      " · " +
-      l("任务：", "Tasks: ") +
-      tasks;
+        : [
+            s.name,
+            s.connection === "online"
+              ? l("在线", "Online")
+              : s.connection === "connecting" || s.connection === "reconnecting"
+                ? l("正在连接…", "Connecting…")
+                : l("离线", "Offline"),
+            s.connection === "online" ? paths[s.path] : "",
+            l("任务：", "Tasks: ") + tasks,
+          ]
+            .filter(Boolean)
+            .join(" · ");
     state.title = label;
     status.button.toolTip = label;
     if (value.icon && (lastIcon !== value.icon || lastTasks !== tasks)) {
@@ -215,7 +247,6 @@ function apply(value) {
       lastTasks = tasks;
     }
   }
-  if (value.connecting) value.pairing = l("正在连接 ", "Connecting to ") + value.connecting + " …";
   if (Object.hasOwn(value, "pairing")) {
     if (!value.pairing) {
       if (window) window.orderOut(null);

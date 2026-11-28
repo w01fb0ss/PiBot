@@ -68,8 +68,10 @@ export async function resolveRunWorkplace(
     workplace = await (local.collaboration?.workplace?.(context, signal) ??
       groupWorkplace(local, context.botId, group, signal));
   } else {
+    // This is an execution snapshot. A command's actual read protection is built at dispatch.
+    const options = { annotateCommandReadBlocked: false };
     try {
-      workplace = await local.workplaces.context(context.botId, signal, selection);
+      workplace = await local.workplaces.context(context.botId, signal, selection, options);
     } catch (error) {
       const botDefaultStale =
         routine &&
@@ -81,10 +83,12 @@ export async function resolveRunWorkplace(
           "Working folder changed; associate it again",
         ].includes(error.message);
       if (!botDefaultStale) throw error;
-      workplace = await local.workplaces.context(context.botId, signal, {
-        selection: { primary: "home", readonly: [] },
-        revision: 0,
-      });
+      workplace = await local.workplaces.context(
+        context.botId,
+        signal,
+        { selection: { primary: "home", readonly: [] }, revision: 0 },
+        options,
+      );
     }
   }
   await migrateOutputsOnce(local, context, workplace, signal);

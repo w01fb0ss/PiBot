@@ -7,7 +7,17 @@
 // CHILD_NODE_VERSION in packages/execution/src/runtime/child-node.ts.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  copyFile,
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -72,6 +82,12 @@ export async function prepareNodeHelper(desktop, platform, arch, binDirectory) {
     await mkdir(binDirectory, { recursive: true });
     const target = join(binDirectory, executable);
     await copyFile(join(root, platform === "win32" ? executable : join("bin", executable)), target);
+    // npm comes from the same verified archive as Node. Use its JS entry on every platform.
+    await cp(
+      join(root, ...(platform === "win32" ? [] : ["lib"]), "node_modules", "npm"),
+      join(binDirectory, "npm"),
+      { recursive: true },
+    );
     await copyFile(join(root, "LICENSE"), join(binDirectory, "node-LICENSE"));
     if (platform !== "win32") await chmod(target, 0o755);
     const before = (await stat(target)).size;

@@ -37,7 +37,7 @@ const TAGS: Record<ContextKind, string> = {
   backgroundResults: "backgroundResults",
 };
 const TAG_PATTERN = new RegExp(
-  `</?(?:${[...Object.values(TAGS), "execution", "routineResume", "runResume", "routineLedger", "previousRoutineResult"].join("|")})`,
+  `</?(?:${[...Object.values(TAGS), "execution", "routineResume", "runResume", "routineLedger", "previousRoutineResult", "importedHistory"].join("|")})`,
   "gi",
 );
 
@@ -45,16 +45,18 @@ const TAG_PATTERN = new RegExp(
  * The text keeps its code and Markdown; only what could close this block early or pose as Pi
  * Bot's own state / reference opening is neutralized, deterministically (same input, same bytes).
  */
-function neutral(text: string) {
+export function neutralizeReference(text: string) {
   return text
     .replace(TAG_PATTERN, (tag) => tag.replace("<", "＜"))
     .replaceAll(STATE_MARKER, STATE_MARKER.replace("[", "［"))
     .replaceAll(REFERENCE_MARKER, REFERENCE_MARKER.replace("[", "［"));
 }
 
-const attribute = (value: string) => JSON.stringify(neutral(value));
+const attribute = (value: string) => JSON.stringify(neutralizeReference(value));
+export const untrustedBlock = (tag: string, body: string, attributes = "") =>
+  `<${tag}${attributes} untrusted="true">\n${body}\n</${tag}>`;
 const block = (kind: ContextKind, body: string, attributes = "") =>
-  `<${TAGS[kind]}${attributes} untrusted="true">\n${body}\n</${TAGS[kind]}>`;
+  untrustedBlock(TAGS[kind], body, attributes);
 const workflowAttributes = (workflow: WorkflowSkillReference) =>
   ` name=${attribute(workflow.name)}${workflow.version ? ` version="${workflow.version}"` : ""} provenance="${workflow.provenance}"`;
 /** A kind the conversation showed earlier and the run no longer has (memory cleared, etc.). */
@@ -70,20 +72,33 @@ export function contextBlocks(
       ? {
           routineTopicReference: block(
             "routineTopicReference",
-            neutral(current.routineTopicReference),
+            neutralizeReference(current.routineTopicReference),
           ),
         }
       : {}),
     ...(current?.backgroundResults
-      ? { backgroundResults: block("backgroundResults", neutral(current.backgroundResults)) }
+      ? {
+          backgroundResults: block(
+            "backgroundResults",
+            neutralizeReference(current.backgroundResults),
+          ),
+        }
       : {}),
-    ...(current?.memory ? { memory: block("memory", neutral(current.memory)) } : {}),
-    ...(current?.workplace ? { workplace: block("workplace", neutral(current.workplace)) } : {}),
+    ...(current?.memory ? { memory: block("memory", neutralizeReference(current.memory)) } : {}),
+    ...(current?.workplace
+      ? { workplace: block("workplace", neutralizeReference(current.workplace)) }
+      : {}),
     ...(current?.projectNotes
-      ? { projectNotes: block("projectNotes", neutral(current.projectNotes)) }
+      ? { projectNotes: block("projectNotes", neutralizeReference(current.projectNotes)) }
       : {}),
     ...(workflow?.text
-      ? { workflow: block("workflow", neutral(workflow.text), workflowAttributes(workflow)) }
+      ? {
+          workflow: block(
+            "workflow",
+            neutralizeReference(workflow.text),
+            workflowAttributes(workflow),
+          ),
+        }
       : {}),
   };
 }

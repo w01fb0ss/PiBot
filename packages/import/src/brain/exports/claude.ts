@@ -1,10 +1,15 @@
-// Map Claude's visible human and assistant messages while keeping non-text blocks out of history.
+// Map Claude text and retain names and status from structured history.
 import { z } from "zod";
 import { ImportFailure } from "../adapter.ts";
+import { attachmentParts, ImportedToolParts, MAX_HISTORY_PARTS } from "../history-parts.ts";
 import { type ConversationItem, readableText } from "./text.ts";
 
 const stamp = z.iso.datetime({ offset: true });
 const conversation = z.object({
+  sensitive: z.literal(true).optional().catch(undefined),
+  excluded: z.literal(true).optional().catch(undefined),
+  memory_excluded: z.literal(true).optional().catch(undefined),
+  is_do_not_remember: z.literal(true).optional().catch(undefined),
   name: z.string().nullish(),
   created_at: stamp,
   updated_at: stamp.nullish(),
@@ -30,7 +35,11 @@ const block = z.object({ type: z.string(), text: z.string().optional() });
 
 const mediaKinds = new Set(["image", "document", "audio", "video", "file", "attachment"]);
 
-function* messageItems(raw: unknown, date: string): Generator<ConversationItem> {
+function* messageItems(
+  raw: unknown,
+  date: string,
+  tools: ImportedToolParts,
+): Generator<ConversationItem> {
   const parsed = message.safeParse(raw);
   if (!parsed.success) throw new ImportFailure("format");
   const item = parsed.data;
@@ -46,11 +55,16 @@ function* messageItems(raw: unknown, date: string): Generator<ConversationItem> 
   const attachments = Math.max(media, (item.attachments?.length ?? 0) + (item.files?.length ?? 0));
   if (attachments) yield { kind: "attachments", count: attachments };
   const text = readableText(parts) || readableText([item.text ?? ""]);
-  if (text)
+  const historyParts = [
+    ...tools.blocks(item.content),
+    ...attachmentParts([...(item.attachments ?? []), ...(item.files ?? [])]),
+  ].slice(0, MAX_HISTORY_PARTS);
+  if (text || historyParts.length)
     yield {
       kind: "message",
       role: item.sender === "human" ? "user" : "assistant",
       text,
+      ...(historyParts.length ? { historyParts } : {}),
       createdAt: item.created_at ?? date,
     };
 }
@@ -65,6 +79,12 @@ export function* claudeConversation(
   const uuid = project?.uuid || project_uuid;
   yield {
     kind: "topic",
+    ...(parsed.data.sensitive ||
+    parsed.data.excluded ||
+    parsed.data.memory_excluded ||
+    parsed.data.is_do_not_remember
+      ? { memoryExcluded: true as const }
+      : {}),
     title: (name ?? "").slice(0, 200),
     createdAt: created_at,
     updatedAt: updated_at ?? created_at,
@@ -72,8 +92,9 @@ export function* claudeConversation(
       ? { project: { key: claudeProjectKey(uuid), name: (project?.name ?? "").slice(0, 200) } }
       : {}),
   };
+  const tools = new ImportedToolParts();
   for (const chat of chat_messages) {
     signal.throwIfAborted();
-    yield* messageItems(chat, created_at);
+    yield* messageItems(chat, created_at, tools);
   }
 }

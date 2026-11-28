@@ -5,11 +5,24 @@ import {
   collaborationAuditFields,
   GroupToolError,
 } from "@pibot/brain/orchestration-kit";
-import { type GroupTask, type KernelMethodParams, RpcError, type Run } from "@pibot/protocol-base";
+import {
+  type GroupTask,
+  IdSchema,
+  type KernelMethodParams,
+  RpcError,
+  type Run,
+} from "@pibot/protocol-base";
 import { BotsRepo, ExecutionRepo, MessagesRepo, transaction } from "@pibot/storage";
+import { z } from "zod";
 import { annotateResearchResult } from "./group-reply-citations.ts";
 import type { GroupService } from "./group-service.ts";
-import { taskTarget } from "./group-task-targets.ts";
+import { staleTaskTarget, taskTarget } from "./group-task-targets.ts";
+
+const StaleTaskCloseSchema = z.strictObject({
+  groupId: IdSchema,
+  taskId: IdSchema,
+  summary: z.string().min(1).max(4000),
+});
 
 interface CompletionActor {
   botId: string;
@@ -20,6 +33,8 @@ interface CompletionActor {
   replaceContent?: boolean;
   resultText?: string;
   attachmentSourceMessageId?: string;
+  /** Health-repair stale-task cleanup: allows archived members and non-current group topics. */
+  staleCleanup?: boolean;
 }
 
 /**
@@ -285,8 +300,35 @@ export class GroupCompletion {
       });
     return pending;
   }
+  closeStale(params: { groupId: string; taskId: string; summary: string }) {
+    const pending = this.closeStaleNow(params);
+    this.requests.add(pending);
+    void pending
+      .finally(() => this.requests.delete(pending))
+      .catch(() => {
+        // The repair caller owns the rejection; shutdown only waits for accepted operations.
+      });
+    return pending;
+  }
   async stop() {
     await Promise.allSettled([...this.requests]);
+  }
+  private async closeStaleNow(raw: { groupId: string; taskId: string; summary: string }) {
+    const params = StaleTaskCloseSchema.parse(raw);
+    const group = this.service.active(params.groupId, undefined, undefined, true);
+    const task = staleTaskTarget(this.service, group, params.taskId);
+    await this.drain(task);
+    try {
+      const result = this.settle(task, params.summary, "cancelled", {
+        botId: task.assigneeBotId,
+        user: true,
+        staleCleanup: true,
+      });
+      result.notify();
+      return result.task;
+    } finally {
+      this.release(task.id);
+    }
   }
   private async resolveNow(params: KernelMethodParams["groups.tasks.resolve"]) {
     const group = this.service.active(params.groupId);
@@ -365,8 +407,10 @@ export class GroupCompletion {
   ) {
     const { service } = this;
     const committed = transaction(service.deps.db, () => {
-      const group = service.active(task.groupId);
-      const current = service.tasks.get(task.id);
+      const group = service.active(task.groupId, undefined, undefined, !!actor.staleCleanup);
+      const current = actor.staleCleanup
+        ? staleTaskTarget(service, group, task.id)
+        : service.tasks.get(task.id);
       if (!current || current.groupId !== task.groupId)
         throw new GroupToolError("这个群里没有该任务 / The task is not in this group.");
       if (current.status !== "open") return { task: current, created: false };

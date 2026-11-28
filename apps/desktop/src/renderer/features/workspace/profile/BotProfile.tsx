@@ -50,6 +50,7 @@ export function BotProfile({
   const actions = useBotPanelMenu(bot, editor.busy);
   // Internal tab ids stay stable for deep links; only the labels were renamed.
   const tab = navigation.botPanel?.tab ?? "details";
+  const importedBatch = navigation.botPanel?.importedBatch;
   return (
     <BotPanelFrame
       agent={bot?.kind === "agent"}
@@ -159,7 +160,13 @@ export function BotProfile({
       {bot && tab === "topics" && (
         <>
           <BotRoutines key={botId} botId={botId} />
-          <Topics botId={botId} conversationId={conversationId} draft={draft} />
+          <Topics
+            key={importedBatch?.key}
+            botId={botId}
+            conversationId={conversationId}
+            draft={draft}
+            importId={importedBatch?.id}
+          />
         </>
       )}
       {bot && tab === "memory" && (

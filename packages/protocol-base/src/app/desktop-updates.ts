@@ -13,6 +13,8 @@ export const DesktopUpdateReasonSchema = z.enum([
   "mac_unsigned",
   // Running from the disk image or a folder the user cannot write to.
   "mac_location",
+  // The .deb is managed by the package manager.
+  "linux_deb",
   // Only the AppImage can replace itself; tar.gz installs are updated by hand.
   "linux_format",
 ]);

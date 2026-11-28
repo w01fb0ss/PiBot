@@ -1,7 +1,7 @@
 import { type BigIntStats, constants } from "node:fs";
 import { lstat, open, opendir, realpath, unlink } from "node:fs/promises";
-import { dirname, join, resolve, sep } from "node:path";
-import { sameFile } from "@pibot/execution";
+import { basename, dirname, join, resolve } from "node:path";
+import { commandLogRoot, sameFile } from "@pibot/execution";
 import { IdSchema } from "@pibot/protocol-base";
 import { AuditRepo, SettingsRepo } from "@pibot/storage";
 import type { LocalDependencies } from "../../core/local-types.ts";
@@ -17,7 +17,7 @@ export async function pruneCommandLogs(
     days: 30,
     megabytes: 200,
   };
-  const base = join(await realpath(deps.dataDir), "bots", botId, "home", ".pibot");
+  const home = join(await realpath(deps.dataDir), "bots", botId, "home");
   const files: {
     path: string;
     size: number;
@@ -25,9 +25,11 @@ export async function pruneCommandLogs(
     identity: BigIntStats;
   }[] = [];
   let entries = 0;
-  for (const directory of ["runs", "background"]) {
+  const logs = [commandLogRoot(home), join(home, ".pibot")];
+  for (const { root, directory } of logs.flatMap((base) =>
+    ["runs", "background"].map((directory) => ({ directory, root: join(base, directory) })),
+  )) {
     signal.throwIfAborted();
-    const root = join(base, directory);
     try {
       if ((await realpath(root)) !== resolve(root)) continue;
       const dir = await opendir(root);
@@ -70,7 +72,9 @@ export async function pruneCommandLogs(
       deps.db
         .prepare(`SELECT id FROM ${table} WHERE bot_id=? AND ${live}`)
         .all(botId)
-        .map((row) => join(base, table === "runs" ? "runs" : "background", `${row.id}.log`)),
+        .flatMap((row) =>
+          logs.map((base) => join(base, table === "runs" ? "runs" : "background", `${row.id}.log`)),
+        ),
     ),
   );
   const runActive = deps.db.prepare(`SELECT 1 FROM runs WHERE id=? AND bot_id=? AND ${liveRuns}`);
@@ -78,8 +82,8 @@ export async function pruneCommandLogs(
     `SELECT 1 FROM background_commands WHERE id=? AND bot_id=? AND ${liveJobs}`,
   );
   const currentlyActive = (path: string) => {
-    const id = path.slice(path.lastIndexOf(sep) + 1).replace(/\.log(?:\.1)?$/, "");
-    return path.startsWith(join(base, "runs") + sep)
+    const id = basename(path).replace(/\.log(?:\.1)?$/, "");
+    return basename(dirname(path)) === "runs"
       ? !!runActive.get(id, botId)
       : !!jobActive.get(id, botId);
   };

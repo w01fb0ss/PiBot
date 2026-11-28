@@ -1,4 +1,45 @@
 export const teamsZh = {
+  "group.plan.statusLine.progress": "计划「{name}」进度 {done}/{total}",
+  "group.plan.statusLine.completed": "计划「{name}」进度 {done}/{total} · 已完成",
+  "group.plan.statusLine.stepsEnded": "计划「{name}」进度 {done}/{total} · 步骤已结束",
+  "group.plan.summary.ended": "计划「{name}」已结束 · {count} 步：{counts}",
+  "group.plan.summary.ended.one": "计划「{name}」已结束 · 1 步：{counts}",
+  "group.plan.summary.completed": "{count} 步完成",
+  "group.plan.summary.skipped": "{count} 步你跳过",
+  "group.plan.summary.autoSkipped": "{count} 步未执行",
+  "group.plan.summary.steps": "步骤",
+  "group.plan.summary.outputs": "产出",
+  "group.plan.summary.files": "（{count} 个文件）",
+  "group.plan.summary.files.one": "（1 个文件）",
+  "group.plan.summary.outputUnavailable": "未能附上",
+  "group.plan.summary.coverage": "需求覆盖：见下方",
+  "group.plan.summary.coverageMissing": "需求覆盖：没有逐条核对（统筹的总结里没有逐条对照）",
+  "group.plan.summary.covered": "统筹判为覆盖：{requirement} → {output}",
+  "group.plan.summary.uncovered": "未覆盖：{requirement}",
+  "group.plan.summary.supplement":
+    "补做程序检查：通过 {passed}/{total} 项。需求覆盖以上方逐条对照为准。",
+  "group.plan.summary.supplementMissing": "补做：没有程序检查结果",
+  "group.plan.repair.fix": "修复不通过项",
+  "group.plan.repair.recheck": "修复后复验",
+  "group.plan.step.untitled": "未命名步骤",
+  "group.plan.stepLine.passed": "已通过",
+  "group.plan.stepLine.skipped": "你跳过了",
+  "group.plan.stepLine.autoSkipped": "未执行",
+  "group.plan.stepLine.skippedRecheck": "你跳过了复验",
+  "group.plan.stepLine.repaired": "已修复，复验通过（{step}）",
+  "group.plan.stepLine.accepted": "你接受了现状",
+  "group.plan.stepLine.failed": "不通过",
+  "group.plan.stepLine.failedCount": "不通过（{count} 项）",
+  "group.plan.stepLine.failedCount.one": "不通过（1 项）",
+  "group.plan.stepLine.blocked": "等待统筹处理",
+  "group.plan.stepLine.needsYou": "等你处理",
+  "group.plan.stepLine.mergeConflict": "合并冲突，等待统筹处理",
+  "group.plan.stepLine.paused": "已暂停，等你继续",
+  "group.plan.stepLine.running": "进行中",
+  "group.plan.stepLine.waiting": "等待中",
+  "group.plan.stepLine.merged": "已合并",
+  "group.plan.stepLine.merging": "等待合并",
+
   "teams.localOmitted": "未包含：{name}（本地导入、超过导出上限）。请取得原文件后重新导入。",
   "teams.sourceRequired": "{name}：这个技能需要从来源重新导入；模板未包含技能文件。",
   "teams.sourcePrepare": "确认从来源下载并预览",
@@ -51,6 +92,48 @@ export const teamsZh = {
   "teams.done": "知道了",
 } as const;
 export const teamsEn: Record<keyof typeof teamsZh, string> = {
+  "group.plan.statusLine.progress": "Plan “{name}” progress {done}/{total}",
+  "group.plan.statusLine.completed": "Plan “{name}” progress {done}/{total} · completed",
+  "group.plan.statusLine.stepsEnded": "Plan “{name}” progress {done}/{total} · steps ended",
+  "group.plan.summary.ended": "Plan “{name}” ended · {count} steps: {counts}",
+  "group.plan.summary.ended.one": "Plan “{name}” ended · 1 step: {counts}",
+  "group.plan.summary.completed": "{count} completed",
+  "group.plan.summary.skipped": "{count} skipped by you",
+  "group.plan.summary.autoSkipped": "{count} skipped automatically",
+  "group.plan.summary.steps": "Steps",
+  "group.plan.summary.outputs": "Outputs",
+  "group.plan.summary.files": " ({count} files)",
+  "group.plan.summary.files.one": " (1 file)",
+  "group.plan.summary.outputUnavailable": "Could not attach",
+  "group.plan.summary.coverage": "Requirement coverage: see below",
+  "group.plan.summary.coverageMissing":
+    "Requirement coverage: no item-by-item check (the coordinator’s summary had no item-by-item comparison)",
+  "group.plan.summary.covered": "Coordinator marked covered: {requirement} → {output}",
+  "group.plan.summary.uncovered": "Uncovered: {requirement}",
+  "group.plan.summary.supplement":
+    "Supplement checks: {passed}/{total} passed. See the item-by-item review for requirement coverage.",
+  "group.plan.summary.supplementMissing": "Supplement: no program check results",
+  "group.plan.repair.fix": "Repair failed checks",
+  "group.plan.repair.recheck": "Recheck the repair",
+  "group.plan.step.untitled": "Untitled step",
+  "group.plan.stepLine.passed": "Passed",
+  "group.plan.stepLine.skipped": "You skipped this",
+  "group.plan.stepLine.autoSkipped": "Skipped automatically",
+  "group.plan.stepLine.skippedRecheck": "You skipped the recheck",
+  "group.plan.stepLine.repaired": "Fixed, recheck passed ({step})",
+  "group.plan.stepLine.accepted": "You accepted the result as is",
+  "group.plan.stepLine.failed": "Failed",
+  "group.plan.stepLine.failedCount": "Failed ({count} items)",
+  "group.plan.stepLine.failedCount.one": "Failed (1 item)",
+  "group.plan.stepLine.blocked": "Waiting for the coordinator",
+  "group.plan.stepLine.needsYou": "Waiting for you",
+  "group.plan.stepLine.mergeConflict": "Merge conflict, waiting for the coordinator",
+  "group.plan.stepLine.paused": "Paused, waiting for you to resume",
+  "group.plan.stepLine.running": "Running",
+  "group.plan.stepLine.waiting": "Waiting",
+  "group.plan.stepLine.merged": "Merged",
+  "group.plan.stepLine.merging": "Waiting to merge",
+
   "teams.localOmitted":
     "Not included: {name} (local import, exceeds the export limit). Obtain the original files and import them again.",
   "teams.sourceRequired":
@@ -112,3 +195,32 @@ export const teamsEn: Record<keyof typeof teamsZh, string> = {
   "teams.skippedHint": "You can add them again later from the Bot’s profile panel.",
   "teams.done": "Got it",
 };
+
+type PlanTextKey = Extract<keyof typeof teamsZh, `group.plan.${string}`>;
+
+export function groupPlanText(
+  language: "zh" | "en",
+  key: PlanTextKey,
+  values: Readonly<Record<string, string | number>> = {},
+) {
+  const table = language === "zh" ? teamsZh : teamsEn;
+  const singular = `${key}.one`;
+  const template =
+    values.count === 1 && Object.hasOwn(table, singular)
+      ? table[singular as PlanTextKey]
+      : table[key];
+  return template.replace(/\{(\w+)\}/g, (match, name: string) => String(values[name] ?? match));
+}
+
+export function localizedPlanStepTitle(title: string | undefined, language: "zh" | "en") {
+  if (!title) return groupPlanText(language, "group.plan.step.untitled");
+  for (const key of ["group.plan.repair.fix", "group.plan.repair.recheck"] as const) {
+    if (
+      title === teamsZh[key] ||
+      title === teamsEn[key] ||
+      title === `${teamsZh[key]} / ${teamsEn[key]}`
+    )
+      return groupPlanText(language, key);
+  }
+  return title;
+}

@@ -203,6 +203,7 @@ export class SharedSkillPackages {
     populate: ((staging: string) => Promise<void>) | undefined,
     signal: AbortSignal,
     touch: () => void,
+    expectedHash?: string,
   ): Promise<string> {
     return this.exclusive(async () => {
       signal.throwIfAborted();
@@ -227,6 +228,8 @@ export class SharedSkillPackages {
         }
         await write(join(stage, "SKILL.md"), text);
         const { digest } = await digestFolder(stage, signal, touch);
+        if (expectedHash && digest !== expectedHash)
+          throw new RpcError(RpcErrorCodes.invalidParams, "skill_link_source_changed");
         const id = digest.slice(0, 16);
         const target = sharedPackagePath(this.dataDir, id);
         const row = this.repo.get(id);

@@ -19,6 +19,8 @@ export function useNextReplySuggestion(options: {
   topics: readonly ExecutionTopic[];
   notices: readonly ChatNotice[];
   hidden: boolean;
+  completion?: string;
+  completionHidden?: boolean;
   text: string;
   edit(text: string): void;
   textarea: RefObject<HTMLTextAreaElement | null>;
@@ -34,10 +36,16 @@ export function useNextReplySuggestion(options: {
     options.topics,
     options.notices,
   );
-  const visible =
-    candidate && candidate.id !== dismissed && !options.hidden && !options.text && !composing;
-  const text = visible ? t(candidate.key) : undefined;
-  const dismiss = () => setDismissed(candidate?.id);
+  const key = options.completion ? `help:${options.text}` : candidate?.id;
+  const hidden = options.completion ? (options.completionHidden ?? options.hidden) : options.hidden;
+  const available = key && key !== dismissed && !hidden && !composing;
+  const completion = available ? options.completion : undefined;
+  const text = completion
+    ? options.text + completion
+    : available && candidate && !options.text
+      ? t(candidate.key)
+      : undefined;
+  const dismiss = () => setDismissed(key);
   const accept = () => {
     if (!text) return;
     dismiss();
@@ -53,6 +61,8 @@ export function useNextReplySuggestion(options: {
   }, [options.text, options.textarea]);
   return {
     text,
+    completion,
+    prefix: completion ? options.text : undefined,
     id: text ? id : undefined,
     accept,
     dismiss,
@@ -67,7 +77,11 @@ export function useNextReplySuggestion(options: {
         event.shiftKey ||
         event.ctrlKey ||
         event.altKey ||
-        event.metaKey
+        event.metaKey ||
+        (completion &&
+          event.key === "Tab" &&
+          (event.currentTarget.selectionStart !== options.text.length ||
+            event.currentTarget.selectionEnd !== options.text.length))
       )
         return false;
       if (event.key !== "Tab" && event.key !== "Escape") return false;
@@ -88,13 +102,23 @@ export function NextReplyField({
   children: ReactNode;
 }) {
   const t = useT();
+  const label = t(suggestion.completion ? "skillCommands.helpHint" : "nextReply.label");
   return (
     <div className={styles.field}>
       {children}
       {suggestion.text && (
-        <div className={styles.suggestion}>
-          <span className={styles.label}>{t("nextReply.label")}</span>
-          <span className={styles.text}>{suggestion.text}</span>
+        <div
+          className={styles.suggestion}
+          data-completion={suggestion.completion ? "true" : undefined}
+        >
+          {suggestion.completion ? (
+            <span className={styles.prefix} aria-hidden="true">
+              {suggestion.prefix}
+            </span>
+          ) : (
+            <span className={styles.label}>{label}</span>
+          )}
+          <span className={styles.text}>{suggestion.completion ?? suggestion.text}</span>
           <button
             type="button"
             tabIndex={-1}
@@ -110,7 +134,7 @@ export function NextReplyField({
       )}
       {suggestion.text && (
         <span id={suggestion.id} className={styles.description}>
-          {t("nextReply.label")} · {suggestion.text} · {t("nextReply.hint")}
+          {label} · {suggestion.text} · {t("nextReply.hint")}
         </span>
       )}
     </div>

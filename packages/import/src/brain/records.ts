@@ -72,12 +72,30 @@ class Summary {
   }
 }
 
-export async function summarize(adapter: ImportAdapter, input: ImportInput, signal: AbortSignal) {
+export type DistillationSource = { projectKey?: string; bytes: number };
+
+export function distillationText(role: string, text: string) {
+  if (!text.trim()) return "";
+  // Long-message attachments stay local. Use the prefix present in the imported topic.
+  let end = MESSAGE_CHARS - 256;
+  if (/[\uD800-\uDBFF]/u.test(text.charAt(end - 1))) end--;
+  return `${role}: ${text.slice(0, end)}\n\n`;
+}
+
+export async function summarize(
+  adapter: ImportAdapter,
+  input: ImportInput,
+  signal: AbortSignal,
+  redactor: Pick<BrainRedactor, "redact">,
+) {
   const summary = new Summary();
   let pending = 0;
   let skippedRecords = 0;
+  let skippedTooLong = 0;
   let longMessages = 0;
   let exportDetails: ExportDetails | undefined;
+  const distillationSources: DistillationSource[] = [];
+  let current: DistillationSource | undefined;
   for await (const record of adapter.preview(input, signal)) {
     signal.throwIfAborted();
     const parsed = PreviewRecordSchema.safeParse(record);
@@ -88,12 +106,27 @@ export async function summarize(adapter: ImportAdapter, input: ImportInput, sign
       exportDetails = details;
     } else if (parsed.data.kind === "skipped") {
       skippedRecords++;
+    } else if (parsed.data.kind === "skippedTooLong") {
+      skippedTooLong++;
     } else if (parsed.data.kind === "projectKnowledge") {
       const project = summary.track(parsed.data.project);
       if (project) project.knowledge += parsed.data.pieces;
     } else {
       if (parsed.data.kind === "message" && parsed.data.long) longMessages++;
       summary.include(parsed.data);
+      if (parsed.data.kind === "topic") {
+        current = undefined;
+        if (!parsed.data.memoryExcluded) {
+          const key = parsed.data.project?.key;
+          current = { projectKey: key && summary.projects.has(key) ? key : undefined, bytes: 0 };
+          distillationSources.push(current);
+        }
+      } else if (current && parsed.data.message?.text) {
+        const { role, text } = parsed.data.message;
+        current.bytes += Buffer.byteLength(
+          distillationText(role, redactImportText(redactor, text)),
+        );
+      }
     }
     if (++pending % PREVIEW_RECORDS === 0) await yieldToLoop(undefined, { signal });
   }
@@ -104,12 +137,14 @@ export async function summarize(adapter: ImportAdapter, input: ImportInput, sign
       from: summary.from,
       through: summary.through,
       ...(skippedRecords ? { skippedRecords } : {}),
+      ...(skippedTooLong ? { skippedTooLong } : {}),
       ...(longMessages ? { longMessages } : {}),
       ...(exportDetails ? { exportDetails } : {}),
       ...(summary.projects.size ? { projects: [...summary.projects.values()] } : {}),
     },
     /** Local working directories stay in the brain; the preview only names the project. */
     paths: summary.paths,
+    distillationSources,
   };
 }
 
@@ -123,10 +158,10 @@ type WriteOptions = {
   route(project: string | undefined): TopicTarget | undefined;
   bots: readonly string[];
   store: ImportStore;
-  redactor: BrainRedactor;
+  redactor: Pick<BrainRedactor, "redact">;
   signal: AbortSignal;
+  heartbeat?: () => void;
   progress: (counts: Pick<ImportStatus, "topics" | "messages">) => void;
-  onMessage?: (text: string, role: "user" | "assistant") => void;
   /** Saves a long message's whole (redacted) text as a topic file; undefined when too large. */
   saveFullText(botId: string, text: string, signal: AbortSignal): Promise<SavedText | undefined>;
 };
@@ -157,6 +192,11 @@ export async function writeRecords(opts: WriteOptions) {
   let bytes = 0;
   let pageBytes = 0;
   let pageStart = performance.now();
+  async function mismatchedRecords() {
+    // An early exit from the adapter can skip its end-of-read identity and write checks.
+    for await (const _file of input.file?.(signal) ?? []) signal.throwIfAborted();
+    throw new ImportFailure("source_changed");
+  }
   function flush() {
     signal.throwIfAborted();
     if (!page.length) return;
@@ -170,22 +210,27 @@ export async function writeRecords(opts: WriteOptions) {
     );
     page.length = 0;
     pageBytes = 0;
+    opts.heartbeat?.();
     progress({ ...written });
   }
   for await (const record of adapter.read(input, signal)) {
     signal.throwIfAborted();
+    opts.heartbeat?.();
     const parsed = ImportRecordSchema.safeParse(record);
     if (!parsed.success) throw new ImportFailure("format");
     const item = parsed.data;
     summary.include(item);
     if (summary.counts.topics > preview.topics || summary.counts.messages > preview.messages)
-      throw new ImportFailure("source_changed");
+      await mismatchedRecords();
     if (item.kind === "topic") {
       const key = item.project?.key;
       target = opts.route(key && tracked.has(key) ? key : undefined);
     }
     if (!target) continue;
-    const size = Buffer.byteLength(item.kind === "topic" ? item.title : item.text);
+    const size =
+      item.kind === "topic"
+        ? Buffer.byteLength(item.title)
+        : Buffer.byteLength(item.text) + Buffer.byteLength(JSON.stringify(item.historyParts ?? []));
     if (
       page.length &&
       (page.length >= PAGE_RECORDS ||
@@ -202,7 +247,12 @@ export async function writeRecords(opts: WriteOptions) {
     const owner = target;
     if (item.kind === "topic") {
       const title = redactImportText(opts.redactor, item.title).slice(0, 200);
-      const topic = { title, createdAt: item.createdAt, updatedAt: item.updatedAt };
+      const topic = {
+        title,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
+        memoryExcluded: item.memoryExcluded,
+      };
       written.topics++;
       page.push(() => {
         conversationId = store.addTopic(importId, owner.botId, source, topic, owner.folderId);
@@ -215,13 +265,20 @@ export async function writeRecords(opts: WriteOptions) {
           ? await opts.saveFullText(owner.botId, full, signal)
           : undefined;
       const text = full.length > MESSAGE_CHARS ? longPreview(full, !!saved) : full;
-      opts.onMessage?.(text, item.role);
+      const historyParts = item.historyParts?.map((part) => ({
+        ...part,
+        name: redactImportText(opts.redactor, part.name).slice(0, 200) || "tool",
+        ...(part.summary
+          ? { summary: redactImportText(opts.redactor, part.summary).slice(0, 200) }
+          : {}),
+      }));
       written.messages++;
       page.push(() => {
         if (!conversationId) throw new ImportFailure("format");
         const messageId = store.addMessage(importId, owner.botId, conversationId, {
           ...item,
           text,
+          historyParts,
         });
         if (saved) store.addAttachment(messageId, owner.botId, saved);
       });
@@ -233,11 +290,11 @@ export async function writeRecords(opts: WriteOptions) {
     summary.from !== preview.from ||
     summary.through !== preview.through
   )
-    throw new ImportFailure("source_changed");
+    await mismatchedRecords();
   flush();
 }
 
-export function redactImportText(redactor: BrainRedactor, input: string) {
+export function redactImportText(redactor: Pick<BrainRedactor, "redact">, input: string) {
   return redactor
     .redact(input)
     .replace(

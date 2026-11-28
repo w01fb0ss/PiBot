@@ -15,6 +15,8 @@ import {
   connectorToolDefinitionFingerprint,
   parseConnector,
 } from "./connector-records.ts";
+import { isKnowledgeManagedInstallation } from "./knowledge-access.ts";
+import { isManagedNotionRead } from "./notion-tools.ts";
 
 /** Brain collects bounded, validated remote pages before publishing one atomic catalog. */
 export class ConnectorCatalogRepo {
@@ -97,6 +99,7 @@ export class ConnectorCatalogRepo {
         .get(IdSchema.parse(input.connectorId));
       if (!row || row.revision !== input.expectedRevision) connectorConflict();
       const current = parseConnector(row);
+      const managed = isKnowledgeManagedInstallation(this.db, current.pluginInstallationId);
       if (input.operation) {
         const operation = this.operations.current(
           input.operation.id,
@@ -147,7 +150,8 @@ export class ConnectorCatalogRepo {
           // Keep explicit denies; changed/new definitions never inherit an earlier read-only decision.
           enabled: userOverride
             ? userOverride.enabled === 1
-            : !denied.get(current.id, tool.tool) && (old ? old.enabled === 1 : true),
+            : !denied.get(current.id, tool.tool) &&
+              (old ? old.enabled === 1 : !managed || isManagedNotionRead(tool.tool)),
           // A tool the server marks read-only (and not destructive)
           // starts read-only; the person's own choice in 高级 still wins.
           readOnly: userOverride

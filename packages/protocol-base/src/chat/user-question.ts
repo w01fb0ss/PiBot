@@ -46,3 +46,14 @@ export const UserQuestionPauseSchema = z.strictObject({
     .optional(),
 });
 export type UserQuestion = z.infer<typeof UserQuestionSchema>;
+
+const QuestionAnswerTextSchema = UserQuestionPauseSchema.shape.answer.unwrap().shape.text;
+
+export function messageQuestionAnswerText(message: { usage: unknown }): string | undefined {
+  const usage = message.usage;
+  if (!usage || typeof usage !== "object" || Array.isArray(usage)) return;
+  const answer = QuestionAnswerTextSchema.safeParse(
+    (usage as Record<string, unknown>).questionAnswerText,
+  );
+  return answer.success ? answer.data : undefined;
+}

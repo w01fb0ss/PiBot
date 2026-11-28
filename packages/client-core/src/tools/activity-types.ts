@@ -14,7 +14,9 @@ export interface ActivityTool
     | "durationMs"
     | "yolo"
     | "denialReason"
+    | "settingsAction"
     | "codeAnalysis"
+    | "inputTranslation"
   > {
   messageId: string;
   runId: string;

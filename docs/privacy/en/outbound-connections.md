@@ -18,6 +18,7 @@ This page lists every network connection Pi Bot can make: the desktop app, the A
 | [Update checks](#update-checks) | `pibot.space` | Yes |
 | [Role library](#role-library) | `roles.pibot.space` | Only when you use it |
 | [Model providers](#model-providers) | The provider you configure | Only after you set up a model |
+| [Import memory distillation](#import-memory-distillation) | The provider and model named in the preview | Off. Opt in for each import. |
 | [ChatGPT plan](#chatgpt-plan) | `auth.openai.com`, `api.openai.com` or `chatgpt.com` | When signing in, refreshing sign-in or using a signed-in model |
 | [Web search](#web-search) | DuckDuckGo, Bing, Brave, Tavily or your SearXNG | Yes, asks on first use |
 | [Websites Bots visit](#websites-bots-visit) | The sites themselves | Yes |
@@ -45,7 +46,7 @@ Pi Bot's own servers are reached only over HTTPS or WSS. STUN is a small UDP que
 - **Default:** on, in the installed app.
 - **To stop it:** there is no setting for automatic checks. They only ever read version information; if you want none at all, block `pibot.space` in your firewall and update by downloading new versions yourself.
 
-**Android phone app (from 0.0.4).** The app sends a plain HTTPS GET to `https://pibot.space/updates/android.json` without account, device or installation identifiers. The server can see your IP address. Automatic checks are on by default and run at app startup, at most once a day. You can also check on demand from **Devices**. Offline mode skips these checks. The app downloads the APK from `pibot.space` only when you choose to download and install the update.
+**Android phone app (from 0.1.0).** The app sends a plain HTTPS GET to `https://pibot.space/updates/android.json` without account, device or installation identifiers. The server can see your IP address. Automatic checks are on by default and run at app startup, at most once a day. You can also check on demand from **Devices**. Offline mode skips these checks. The app downloads the APK from `pibot.space` only when you choose to download and install the update.
 
 ### Role library
 
@@ -63,12 +64,18 @@ The relay (`relay.pibot.space`) and `auth.pibot.space` are described under [Phon
 
 - **Receiver:** the provider you set up in Settings › Models & API keys: OpenAI, Anthropic, Google, DeepSeek, OpenRouter, a cloud platform (Amazon Bedrock, Azure, Google Vertex AI, Cloudflare), a custom gateway, and so on. Each Bot can use a different one.
 - **What is sent:** what the model needs to reply: the conversation, the Bot's persona and instructions, the memories it uses, file excerpts and web content it has read, tool results, and the images you attach. Your API key goes only to that provider. Requests name the app as "Pi Bot" (with the address pibot.space) for the provider's app attribution; no user identifier is added. For providers that support it, Pi Bot asks for longer prompt caching (up to 24 hours on some OpenAI models, 1 hour on Anthropic), which makes replies faster and cheaper; the provider's own terms govern that cache.
-- **Auxiliary model:** Context compaction, handoffs, translation, persona drafts, and extracting information from web pages or memories from conversations send the relevant content to the auxiliary model’s provider. By default this is the main model.
+- **Auxiliary model:** Context compaction, handoffs, translation, persona drafts, and extracting information from web pages send the relevant content to the auxiliary model’s provider. By default this is the main model.
+- **Memory maintenance:** Extracting memories from chats, sorting shared memories and Dream send relevant excerpts or memories to the configured auxiliary model. With no auxiliary model, maintenance uses the default text model. If that provider stays busy, Pi Bot may send the same content to another configured model provider. Dream’s local-only option limits cleanup to this machine.
 - **When:** every time a Bot replies or uses a model. **Save & test** sends one short test request; **Fetch models** asks that provider (or your custom address) for its model list. Cloud platforms also contact their sign-in service, for example `oauth2.googleapis.com` for Google Vertex AI.
 - **OpenRouter model list:** **Refresh model list** on the OpenRouter page downloads OpenRouter's public model list from `openrouter.ai`, without your key.
+- **OpenRouter video generation:** When you have an OpenRouter API key saved and open the OpenRouter settings page, Pi Bot queries `openrouter.ai/api/v1/videos/models` with your key to list available video models and prices. When you confirm a video generation request on OpenRouter, the video prompt and any selected first-frame or reference image go to OpenRouter (`openrouter.ai`) and the chosen model's upstream provider, and the finished MP4 is downloaded from OpenRouter or its signed storage URL.
 - **Default:** nothing is sent until you set up a model.
-- **To stop it:** use a local model. Ollama, LM Studio and vLLM run on your computer; Pi Bot talks to them at `127.0.0.1` and nothing leaves the machine. The welcome flow looks for Ollama at `127.0.0.1:11434`, which also stays on the machine.
+- **To run locally:** configure only local model providers. Ollama, LM Studio and vLLM can run on your computer, where Pi Bot talks to them at `127.0.0.1`. The welcome flow looks for Ollama at `127.0.0.1:11434`, which also stays on the machine.
 - **Proxy:** if you enter a proxy in Settings › General › Network proxy, all provider traffic goes through it (except model servers on this computer). Pi Bot never picks up the system proxy by itself.
+
+### Import memory distillation
+
+Off by default. The preview names the model. For cloud models, it also shows estimated tokens and cost. If Ollama is available on this computer with cloud features disabled, distillation stays on this computer and is free. Otherwise, enabling **Distill memories** for this import allows Pi Bot to send redacted message text from the selected conversations to the named provider and model. Conversations marked sensitive or excluded are skipped. A one-time budget is the estimate plus 20%; when prices are unknown, the limit is in tokens. The import job and audit record the consent and model metadata without message text. Long-message attachments stay on the device. Distillation uses the message text shown in the imported chat.
 
 ### ChatGPT plan
 
@@ -143,7 +150,7 @@ The Gmail plugin has two sign-in methods:
 ### External agents
 
 - **Codex and Claude Agent:** when you click **Download and create**, Pi Bot downloads their ACP adapter from `registry.npmjs.org` at fixed versions, checking every file's SHA-256.
-- **Running:** once an external agent (Codex, Claude Agent, Cursor, OpenCode) joins as a Bot, it uses its own account and talks to its own vendor, for example `api.openai.com` and `chatgpt.com` for Codex, `api.anthropic.com` and `claude.ai` for Claude, `cursor.com` for Cursor, and `opencode.ai` plus the provider you set in OpenCode. On macOS and Linux Pi Bot limits each agent to its vendor's domains. What it sends follows that vendor's terms.
+- **Running:** once an external agent (Codex, Claude Agent, Cursor, OpenCode, Antigravity) joins as a Bot, it uses its own account and talks to its own vendor, for example `api.openai.com` and `chatgpt.com` for Codex, `api.anthropic.com` and `claude.ai` for Claude, `cursor.com` for Cursor, `opencode.ai` plus the provider you set in OpenCode, and `daily-cloudcode-pa.googleapis.com` and `aicode.googleapis.com` plus Google sign-in (`www.googleapis.com`, `oauth2.googleapis.com`) for Antigravity. On macOS and Linux Pi Bot limits each agent to its vendor's domains. What it sends follows that vendor's terms.
 - **Default:** off until you add one.
 
 ## Phone and runners

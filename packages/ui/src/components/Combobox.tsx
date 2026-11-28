@@ -33,7 +33,7 @@ export interface ComboboxOption {
 }
 
 export interface ComboboxProps {
-  variant?: "field" | "pill" | "badge";
+  variant?: "field" | "pill" | "badge" | "subtitle";
   /**
    * The list's minimum width. A fixed-width field (settings model pickers) is narrower than its
    * options' names and context lines; matching the trigger cut every option to a few letters.
@@ -41,6 +41,8 @@ export interface ComboboxProps {
   popupMinWidth?: number;
   hideLabel?: boolean;
   triggerIcon?: IconName;
+  /** Display text for the trigger when it differs from the selected option's label. */
+  triggerLabel?: string;
   label: string;
   options: readonly ComboboxOption[];
   value: string;
@@ -92,6 +94,7 @@ export function Combobox({
   popupMinWidth,
   hideLabel = false,
   triggerIcon,
+  triggerLabel,
 }: ComboboxProps) {
   const generatedId = useId();
   const inputId = id ?? generatedId;
@@ -105,6 +108,7 @@ export function Combobox({
   const search = useRef<HTMLInputElement>(null);
   const composing = useRef(false);
   const open = expanded && !disabled;
+  const subtitle = variant === "subtitle";
   const position = useComboboxPosition(
     open,
     trigger,
@@ -205,12 +209,12 @@ export function Combobox({
         type="button"
         role={open ? undefined : "combobox"}
         aria-labelledby={labelId}
-        title={triggerIcon ? label : undefined}
+        title={subtitle || triggerIcon ? label : selected?.title}
         aria-expanded={open}
         aria-haspopup="listbox"
         aria-controls={open ? listId : undefined}
         disabled={disabled}
-        className={`${field.input} ${styles.trigger} ${triggerIcon ? styles.iconOnly : ""} ${variant === "field" ? "" : styles[variant]}`}
+        className={`${subtitle ? "" : field.input} ${styles.trigger} ${triggerIcon ? styles.iconOnly : ""} ${variant === "field" ? "" : styles[variant]}`}
         onClick={() => (open ? close(true) : show())}
         onKeyDown={(event) => {
           if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -228,10 +232,14 @@ export function Combobox({
         ) : (
           <>
             {selected?.leading && <span className={styles.leading}>{selected.leading}</span>}
-            <span className={`${styles.value} ${selected ? "" : styles.placeholder}`}>
-              {selected?.label ?? placeholder}
+            <span className={`${styles.value} ${selected || subtitle ? "" : styles.placeholder}`}>
+              {triggerLabel ?? selected?.label ?? placeholder}
             </span>
-            <Icon name="chevron" />
+            <Icon
+              name="chevron"
+              size={subtitle ? 12 : undefined}
+              className={subtitle ? styles.chevron : undefined}
+            />
           </>
         )}
       </button>

@@ -7,13 +7,18 @@ import {
   AgentError,
   type AgentRuntime,
   type BotSession,
+  forkRetrySession,
+  inspectRetrySession,
   mapAgentError,
+  type OpenSessionOptions,
   responseMaxTokens,
 } from "@pibot/agent";
+import { windowsDisplayPath } from "@pibot/execution";
 import type { Logger } from "@pibot/observability";
 import {
   type Bot,
   type ImageContent,
+  type ImageGenerationOptions,
   type ImageOperation,
   type KernelEvents,
   type KernelMethods,
@@ -24,6 +29,7 @@ import {
 } from "@pibot/protocol-base";
 import {
   BotSessionsRepo,
+  ChatAdditionsRepo,
   ConversationRetriesRepo,
   ConversationsRepo,
   ExecutionRepo,
@@ -34,6 +40,7 @@ import {
   transaction,
 } from "@pibot/storage";
 import { ChatReplies } from "../../conversations/chat/chat-replies.ts";
+import { initialImportedHistory } from "../../conversations/chat/imported-history.ts";
 import { abortable } from "../../core/abort.ts";
 import type { ToolRunContext } from "../../core/local-types.ts";
 import { botSystemPrompt } from "../../core/personas/bot.ts";
@@ -68,6 +75,8 @@ import { textToolCallCorrection, textToolCallMarker } from "../continuation/text
 import { TodoFollowThrough } from "../continuation/todo-follow-through.ts";
 import { failAgentRun } from "../external-agents/unavailable-run.ts";
 import { memoryProjectPath } from "../memory/project.ts";
+import { DispatchRunModel, dispatchStartupFailure } from "../models/dispatch-run-model.ts";
+import { runModelOverride, validateModelOverride, withModelOverride } from "../models/run-model.ts";
 import { runProjectNotes } from "../notes/project-notes.ts";
 import { reviewerBrain, taskReviewer } from "../review/review-reviewer.ts";
 import { workQualityFacts, workQualityReceipt } from "../review/work-quality-run.ts";
@@ -108,6 +117,7 @@ export interface ChatRun {
   /** Resumes an interrupted run (journal attempt scope, trusted runtime note). */
   resume?: { fromRunId: string; note: string };
   imageOperation?: ImageOperation;
+  imageGeneration?: ImageGenerationOptions;
   /** The workflow skill this run executes (body injected, delivery checked after). */
   workflow?: WorkflowRun;
   /** A child task a workflow run spawned with `model: "cheap"` (from its authority). */
@@ -142,11 +152,12 @@ export interface ChatRun {
   signal: AbortSignal;
   stopCause?: import("@pibot/protocol-base").RunStopCause;
   session?: BotSession;
+  selectedModel?: { provider: string; id: string };
   finished: Promise<void>;
   aborting?: Promise<void>;
 }
 
-interface RunDependencies {
+export interface RunDependencies {
   db: DatabaseSync;
   dataDir: string;
   agent: AgentRuntime;
@@ -222,6 +233,7 @@ export async function generateRun(
   storedBot: Bot,
   images: ImageContent[],
   memoryQuery = text,
+  userCommand?: string,
 ) {
   // A read-only review child chosen to be reviewed by another Bot thinks with that Bot's
   // model and persona; identity, permissions and scope stay the author's (see review-reviewer.ts).
@@ -230,7 +242,20 @@ export async function generateRun(
   const reviewedBot = reviewer ? reviewerBrain(storedBot, reviewer) : storedBot;
   // A workflow fixes its own thinking level (⑥); the Bot record is untouched.
   const thinking = run.workflow?.contract.model?.thinking;
-  const bot = thinking ? { ...reviewedBot, thinkingLevel: thinking } : reviewedBot;
+  let override = runModelOverride(deps.db, storedBot, run);
+  const dispatched =
+    deps.local?.models?.dispatchModels && !reviewer
+      ? new DispatchRunModel(deps, run, reviewedBot, override, images.length > 0)
+      : undefined;
+  const routing = dispatched?.active ? dispatched : undefined;
+  // A dispatched run uses its routed model for both workflow prompts and compaction.
+  const fixedDispatchModel = !!routing;
+  if (override) run.selectedModel = { provider: override.provider, id: override.id };
+  let bot = override
+    ? withModelOverride(reviewedBot, override)
+    : thinking
+      ? { ...reviewedBot, thinkingLevel: thinking }
+      : reviewedBot;
   // An external agent thinks with its own account and model; the capability runs the turn.
   // A review of its code by another Bot is that Bot's thinking in Pi Bot's own runtime.
   if (storedBot.kind === "agent" && !reviewer) {
@@ -240,7 +265,24 @@ export async function generateRun(
   }
   const imageRun = !!run.imageOperation || bot.category === "image";
   if (imageRun && deps.local?.imageProvider) {
-    return deps.local.images.run(deps, run, text, bot, images);
+    return deps.local.images.run(
+      deps,
+      run,
+      text,
+      bot,
+      images,
+      routing &&
+        (async (hasImages, error, executionClock) => {
+          const failure =
+            error === undefined
+              ? undefined
+              : dispatchStartupFailure(error, bot.modelProvider ?? "");
+          if (error !== undefined && !failure) return undefined;
+          const selected = await routing.resolve(failure, hasImages, executionClock);
+          if (selected) bot = selected.bot;
+          return selected?.bot;
+        }),
+    );
   }
   const conversationId = run.conversationId;
   // Group plan dispatch carries a group task id, not the internal execution-task authority.
@@ -329,6 +371,9 @@ export async function generateRun(
     publishRunActivity,
     // Execution sub-tasks are internal records, so only visible chats split per reply.
     !run.executionTaskId,
+    run.executionTaskId
+      ? undefined
+      : (replying) => deps.local?.deps.liveActivityReplying?.(run.runId, replying),
   );
   let timer: ReturnType<typeof setInterval> | undefined;
   let tools: ReturnType<LocalService["run"]> | undefined;
@@ -416,6 +461,7 @@ export async function generateRun(
     for (const id of ids) usedMemoryIds.add(id);
   };
   let workflowPlace: WorkflowFolder | undefined;
+  let displayPath = (path: string) => path;
   let childTier: "cheap" | undefined;
   /**
    * The files this run produced reach the chat however it ends (finished, failed or stopped):
@@ -457,12 +503,45 @@ export async function generateRun(
     // Missing optional capabilities still settle through the queue's normal error/finally path.
     if (imageRun) throw new AgentError("image_unsupported");
     run.signal.throwIfAborted();
+    if (routing) {
+      const selection = await routing.resolve();
+      if (selection) ({ bot, override } = selection);
+    } else if (override) {
+      try {
+        bot = await validateModelOverride(
+          { agent: deps.agent },
+          reviewedBot,
+          override,
+          () => images.length > 0 || conversations.hasImages(conversationId),
+          run.signal,
+        );
+      } catch (error) {
+        if (!(error instanceof RpcError)) throw error;
+        throw new AgentError(
+          error.message === "model_override_image_input_required"
+            ? "image_unsupported"
+            : "no_model",
+        );
+      }
+    }
     if (deps.local) {
       const source = deps.local.tasks.source(toolContext);
-      const priced = await workflowPriced(deps, bot, run.workflow, run.signal);
+      const priced = await workflowPriced(
+        deps,
+        bot,
+        run.workflow,
+        run.signal,
+        !!override || fixedDispatchModel,
+      );
       const budgetPriced = run.enforceBudgetCost
         ? true
-        : await workflowPriced(deps, bot, run.budgetWorkflow, run.signal);
+        : await workflowPriced(
+            deps,
+            bot,
+            run.budgetWorkflow,
+            run.signal,
+            !!override || fixedDispatchModel,
+          );
       const baseLimits = deps.local.execution.get({
         botId: source.botId,
         conversationId: source.conversationId ?? conversationId,
@@ -475,7 +554,7 @@ export async function generateRun(
           priced,
         ),
       );
-      if (run.modelTier && !run.workflow)
+      if (run.modelTier && !run.workflow && !override && !fixedDispatchModel)
         childTier = await childModelTier(
           deps,
           deps.local.budgets.repo.get(run.budgetRootRunId ?? run.runId),
@@ -511,17 +590,21 @@ export async function generateRun(
       const place = await withWorkplaceErrors(() =>
         resolveRunWorkplace(local, toolContext, run.signal),
       );
-      toolContext.runWorkplace = { cwd: place.cwd, boundary: place.boundary };
       if (
         place.boundary.location?.target.startsWith("runner:") &&
         (run.worktreeReview || (run.workflow && !run.groupId))
       )
         throw new RpcError(-32601, "runner_workflow_unsupported");
+      local.setRunWorkplace(toolContext, place);
+      if (local.deps.platform === "win32" && place.boundary.location?.target === "local") {
+        const folders = place.displayFolders ?? place.value.folders;
+        displayPath = (path) => windowsDisplayPath(path, folders);
+      }
       workplace = workplacePrompt(
         deps.language(),
-        place.boundary.primaryPath,
-        place.cwd,
-        place.boundary.writeRoots,
+        displayPath(place.boundary.primaryPath),
+        displayPath(place.cwd),
+        place.boundary.writeRoots.map(displayPath),
       );
       if (run.workflow) {
         workflowPlace = await resolveWorkflowFolder(
@@ -579,21 +662,53 @@ export async function generateRun(
       (await local?.skills?.promptEntries(bot.id, resourceGroupId, deps.language(), run.signal)) ??
       [];
     run.signal.throwIfAborted();
-    tools = local?.run(toolContext);
+    tools = local?.run(toolContext, userCommand);
+    // A picked Pi Bot skill still means "use this skill", the same request the old menu
+    // wrote out in the draft. Keep it in this turn's context, after the cached system prefix.
+    const skillCommand =
+      !tools?.connectionInstruction() && userCommand?.startsWith("/")
+        ? local?.skills
+            ?.commandEntries?.(bot.id, resourceGroupId, run.signal)
+            .toSorted((a, b) => b.name.length - a.name.length)
+            .find(({ name }) => {
+              const tail = userCommand.slice(name.length + 1);
+              return (
+                userCommand.slice(1, name.length + 1).toLowerCase() === name.toLowerCase() &&
+                (!tail || /^\s/u.test(tail))
+              );
+            })
+        : undefined;
+    const executionPrompt = () =>
+      local &&
+      [
+        tools?.connectionInstruction(),
+        skillCommand &&
+          (deps.language() === "zh"
+            ? `用户指定使用技能 ${JSON.stringify(deps.redactor.redact(skillCommand.name))}。`
+            : `The user selected the skill ${JSON.stringify(deps.redactor.redact(skillCommand.name))}.`),
+        runStateFacts(local, toolContext),
+        local.execution.prompt(toolContext),
+      ]
+        .filter(Boolean)
+        .join("\n\n");
     const sessionDir = join(deps.dataDir, "bots", bot.id, "sessions");
-    transaction(deps.db, () =>
-      new RunEventsRepo(deps.db).append({
-        runId: run.runId,
-        conversationId,
-        kind: "model.selected",
-        payload: {
-          provider: bot.modelProvider,
-          model: bot.modelId,
-          thinkingLevel: bot.thinkingLevel,
-          tier: run.workflow?.contract.model?.tier ?? childTier ?? "main",
-        },
-      }),
-    );
+    const recordModel = () =>
+      transaction(deps.db, () =>
+        new RunEventsRepo(deps.db).append({
+          runId: run.runId,
+          conversationId,
+          kind: "model.selected",
+          payload: {
+            provider: bot.modelProvider,
+            model: bot.modelId,
+            thinkingLevel: bot.thinkingLevel,
+            tier:
+              override || fixedDispatchModel
+                ? "main"
+                : (run.workflow?.contract.model?.tier ?? childTier ?? "main"),
+          },
+        }),
+      );
     const connectionStatus = () => {
       const groupId = toolContext.permissionGroupId ?? toolContext.groupId;
       return unavailableConnectionSummary(
@@ -601,17 +716,41 @@ export async function generateRun(
         groupId ? { kind: "group", id: groupId } : { kind: "bot", id: bot.id },
       );
     };
-    const opening = deps.agent.openSession({
-      ...(!run.groupId && !run.routine && run.messageId
+    const imported =
+      !run.groupId &&
+      !taskSession &&
+      !run.routine &&
+      !!conversations.get(conversationId)?.importSource;
+    let firstPromptBoundary: { entryId: string; file: string } | undefined;
+    let replacementSessionFile: string | undefined;
+    let responseStarted = false;
+    const openOptions: Omit<OpenSessionOptions, "model" | "thinkingLevel"> = {
+      ...(routing ? { assertModelRecipient: routing.assertRecipient } : {}),
+      ...(imported
+        ? {
+            initialHistory: () =>
+              initialImportedHistory(
+                deps.db,
+                conversationId,
+                runs.get(run.runId)?.userMessageId ?? run.messageId,
+                deps.redactor,
+                run.signal,
+              ),
+          }
+        : {}),
+      ...((fixedDispatchModel || (!run.groupId && !run.routine)) && run.messageId
         ? {
             retryBoundary: {
               messageId: run.messageId,
-              record: (entryId: string, file: string, messageId?: string) =>
-                new ConversationRetriesRepo(deps.db).bind(
-                  messageId ?? (run.messageId as string),
-                  file,
-                  entryId,
-                ),
+              record: (entryId: string, file: string, messageId?: string) => {
+                if (fixedDispatchModel && !messageId) firstPromptBoundary = { entryId, file };
+                if (!run.groupId && !run.routine)
+                  new ConversationRetriesRepo(deps.db).bind(
+                    messageId ?? run.messageId,
+                    file,
+                    entryId,
+                  );
+              },
             },
           }
         : {}),
@@ -624,15 +763,27 @@ export async function generateRun(
           ? join(sessionDir, `${conversationId}-${run.runId}.jsonl`)
           : (new BotSessionsRepo(deps.db).get(bot.id, conversationId) ??
             sessionFile ??
-            join(sessionDir, `${conversationId}.jsonl`))),
-      model: { provider: bot.modelProvider as string, id: bot.modelId as string },
-      thinkingLevel: bot.thinkingLevel,
+            join(
+              sessionDir,
+              imported ? `${conversationId}-${run.runId}.jsonl` : `${conversationId}.jsonl`,
+            ))),
+      ...(override || fixedDispatchModel ? { compactWithSelectedModel: true } : {}),
       ...(run.workflow && workflowPlace
         ? {
             workflowPrompt: deps.redactor.redact(
               workflowSystemBlock(
                 run.workflow,
-                workflowPlace,
+                {
+                  folder: displayPath(workflowPlace.folder),
+                  ...(workflowPlace.previous
+                    ? {
+                        previous: {
+                          ...workflowPlace.previous,
+                          folder: displayPath(workflowPlace.previous.folder),
+                        },
+                      }
+                    : {}),
+                },
                 deps.language(),
                 cheapChildrenAvailable(deps.db),
               ),
@@ -643,7 +794,10 @@ export async function generateRun(
               provenance: run.workflow.provenance ?? "imported",
               text: deps.redactor.redact(workflowSkillText(run.workflow, deps.language())),
             },
-            modelTier: run.workflow.contract.model?.tier ?? "main",
+            modelTier:
+              override || fixedDispatchModel
+                ? "main"
+                : (run.workflow.contract.model?.tier ?? "main"),
           }
         : childTier
           ? { modelTier: childTier }
@@ -711,8 +865,10 @@ export async function generateRun(
               },
               settled: (request) => {
                 local.budgets.observer(toolContext).settled(request);
-                if (backgroundRequests.delete(request.id) && request.complete)
-                  local.background.continuation.confirmProjection(run.runId);
+                if (backgroundRequests.delete(request.id)) {
+                  responseStarted ||= request.complete || !!request.outputObserved;
+                  if (request.complete) local.background.continuation.confirmProjection(run.runId);
+                }
               },
               // Hashes, counts and item types only; explains prompt-cache misses on the
               // user's machine without any prompt text.
@@ -840,12 +996,7 @@ export async function generateRun(
                   return {
                     ...current,
                     ...(run.backgroundResults ? { backgroundResults: run.backgroundResults } : {}),
-                    execution: [
-                      runStateFacts(local, toolContext),
-                      local.execution.prompt(toolContext),
-                    ]
-                      .filter(Boolean)
-                      .join("\n\n"),
+                    execution: executionPrompt(),
                     connectionStatus: connectionStatus(),
                     availableSecrets: local.userSecrets.prompt(bot.id),
                     ...(workplace ? { workplace } : {}),
@@ -890,12 +1041,7 @@ export async function generateRun(
                         project: memoryProjectPath(toolContext),
                         onUsed: rememberUsed,
                       }),
-                  execution: [
-                    runStateFacts(local, toolContext),
-                    local.execution.prompt(toolContext),
-                  ]
-                    .filter(Boolean)
-                    .join("\n\n"),
+                  execution: executionPrompt(),
                   connectionStatus: connectionStatus(),
                   availableSecrets: local.userSecrets.prompt(bot.id),
                   ...(workplace ? { workplace } : {}),
@@ -922,12 +1068,7 @@ export async function generateRun(
                       if (!current) throw new RpcError(-32602, "Group context unavailable");
                       return {
                         ...current,
-                        execution: [
-                          runStateFacts(local, toolContext),
-                          local.execution.prompt(toolContext),
-                        ]
-                          .filter(Boolean)
-                          .join("\n\n"),
+                        execution: executionPrompt(),
                         connectionStatus: connectionStatus(),
                         availableSecrets: local.userSecrets.prompt(bot.id),
                         ...(workplace ? { workplace } : {}),
@@ -975,12 +1116,7 @@ export async function generateRun(
                               project: memoryProjectPath(toolContext),
                               onUsed: rememberUsed,
                             }),
-                        execution: [
-                          runStateFacts(local, toolContext),
-                          local.execution.prompt(toolContext),
-                        ]
-                          .filter(Boolean)
-                          .join("\n\n"),
+                        execution: executionPrompt(),
                         connectionStatus: connectionStatus(),
                         availableSecrets: local.userSecrets.prompt(bot.id),
                         ...(workplace ? { workplace } : {}),
@@ -1001,17 +1137,49 @@ export async function generateRun(
             },
           }
         : {}),
-    });
-    // Setup also owns SDK listeners and JSONL: retain the Bot lock until it really settles.
-    run.session = await opening;
-    run.signal.throwIfAborted();
-    if (run.routine || taskSession) {
-      /* Run-owned sessions never replace ordinary topic follow-up sessions. */
-    } else if (run.groupId)
-      new BotSessionsRepo(deps.db).set(bot.id, conversationId, run.session.sessionFile);
-    else conversations.update(conversationId, { piSessionFile: run.session.sessionFile });
-    runs.session(run.runId, run.session.sessionFile);
-    if (run.aborted) throw new AgentError("aborted");
+    };
+    const open = () =>
+      deps.agent.openSession({
+        ...openOptions,
+        model: { provider: bot.modelProvider as string, id: bot.modelId as string },
+        thinkingLevel: bot.thinkingLevel,
+        ...(replacementSessionFile ? { sessionFile: replacementSessionFile } : {}),
+      });
+    const selectFallback = async (error: unknown) => {
+      if (!routing?.active || run.signal.aborted || run.approvalPause) return false;
+      const issue = dispatchStartupFailure(error, bot.modelProvider ?? "");
+      if (!issue) return false;
+      const replacement = await routing.resolve(issue, undefined, toolContext.executionClock);
+      if (!replacement) return false;
+      ({ bot, override } = replacement);
+      return true;
+    };
+    const openSession = async () => {
+      for (;;) {
+        recordModel();
+        try {
+          // Setup owns listeners and the transcript. The Bot stays locked until it settles.
+          run.session = await open();
+        } catch (error) {
+          if (!(await selectFallback(error))) throw error;
+          continue;
+        }
+        run.signal.throwIfAborted();
+        toolContext.toolInputSession = {
+          id: run.session.sessionFile,
+          model: runModel(bot, run.session).runModel,
+        };
+        if (run.routine || taskSession) {
+          /* Run-owned sessions never replace ordinary topic follow-up sessions. */
+        } else if (run.groupId)
+          new BotSessionsRepo(deps.db).set(bot.id, conversationId, run.session.sessionFile);
+        else conversations.update(conversationId, { piSessionFile: run.session.sessionFile });
+        runs.session(run.runId, run.session.sessionFile);
+        if (run.aborted) throw new AgentError("aborted");
+        return run.session;
+      }
+    };
+    let session = await openSession();
     timer = setInterval(() => {
       try {
         replies.checkpoint();
@@ -1037,7 +1205,7 @@ export async function generateRun(
         ...(run.session?.model ? { model: run.session.model } : {}),
       }),
     );
-    const session = run.session;
+    let hasVisibleOutputOrAddition = false;
     const onEvent = (event: SessionEvent) => {
       if (event.type === "reconnect") {
         deps.logger.info(
@@ -1075,6 +1243,7 @@ export async function generateRun(
         return;
       }
       if (run.aborted || run.signal.aborted) return;
+      if (event.type === "delta" || event.type === "addition") hasVisibleOutputOrAddition = true;
       if (event.type === "delta") recall.observe({ kind: "reply", text: event.text });
       if (event.type === "replyStart") recall.observe({ kind: "replyEnd" });
       replies.event(event);
@@ -1141,7 +1310,42 @@ export async function generateRun(
         replies.flush();
       }
     };
-    let result = await ask(text, images);
+    let result: PromptValue;
+    for (;;) {
+      try {
+        result = await ask(text, images);
+        break;
+      } catch (error) {
+        // Retry only the first request before anything visible or tool execution. Branch at the
+        // SDK's boundary so the replacement never receives a duplicate prompt or failed reply.
+        if (
+          !routing?.active ||
+          responseStarted ||
+          hasVisibleOutputOrAddition ||
+          new ChatAdditionsRepo(deps.db).pending(run.runId) > 0 ||
+          tools?.modelToolCalls() ||
+          !(await selectFallback(error))
+        )
+          throw error;
+        if (firstPromptBoundary) {
+          const input = {
+            sessionFile: firstPromptBoundary.file,
+            sessionDir,
+            boundary: firstPromptBoundary.entryId,
+            startedAt: "",
+            finishedAt: "",
+            signal: run.signal,
+          };
+          const inspected = await inspectRetrySession(input);
+          const branch = await forkRetrySession({ ...input, expectedHash: inspected.hash });
+          replacementSessionFile = branch.sessionFile;
+          firstPromptBoundary = undefined;
+        }
+        session.dispose();
+        run.session = undefined;
+        session = await openSession();
+      }
+    }
     if (tools && deps.local) {
       const local = deps.local;
       // Markup in the reply is not a tool call. Ask once for the real call before the
@@ -1396,6 +1600,10 @@ export async function generateRun(
         : undefined;
     // The original schema has no stop_reason column; preserve it with the usage JSON.
     const truncated = result.stopReason === "length";
+    const memory =
+      !truncated && !run.executionTaskId && !run.routine && !run.threadId
+        ? deps.local?.memoryExtraction
+        : undefined;
     let updates: Message[] = [];
     const completed = transaction(deps.db, () => {
       if (zeroToolPromise)
@@ -1444,6 +1652,7 @@ export async function generateRun(
         deps.redactor.redact(result.stopReason),
         truncated ? "output_limit" : undefined,
       );
+      memory?.recordRunReceipt(run.botId, run.messageId);
       return truncated
         ? undefined
         : deps.local?.background.waitingRun(run.runId)
@@ -1455,10 +1664,10 @@ export async function generateRun(
               result.calledTools,
             );
     });
-    // Queue before publishing done so a new topic can wait for an already visible correction.
-    if (result.stopReason === "stop" && !run.executionTaskId && !run.routine && !run.threadId) {
+    // Queue after recording the Bot's own writes so extraction can dedupe against them.
+    if (memory && result.stopReason === "stop") {
       const sourceId = runs.get(run.runId)?.userMessageId;
-      if (sourceId) deps.local?.memoryExtraction?.correction(conversationId, sourceId);
+      if (sourceId) memory.correction(conversationId, sourceId);
     }
     replies.publishUpdates(updates);
     deps.peer.emit("inbox.changed", {});

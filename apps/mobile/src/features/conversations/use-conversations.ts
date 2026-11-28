@@ -1,4 +1,4 @@
-import type { Bot, Group } from "@pibot/protocol";
+import type { Bot, Group, SidebarEntry } from "@pibot/protocol";
 import { useEffect, useRef, useState } from "react";
 import { useLinkState, useRuntime } from "../../runtime/context.tsx";
 import type { MobileRuntime } from "../../runtime/runtime.ts";
@@ -54,8 +54,24 @@ async function withPreviews(runtime: MobileRuntime, rows: Conversation[], signal
   await Promise.all(Array.from({ length: PARALLEL }, worker));
   return result;
 }
-const sorted = (rows: Conversation[]) =>
-  [...rows].sort((a, b) => lastActivity(b) - lastActivity(a));
+function markRows(rows: Conversation[], entries: SidebarEntry[]) {
+  const unread = new Set<string>();
+  const pins = new Map<string, number>();
+  for (const entry of entries) {
+    if (entry.unread) unread.add(entry.conversationKey);
+    // The server already orders pins by pinnedAt and resolves ties.
+    if (entry.pinnedAt) pins.set(entry.conversationKey, pins.size);
+  }
+  const marked = rows
+    .map((row) => ({
+      ...row,
+      unread: unread.has(row.key),
+      pinned: pins.has(row.key),
+      pinOrder: pins.get(row.key),
+    }))
+    .sort((a, b) => lastActivity(b) - lastActivity(a));
+  return { rows: marked, unread };
+}
 export function useConversationsState() {
   const runtime = useRuntime(),
     mobile = useLinkState();
@@ -83,12 +99,6 @@ export function useConversationsState() {
       storeKeys.conversations(id),
       CachedConversationsSchema.parse(next.slice(0, STORED)),
     );
-  const marked = (next: Conversation[], marks: Set<string>, pinned?: Set<string>) =>
-    next.map((row) => ({
-      ...row,
-      unread: marks.has(row.key),
-      ...(pinned ? { pinned: pinned.has(row.key) } : {}),
-    }));
   const load = () =>
     action.read(async (signal) => {
       const id = mobile.selectedId;
@@ -109,18 +119,13 @@ export function useConversationsState() {
       const byId = new Map(botList.map((bot) => [bot.id, bot]));
       const base = [...botList.map(botRow), ...groups.map((group) => groupRow(group, byId))];
       const known = new Map(rowsRef.current.map((row) => [row.key, row.preview]));
-      // Pinned on the computer: the sidebar's two-column tiles; kept in the cached rows.
-      const pinned = new Set(
-        sidebar.entries.filter((e) => e.pinnedAt).map((e) => e.conversationKey),
-      );
-      const marks = new Set(sidebar.entries.filter((e) => e.unread).map((e) => e.conversationKey));
       const merged = await withPreviews(
         runtime,
         base.map((row) => ({ ...row, preview: known.get(row.key) })),
         signal,
       );
       signal.throwIfAborted();
-      const next = sorted(marked(merged, marks, pinned));
+      const { rows: next, unread: marks } = markRows(merged, sidebar.entries);
       setBots(byId);
       show(next, marks);
       await save(id, next);
@@ -139,18 +144,11 @@ export function useConversationsState() {
       const sidebar = await runtime.call("sidebar.list", { limit: 200 }, signal);
       signal.throwIfAborted();
       if (shownFor.current !== id) return;
-      const pinned = new Set(
-        sidebar.entries.filter((e) => e.pinnedAt).map((e) => e.conversationKey),
-      );
-      const marks = new Set(sidebar.entries.filter((e) => e.unread).map((e) => e.conversationKey));
-      const next = sorted(
-        marked(
-          rowsRef.current.map((row) =>
-            previews.has(row.key) ? { ...row, preview: previews.get(row.key) } : row,
-          ),
-          marks,
-          pinned,
+      const { rows: next, unread: marks } = markRows(
+        rowsRef.current.map((row) =>
+          previews.has(row.key) ? { ...row, preview: previews.get(row.key) } : row,
         ),
+        sidebar.entries,
       );
       show(next, marks);
       await save(id, next);

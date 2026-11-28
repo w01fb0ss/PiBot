@@ -5,7 +5,8 @@ import { useAction } from "../../runtime/use-action.ts";
 export function useDevices() {
   const runtime = useRuntime(),
     mobile = useMobile(),
-    action = useAction(mobile.selectedId, mobile.peer);
+    // Selecting or removing a computer changes the peer before the operation finishes.
+    action = useAction("devices");
   const [removing, setRemoving] = useState<string>();
   return {
     ...mobile,
@@ -13,6 +14,7 @@ export function useDevices() {
     removing,
     setRemoving,
     select: (id: string) => action.run(() => runtime.select(id)),
+    reconnect: (id: string) => action.run(() => runtime.reconnect(id)),
     canKeepConnected: runtime.canKeepConnected(),
     setKeepConnected: (on: boolean) => action.run(() => runtime.setKeepConnected(on)),
     forget: () =>

@@ -22,6 +22,7 @@ import type { GroupWorkflowProgress } from "./group-workflow-progress.ts";
 
 export type StoredWorkflow = GroupExecutionPlan & {
   folder: string;
+  piDispatchId?: string;
   workplaceRevoked?: boolean;
   acceptanceRelaxed?: boolean;
   manualReviewMessageId?: string;
@@ -65,6 +66,8 @@ export interface WorkflowEngine {
   ): void;
   /** One program-written progress line per burst of step transitions. */
   announce(record: GroupWorkflowRunRecord): void;
+  /** After the user's decision: the progress line below that card shows the current state. */
+  refreshStatus(record: GroupWorkflowRunRecord, decisionMessageId: string): void;
   /** Maintainers 2026-11-14: merge a passed step's own workspace into the group folder (queued). */
   requestMerge(workflowRunId: string, stepId: string): void;
   audit(
@@ -92,6 +95,7 @@ export function workflowOf(record: GroupWorkflowRunRecord): StoredWorkflow {
   return {
     ...plan.data,
     folder: value.folder,
+    ...(typeof value.piDispatchId === "string" ? { piDispatchId: value.piDispatchId } : {}),
     ...(typeof value.manualReviewMessageId === "string"
       ? { manualReviewMessageId: value.manualReviewMessageId }
       : {}),

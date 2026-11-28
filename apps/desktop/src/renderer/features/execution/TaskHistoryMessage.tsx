@@ -1,3 +1,4 @@
+import { toolStatusKey } from "@pibot/client-core";
 import type { Message } from "@pibot/protocol";
 import { useT } from "@pibot/renderer-kit";
 import { Button } from "@pibot/ui";
@@ -49,11 +50,19 @@ function TimelineMessage({ message, botId }: { message: Message; botId: string }
         )}
         {shown.map((tool) => (
           <div key={tool.id} className={styles.timelineTool}>
-            <code>{tool.summary || tool.tool}</code>
+            <code>
+              {tool.summary || tool.tool}
+              {tool.inputTranslation && (
+                <>
+                  <br />
+                  {t("tool.inputTranslation", { text: tool.inputTranslation })}
+                </>
+              )}
+            </code>
             <em>
               {tool.exitCode !== null
                 ? t("tool.exit", { code: tool.exitCode })
-                : t(`tool.status.${tool.status}`)}
+                : t(toolStatusKey(tool))}
               {tool.durationMs !== null && ` · ${(tool.durationMs / 1000).toFixed(1)}s`}
             </em>
             {tool.exitCode !== null && message.runId && (
@@ -124,9 +133,12 @@ function ListMessage({ message, botId }: { message: Message; botId: string }) {
           {message.tools.slice(0, visibleTools).map((tool) => (
             <li key={tool.id}>
               <strong>
-                {tool.tool} · {t(`tool.status.${tool.status}`)}
+                {tool.tool} · {t(toolStatusKey(tool))}
               </strong>
               <pre className={styles.output}>{tool.summary}</pre>
+              {tool.inputTranslation && (
+                <p>{t("tool.inputTranslation", { text: tool.inputTranslation })}</p>
+              )}
               {tool.exitCode !== null && <p>{t("tool.exit", { code: tool.exitCode })}</p>}
               {commands.length > 1 && tool.exitCode !== null && message.runId && (
                 <RunLogButton

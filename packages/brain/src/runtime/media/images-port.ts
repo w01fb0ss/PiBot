@@ -31,6 +31,12 @@ export interface ImageRunHost {
 }
 
 /** The engine owns admission and the run slot; the image capability owns paid generation and delivery. */
+export type ImageDispatchModel = (
+  hasImages: boolean,
+  failure?: unknown,
+  executionClock?: ToolRunContext["executionClock"],
+) => Promise<Bot | undefined>;
+
 export interface ImagesPort {
   requireModel(
     selected: { provider: string; id: string } | undefined,
@@ -57,5 +63,6 @@ export interface ImagesPort {
     text: string,
     bot: Bot,
     images: ImageContent[],
+    dispatchModel?: ImageDispatchModel,
   ): Promise<void>;
 }

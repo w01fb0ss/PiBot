@@ -9,6 +9,7 @@ export async function aiConfigReadBoundary(
   platform: NodeJS.Platform,
   homes: string[],
   env: Readonly<NodeJS.ProcessEnv>,
+  resolveDenyTargets = denyTargets,
 ) {
   const names = new Set<string>();
   const globs = new Set<string>();
@@ -32,7 +33,7 @@ export async function aiConfigReadBoundary(
   const xdg = variable("XDG_CONFIG_HOME");
   if (platform !== "win32" && xdg && isAbsolute(xdg)) names.add(join(xdg, "opencode"));
   const roots = [
-    ...new Set((await Promise.all([...names].map((path) => denyTargets(path)))).flat()),
+    ...new Set((await Promise.all([...names].map((path) => resolveDenyTargets(path)))).flat()),
   ];
   return { roots, globs: [...globs] };
 }

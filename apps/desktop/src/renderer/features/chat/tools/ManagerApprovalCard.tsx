@@ -1,5 +1,10 @@
-import { approvalCountdown, approvalFactText, approvalText } from "@pibot/client-core";
-import type { Approval } from "@pibot/protocol";
+import {
+  approvalCountdown,
+  approvalDeadline,
+  approvalFactText,
+  approvalText,
+} from "@pibot/client-core";
+import { type Approval, isPiManagerCategory } from "@pibot/protocol";
 import { approvalStyles as styles, useSettings } from "@pibot/renderer-kit";
 import { Button, Icon } from "@pibot/ui";
 import { useEffect, useRef, useState } from "react";
@@ -15,7 +20,7 @@ type Decide = (
 ) => Promise<void>;
 
 /**
- * The default Pi's management and dispatch cards (owner-approved look 2026-11-24): what changes,
+ * The default Pi's management, dispatch and repair cards (owner-approved look 2026-11-24): what changes,
  * row by row, and one "don't ask again" box that sets Pi's own level for that kind to always.
  */
 export function ManagerApprovalCard({
@@ -43,16 +48,18 @@ export function ManagerApprovalCard({
     },
     [],
   );
-  const remaining = Math.max(0, Math.ceil((Date.parse(approval.expiresAt) - now) / 1000));
+  const { remaining, pauses, expired } = approvalDeadline(approval, now);
   useEffect(() => {
     if (approval.status !== "pending") return;
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, [approval.status]);
-  const dispatch = approval.category === "work_dispatch";
+  const rememberCategory = isPiManagerCategory(approval.category)
+    ? approval.category
+    : "bot_management";
   const canRemember = approval.canRemember && remaining > 0;
   const resolve = async (decision: "allow" | "deny") => {
-    if (busy) return;
+    if (busy || expired) return;
     setBusy(true);
     setError(false);
     try {
@@ -74,14 +81,28 @@ export function ManagerApprovalCard({
       {!inbox && (
         <header>
           <span aria-hidden="true">
-            <Icon name={dispatch ? "arrow" : "users"} />
+            <Icon
+              name={
+                rememberCategory === "work_dispatch"
+                  ? "arrow"
+                  : rememberCategory === "pi_repair"
+                    ? "shield"
+                    : rememberCategory === "settings_change"
+                      ? "settings"
+                      : "users"
+              }
+            />
           </span>
           <strong>{text.title}</strong>
         </header>
       )}
       {inbox && <strong>{text.title}</strong>}
       {lead && <p className={`${styles.context} ${own.lead}`}>{lead}</p>}
-      <dl className={styles.facts}>
+      <dl
+        className={`${styles.facts} ${
+          approval.category === "settings_change" ? own.settingsFacts : ""
+        }`}
+      >
         {text.facts.map((fact) => (
           <div key={JSON.stringify(fact)}>
             <dt>{fact.label ?? t(`facts.${fact.kind}`)}</dt>
@@ -98,9 +119,7 @@ export function ManagerApprovalCard({
               disabled={busy}
               onChange={(event) => setAlways(event.currentTarget.checked)}
             />
-            {t(
-              dispatch ? "approval.piRemember.work_dispatch" : "approval.piRemember.bot_management",
-            )}
+            {t(`approval.piRemember.${rememberCategory}`)}
           </label>
         )}
         {error && (
@@ -109,19 +128,25 @@ export function ManagerApprovalCard({
           </p>
         )}
         <div className={styles.actions}>
-          <Button variant="secondary" disabled={busy} onClick={() => void resolve("deny")}>
+          <Button
+            variant="secondary"
+            disabled={busy || expired}
+            onClick={() => void resolve("deny")}
+          >
             {t("approval.deny")}
           </Button>
-          <Button loading={busy} onClick={() => void resolve("allow")}>
+          <Button loading={busy} disabled={expired} onClick={() => void resolve("allow")}>
             {t("approval.allow")}
           </Button>
         </div>
         {remaining > 0 ? (
           <small role="timer">
-            {t("approval.chatCountdown", { time: approvalCountdown(remaining) })}
+            {t(pauses ? "approval.chatCountdown" : "approval.countdown", {
+              time: approvalCountdown(remaining),
+            })}
           </small>
         ) : (
-          <p role="status">{t("approval.awaitingExpiry")}</p>
+          <p role="status">{t(expired ? "approval.expired" : "approval.awaitingExpiry")}</p>
         )}
       </footer>
     </section>

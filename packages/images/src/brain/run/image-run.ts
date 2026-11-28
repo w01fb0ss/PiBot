@@ -1,9 +1,7 @@
-import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { AgentError, mapAgentError } from "@pibot/agent";
-import type { ChatRun, ImageRunHost, ToolRunContext } from "@pibot/brain/kit";
+import type { ChatRun, ImageDispatchModel, ImageRunHost, ToolRunContext } from "@pibot/brain/kit";
 import {
-  AttachmentService,
   auditText,
   ChatReplies,
   type PreparedAttachments,
@@ -12,39 +10,37 @@ import {
 } from "@pibot/brain/kit";
 import { imageExportFileName } from "@pibot/execution";
 import {
+  type AgentErrorCode,
   type Bot,
   type ImageContent,
   type ImageDelivery,
   ImageDeliverySchema,
+  type ImageGenerationResults,
   type ImageMode,
   type Message,
   MessageSchema,
 } from "@pibot/images-contract/full";
 import { AttachmentsRepo, MessagesRepo, RunsRepo, transaction } from "@pibot/storage";
 import type { ImageArtifactService } from "../artifacts/image-artifact-service.ts";
-import { ImageAuthorization } from "../artifacts/image-service.ts";
+import { ImageApprovalDeclined, ImageAuthorization } from "../artifacts/image-service.ts";
 import { prepareImageWorkspace } from "../workspace/image-workspace-target.ts";
 import { imageContextInputs } from "./image-context-input.ts";
 import { imageDeliveryText } from "./image-delivery-text.ts";
-import { imageQualityPrompt } from "./image-quality-prompt.ts";
-import { imageUsage, observedImageUsage, validatedImages } from "./image-run-output.ts";
+import { generateImageRequests, imageResultsText } from "./image-requests.ts";
+import { validatedImages } from "./image-run-output.ts";
 import { retainGeneratedImage } from "./image-run-retained.ts";
 
-/**
- * Cap on one paid request. Past generations took 40–130 s; the owner hit the cap once on
- * 2026-10-23 with gpt-image-2. Probes shorten it through `imageGenerationTimeoutMs`.
- */
-export const IMAGE_GENERATION_TIMEOUT_MS = 300_000;
+export { IMAGE_GENERATION_TIMEOUT_MS } from "./image-requests.ts";
 
 /** The run queue owns the Bot lock until both HTTP and attachment work have settled. */
 export async function generateImageRun(
   deps: ImageRunHost,
   run: ChatRun,
   text: string,
-  _sessionFile: string | null,
   bot: Bot,
   images: ImageContent[],
   artifacts: ImageArtifactService,
+  dispatchModel?: ImageDispatchModel,
 ) {
   const local = deps.local;
   let mode: ImageMode = images.length ? "image-to-image" : "text-to-image";
@@ -81,7 +77,9 @@ export async function generateImageRun(
   let committed = false;
   let startedAt = 0;
   let authorization: ImageAuthorization | undefined;
-  let deadline: AbortSignal | undefined;
+  let imageResults: ImageGenerationResults | undefined;
+  let finalText = "";
+  let attemptedModel: { provider: string; id: string } | undefined;
   const emit = (action: () => void) => {
     try {
       action();
@@ -89,7 +87,7 @@ export async function generateImageRun(
       deps.logger.warn("Image notification deferred; history retains committed metadata");
     }
   };
-  // The run activity line, reused: an image run's only long wait is its one paid request.
+  // Keep the activity visible until all paid requests and attachment preparation settle.
   // Task runs have no visible reply, as in chat-run.
   const activity = (phase: "executing_tool" | "clear") => {
     if (run.executionTaskId) return;
@@ -102,15 +100,11 @@ export async function generateImageRun(
       }),
     );
   };
-  // A stop is the user's (or quit/budget); the cap firing alone is a service that never answered.
-  const stopCode = (error: unknown) => {
+  const stopCode = (error: unknown): AgentErrorCode => {
     if (local?.budgets.repo.get(run.budgetRootRunId ?? run.runId)?.exhaustedReason)
       return "budget_exhausted" as const;
     if (run.aborted || signal.aborted) return "aborted" as const;
-    const mapped = mapAgentError(error);
-    return mapped === "image_timeout" || (mapped === "aborted" && deadline?.aborted)
-      ? ("image_timeout" as const)
-      : mapped;
+    return mapAgentError(error);
   };
   const metadata = {
     toolName: "image_generation",
@@ -132,114 +126,130 @@ export async function generateImageRun(
     if (images.length) validatedImages(images);
     context.topicWorkplace = topicWorkplaceSnapshot(local, context);
     const place = await resolveRunWorkplace(local, context, signal);
-    context.runWorkplace = { cwd: place.cwd, boundary: place.boundary };
+    local.setRunWorkplace(context, place);
     // Image generation bypasses LocalRun, but exporting its file still needs the original
     // workspace context when the queue captures checkpoints before releasing this run.
     local.retainRunContext(context);
-    const references = await imageContextInputs(local, context, images);
+    const options = run.imageGeneration;
+    // The structured dispatch describes new images. References still come from the caller's
+    // attachments or explicit quote, never from an unrelated earlier generation in the topic.
+    const references = options
+      ? { images, assertCurrent: () => signal.throwIfAborted() }
+      : await imageContextInputs(local, context, images);
     images = references.images;
     mode = images.length ? "image-to-image" : "text-to-image";
     metadata.imageMode = mode;
-    authorization = new ImageAuthorization(local, deps.agent, bot, context, mode);
-    const model = await authorization.authorize();
-    metadata.modelId = auditText(model.id, deps.redactor);
-    const target = await prepareImageWorkspace(local, context);
-    artifacts.repo.capture(target, {
-      provider: model.provider,
-      id: model.id,
-      recipient: model.recipient,
-      mode,
-    });
-    authorization.assertCurrent();
-    references.assertCurrent();
-    startedAt = Date.now();
-    local.approvals.audit.append({
-      botId: bot.id,
-      runId: run.runId,
-      kind: "image.started",
-      summary: "Image generation started / 开始生成图片",
-      detail: { ...metadata, target: model?.recipient, imageCount: images.length },
-    });
-    // The queue already reported this run as running.
-    // A timeout aborts the real request. No race releases the run while it is still active.
-    const timeoutMs = Math.min(
-      local.deps.imageGenerationTimeoutMs ?? IMAGE_GENERATION_TIMEOUT_MS,
-      IMAGE_GENERATION_TIMEOUT_MS,
-    );
-    deadline = AbortSignal.timeout(timeoutMs);
-    const generationSignal = AbortSignal.any([signal, deadline]);
-    const prompt = imageQualityPrompt(
-      deps.redactor.redact(text),
-      deps.language(),
-      bot.norms ? deps.redactor.redact(bot.norms) : undefined,
-    );
-    const accounting = local.budgets.observer(context);
-    const requestId = randomUUID();
-    accounting.beforeRequest({
-      id: requestId,
-      kind: "response",
-      provider: model.provider,
-      model: model.id,
-      pricingKnown: false,
-    });
-    let requestSettled = false;
-    let outcome = "done";
-    const requestStartedAt = Date.now();
-    const endExec = authorization.timing.enter("exec");
-    activity("executing_tool");
-    const result = await deps.agent
-      .generateImage({
-        model: { provider: model.provider, id: model.id },
-        recipient: model?.recipient as string,
-        mode: mode,
-        prompt: prompt.text,
-        images,
-        signal: generationSignal,
-        timeoutMs,
-      })
-      .then((value) => {
-        requestSettled = true;
-        accounting.settled({
-          id: requestId,
-          complete: true,
-          usage: observedImageUsage(value.usage),
-        });
-        return value;
-      })
-      .catch((error: unknown) => {
-        outcome = stopCode(error);
-        throw error;
-      })
-      .finally(() => {
-        endExec();
-        if (!requestSettled) accounting.settled({ id: requestId, complete: false });
-        activity("clear");
-        // One line per paid request, lengths only (never prompt text), to compare services and
-        // whether the norms/brief sections change generation time.
-        const lengths = prompt.lengths;
-        deps.logger.info(
-          `image.generation run=${run.runId} provider=${metadata.providerId} model=${metadata.modelId} mode=${mode} promptChars=${lengths.promptChars} requestChars=${lengths.requestChars} normsChars=${lengths.normsChars} briefChars=${lengths.briefChars} referenceImages=${images.length} durationMs=${Date.now() - requestStartedAt} timeoutMs=${timeoutMs} outcome=${outcome}`,
-        );
+    if (dispatchModel && !options)
+      bot = (await dispatchModel(images.length > 0, undefined, context.executionClock)) ?? bot;
+    const generate = async () => {
+      const attempt = new ImageAuthorization(
+        local,
+        deps.agent,
+        bot,
+        context,
+        mode,
+        images.length,
+        options,
+      );
+      authorization = attempt;
+      const models = await attempt.authorize();
+      const model = models[0];
+      if (!model) throw new AgentError("no_model");
+      metadata.providerId = auditText(model.provider, deps.redactor);
+      metadata.modelId = auditText(model.id, deps.redactor);
+      const target = await prepareImageWorkspace(local, context);
+      artifacts.repo.capture(target, {
+        provider: model.provider,
+        id: model.id,
+        recipient: model.recipient,
+        mode,
+        ...(options
+          ? { botModel: { provider: bot.modelProvider ?? "", id: bot.modelId ?? "" } }
+          : {}),
       });
-    const endPost = authorization.timing.enter("post");
-    const outputs = validatedImages(result.images);
-    const attachments = new AttachmentService(deps.db, deps.dataDir, local.deps.host.attachments);
-    batch = await attachments.prepareOutput(
-      bot.id,
-      outputs.map(({ bytes, image }, index) => ({
-        name: `image-${index + 1}.${image.mimeType === "image/jpeg" ? "jpg" : image.mimeType.split("/")[1]}`,
-        bytes,
-      })),
-      // A paid response that already arrived is retained in managed storage even if its budget
-      // stops further work. This grants no permission to export into the project directory.
-      AbortSignal.any([local.shutdown.signal, AbortSignal.timeout(20_000)]),
-    );
-    let finalText = deps.redactor.redact(
-      result.text?.trim() || (context.language === "zh" ? "图片已生成。" : "Image generated."),
-    );
+      attempt.assertCurrent();
+      references.assertCurrent();
+      if (options) startedAt = Date.now();
+      activity("executing_tool");
+      const endExec = attempt.timing.enter("exec");
+      const generated = await generateImageRequests({
+        deps,
+        local,
+        context,
+        authorization: attempt,
+        models,
+        mode,
+        images,
+        text,
+        norms: bot.norms ?? undefined,
+        options,
+        assertReferences: references.assertCurrent,
+        onRequestStart(model) {
+          if (options) return;
+          local.approvals.audit.append({
+            botId: bot.id,
+            runId: run.runId,
+            kind: "image.started",
+            summary: "Image generation started / 开始生成图片",
+            detail: { ...metadata, target: model.recipient, imageCount: images.length },
+          });
+          attemptedModel = { provider: metadata.providerId, id: metadata.modelId };
+          startedAt = Date.now();
+        },
+        stopCode,
+      }).finally(() => {
+        endExec();
+        activity("clear");
+      });
+      return { generated, model, target, attempt };
+    };
+    let result: Awaited<ReturnType<typeof generate>>;
+    for (;;) {
+      try {
+        result = await generate();
+        break;
+      } catch (error) {
+        if (error instanceof ImageApprovalDeclined || options || signal.aborted || !dispatchModel)
+          throw error;
+        const failedAt = Date.now();
+        const reason = stopCode(error);
+        const replacement = await dispatchModel(images.length > 0, error, context.executionClock);
+        if (!replacement) throw error;
+        if (startedAt) {
+          local.approvals.audit.append({
+            botId: bot.id,
+            runId: run.runId,
+            kind: "image.finished",
+            summary: "Image generation stopped / 图片生成停止",
+            detail: {
+              ...metadata,
+              durationMs: failedAt - startedAt,
+              reasonCode: reason === "image_timeout" ? "timeout" : reason,
+            },
+          });
+          startedAt = 0;
+        }
+        authorization?.finish("error");
+        authorization = undefined;
+        // A rejected provider request committed no image. Keep completed artifacts immutable.
+        artifacts.repo.releaseUncommitted(run.runId);
+        bot = replacement;
+      }
+    }
+    const { generated, model, target, attempt } = result;
+    batch = generated.prepared;
+    imageResults = generated.results;
+    finalText = deps.redactor.redact(generated.caption);
+    if (!batch.items.length) {
+      const failure = imageResults?.items.find((item) => item.status === "failed");
+      throw new AgentError(failure?.reasonCode ?? "provider_error");
+    }
+    const endPost = attempt.timing.enter("post");
     let usage = MessageSchema.shape.usage.parse({
-      ...imageUsage(result.usage),
+      ...generated.usage,
+      ...(imageResults ? { imageResults } : {}),
       imageGeneration: true,
+      ...(!options ? { runModel: { provider: model.provider, id: model.id } } : {}),
       imageMode: mode,
       imageCount: batch.items.length,
       stopReason: "stop",
@@ -263,13 +273,13 @@ export async function generateImageRun(
         currentMessage.runId !== run.runId
       )
         throw new AgentError("permission_denied");
-      attachments.persist(run.messageId, batch as PreparedAttachments, bot.id);
+      generated.attachments.persist(run.messageId, generated.prepared, bot.id);
       messages.update(run.messageId, { content: finalText, usage });
       artifacts.repo.markGenerated(run.runId);
     });
     committed = true;
     endPost();
-    authorization.timing.finish();
+    attempt.timing.finish();
     // The paid image is already available while the separate workspace approval is pending.
     emit(() =>
       deps.peer.emit("chat.attachments", {
@@ -280,9 +290,8 @@ export async function generateImageRun(
           new AttachmentsRepo(deps.db).forMessages([run.messageId]).get(run.messageId) ?? [],
       }),
     );
-    generationSignal.throwIfAborted();
     signal.throwIfAborted();
-    await authorization.revalidate();
+    await attempt.revalidate();
     signal.throwIfAborted();
     let delivery: ImageDelivery;
     try {
@@ -333,20 +342,21 @@ export async function generateImageRun(
       replies.content = finalText;
       updates = replies.finish("done", usage);
       runs.finish(run.runId, "done", "stop");
-      authorization?.finish("done");
-      local.approvals.audit.append({
-        botId: bot.id,
-        runId: run.runId,
-        kind: "image.finished",
-        summary: "Image generation completed / 图片生成完成",
-        detail: {
-          ...metadata,
-          target: model?.recipient,
-          imageCount: batch?.items.length,
-          durationMs: Date.now() - startedAt,
-          reasonCode: "done",
-        },
-      });
+      attempt.finish("done");
+      if (!options)
+        local.approvals.audit.append({
+          botId: bot.id,
+          runId: run.runId,
+          kind: "image.finished",
+          summary: "Image generation completed / 图片生成完成",
+          detail: {
+            ...metadata,
+            target: model?.recipient,
+            imageCount: batch?.items.length,
+            durationMs: Date.now() - startedAt,
+            reasonCode: "done",
+          },
+        });
       // Successful member output uses the existing automatic completion and attachment source.
       return local.collaboration?.completeRun?.(context, finalText, "stop", []);
     });
@@ -382,6 +392,20 @@ export async function generateImageRun(
     );
   } catch (error) {
     const code = stopCode(error);
+    const declined =
+      code === "permission_denied" && error instanceof ImageApprovalDeclined
+        ? {
+            providerId: auditText(error.model.provider, deps.redactor),
+            modelId: auditText(error.model.id, deps.redactor),
+          }
+        : undefined;
+    const replacementDeclined = declined && attemptedModel;
+    const declineReason = declined
+      ? replacementDeclined
+        ? "image_replacement_approval_declined"
+        : "image_approval_declined"
+      : undefined;
+    const receiptModel = replacementDeclined ? attemptedModel : run.selectedModel;
     const cancelled = run.aborted || signal.aborted;
     const exhausted = local?.budgets.repo.get(run.budgetRootRunId ?? run.runId)?.exhaustedReason;
     run.stopCause ??= {
@@ -410,16 +434,42 @@ export async function generateImageRun(
     }
     // image_timeout is an error (with Retry), never "aborted": the user did not stop it.
     const updates = transaction(deps.db, () => {
+      if (imageResults) {
+        // If the attachment transaction failed, none of its attachment IDs were published.
+        imageResults.items = imageResults.items.map((item) =>
+          item.status === "success"
+            ? { model: item.model, status: "failed", reasonCode: code }
+            : item,
+        );
+        finalText = deps.redactor.redact(imageResultsText(context.language, imageResults));
+        replies.content = finalText;
+        messages.update(run.messageId, { content: finalText });
+      }
       const updates = replies.finish(
         code === "aborted" ? "aborted" : "error",
-        { stopReason: code },
+        {
+          stopReason: code,
+          ...(declined
+            ? replacementDeclined
+              ? {
+                  imageReplacementDeclined: {
+                    attemptedModel: `${replacementDeclined.provider}/${replacementDeclined.id}`,
+                    replacementModel: `${declined.providerId}/${declined.modelId}`,
+                  },
+                }
+              : { imageApprovalDeclined: true }
+            : {}),
+          imageMode: mode,
+          ...(receiptModel ? { runModel: receiptModel } : {}),
+          ...(imageResults ? { imageGeneration: true, imageResults } : {}),
+        },
         code,
       );
       runs.finish(
         run.runId,
         code === "aborted" ? "aborted" : "error",
         code === "aborted" ? "aborted" : "error",
-        code,
+        declineReason ?? (code === "permission_denied" ? "image_request_incomplete" : code),
       );
       authorization?.finish(code === "aborted" ? "aborted" : "error");
       local?.approvals.audit.append({
@@ -429,7 +479,8 @@ export async function generateImageRun(
         summary: "Image generation stopped / 图片生成停止",
         detail: {
           ...metadata,
-          reasonCode: code === "image_timeout" ? "timeout" : code,
+          ...declined,
+          reasonCode: declineReason ?? (code === "image_timeout" ? "timeout" : code),
           durationMs: startedAt ? Date.now() - startedAt : 0,
         },
       });

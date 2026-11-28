@@ -1,3 +1,4 @@
+import { isAbsolute, relative, sep } from "node:path";
 import type {
   BrainCapability,
   BuiltinMethodsPort,
@@ -7,6 +8,7 @@ import type {
 import { abortable } from "@pibot/brain/kit";
 import { skillReferenceTools } from "@pibot/skills-contract";
 import { RpcError, RpcErrorCodes, withProgressDeadline } from "@pibot/skills-contract/full";
+import { skillsEn, skillsZh } from "@pibot/skills-contract/i18n";
 import { BotsRepo } from "@pibot/storage";
 import { SkillLinks } from "./links/skill-links.ts";
 import { PluginSkillHost } from "./plugin-skills.ts";
@@ -67,6 +69,18 @@ export function skillsCapability(): BrainCapability {
         return { text, untrustedContent: true };
       });
       const port: SkillsPort = {
+        commandEntries(botId, groupId, requestSignal) {
+          const service = services.effectiveFor(botId, groupId);
+          const rows: { name: string; description: string }[] = [];
+          let before: string | undefined;
+          for (;;) {
+            requestSignal.throwIfAborted();
+            const page = service.list({ botId, enabled: true, builtin: false, limit: 50, before });
+            rows.push(...page.filter((skill) => skill.botId === botId && skill.enabled));
+            if (page.length < 50) return rows;
+            before = page.at(-1)?.id;
+          }
+        },
         readReference: (botId, name, groupId, language, requestSignal) =>
           track(() =>
             readSkillReference(
@@ -87,14 +101,91 @@ export function skillsCapability(): BrainCapability {
         root: (botId, groupId) => services.effectiveFor(botId, groupId).root(botId),
         roots: (botId, groupId) => services.effectiveFor(botId, groupId).roots(botId),
         packageIds: (botId, groupId) => services.effectiveFor(botId, groupId).packageIds(botId),
-        runtimeEnvironment: (botId, groupId) => {
+        commandRuntime: async (botId, groupId, paths, interpreter) => {
+          if (!paths.length) return undefined;
           const effective = services.effectiveFor(botId, groupId);
-          return services.runtime.environment(botId, (skillId) => {
-            const record = effective.repo.get(skillId);
-            return record?.botId === botId && record.enabled
-              ? effective.runtimeTarget(skillId)
-              : undefined;
+          const matches = effective.repo.enabledForPrompt(botId).filter((record) => {
+            if (record.packageId && !effective.packages.has(record.packageId)) return false;
+            const { folder } = effective.runtimeTarget(record.id);
+            return paths.some((path) => {
+              const child = relative(folder, path);
+              return child && !isAbsolute(child) && child !== ".." && !child.startsWith(`..${sep}`);
+            });
           });
+          const match = matches[0];
+          if (!match) return undefined;
+          const target = effective.runtimeTarget(match.id);
+          const copies = matches.slice(1).map(({ id }) => effective.runtimeTarget(id));
+          if (copies.length) {
+            if (matches.some(({ id }) => effective.secretBindings(id).length))
+              return { secretBindingsAmbiguous: true };
+            if (copies.some(({ folder }) => relative(target.folder, folder))) return undefined;
+          }
+          // A single literal interpreter also covers extensionless scripts. For compound
+          // commands, infer only when every recognized script in this skill uses the same runtime.
+          const runtimes = new Set(
+            paths
+              .filter((path) => {
+                const child = relative(target.folder, path);
+                return (
+                  child && !isAbsolute(child) && child !== ".." && !child.startsWith(`..${sep}`)
+                );
+              })
+              .flatMap((path) =>
+                /\.pyw?$/i.test(path)
+                  ? ["python" as const]
+                  : /\.[cm]?js$/i.test(path)
+                    ? ["node" as const]
+                    : [],
+              ),
+          );
+          const selected = interpreter ?? (runtimes.size === 1 ? [...runtimes][0] : undefined);
+          let runtime = await services.runtime.commandRuntime(target, selected);
+          if (copies.length) {
+            for (const copy of copies) {
+              if (!runtime?.missing) break;
+              const candidate = await services.runtime.commandRuntime(copy, selected);
+              if (candidate?.environment) runtime = candidate;
+            }
+            return matches.some(({ id }) => effective.secretBindings(id).length)
+              ? { secretBindingsAmbiguous: true }
+              : runtime;
+          }
+          const bindings = effective.secretBindings(match.id);
+          return {
+            ...runtime,
+            ...(bindings.length
+              ? {
+                  secretBindings: {
+                    folder: target.folder,
+                    skillId: match.id,
+                    name: match.name,
+                    consent: {
+                      zh: skillsZh["skills.secrets.approval"],
+                      en: skillsEn["skills.secrets.approval"],
+                    },
+                    uses: bindings.map(({ variable, secretName }) => ({
+                      variable,
+                      name: secretName,
+                      revision: ctx.local.userSecrets.metadata(secretName)?.revision ?? 0,
+                    })),
+                  },
+                }
+              : {}),
+          };
+        },
+        commandSecretsCurrent: (botId, groupId, skillId, uses) => {
+          const effective = services.effectiveFor(botId, groupId);
+          const current = effective.repo.get(skillId);
+          if (current?.botId !== botId || !current.enabled) return false;
+          const bindings = effective.secretBindings(skillId);
+          return (
+            bindings.length === uses.length &&
+            bindings.every(
+              ({ variable, secretName }, index) =>
+                uses[index]?.variable === variable && uses[index]?.name === secretName,
+            )
+          );
         },
         promptEntries: (botId, groupId, _language, requestSignal) =>
           track(async () => {
@@ -215,6 +306,7 @@ export function skillsCapability(): BrainCapability {
       });
       void track(() => maintenance);
       try {
+        port.previewLink = (...args) => track(() => links.previewTeamSource(...args));
         ctx.skills.provide(port);
         ctx.ports.provide("imported-skills", {
           copyImported: port.copyImported,

@@ -10,6 +10,8 @@ import {
   looksLikeCredential,
   looksLikeCredentialName,
   looksLikeCredentialValue,
+  missingPluginConfigValue,
+  pluginConfigFieldVisible,
   unsupportedClaudePluginComponents,
 } from "@pibot/plugins-contract";
 import {
@@ -17,11 +19,16 @@ import {
   ClaudePluginBundleSchema,
   type ConnectorManifest,
   ConnectorManifestSchema,
+  ConnectorNetworkSiteSchema,
   type ConnectorServer,
+  connectorEndpointSite,
   IdSchema,
   RpcError,
   RpcErrorCodes,
 } from "@pibot/plugins-contract/full";
+import { parseJsonc } from "../discovery/formats.ts";
+import { importWorkingDirectory } from "../import-working-directory.ts";
+import { compatibleSource } from "./connector-import-compat.ts";
 
 export const USER_SECRET_SCOPE = "user-secret";
 const PREVIEW_TTL_MS = 5 * 60_000;
@@ -31,40 +38,173 @@ const SECRET_MARKER = "${secret:";
 const PACKAGE_MANAGER_DOMAINS = {
   npx: ["registry.npmjs.org"],
   uvx: ["pypi.org", "files.pythonhosted.org"],
+  uv: ["pypi.org", "files.pythonhosted.org"],
+  npm: ["registry.npmjs.org"],
+  pnpm: ["registry.npmjs.org"],
+  bunx: ["registry.npmjs.org"],
 } as const;
+
+type RequiredKey = { name: string; label: string; serverId: string };
+type PrivateField = { name: string; label: string; serverId: string };
+type FillValue = (read: (name: string) => string) => string;
 
 /** Generated references belong to one installation, never to a global header name. */
 class ImportSecretRegistry {
-  private readonly byName = new Map<string, string>();
+  private readonly byName = new Map<
+    string,
+    { value: string; label: string; example: boolean; opaque: boolean }
+  >();
+  readonly fills = new Map<string, FillValue>();
+  readonly plainFields: PrivateField[] = [];
 
   constructor(
     private readonly reserved: Set<string>,
     private readonly prefix: string,
+    private readonly serverId: string,
   ) {}
 
-  register(base: string, value: string): string {
+  register(
+    base: string,
+    value: string,
+    example = isExampleCredential(value),
+    label = base,
+    opaque = false,
+  ): string {
+    base = secretNameFromHeader(base) ?? fallbackSecretName(base);
     const name = `${this.prefix}${base}`.slice(0, 64);
     for (let n = 1; n <= 99; n += 1) {
       const suffix = n === 1 ? "" : `_${n}`;
       const candidate = `${name.slice(0, 64 - suffix.length)}${suffix}`;
       if (this.reserved.has(candidate)) continue;
       const existing = this.byName.get(candidate);
-      if (existing === value) return candidate;
       if (existing !== undefined) continue;
-      this.byName.set(candidate, value);
+      this.byName.set(candidate, { value, label, example, opaque });
       return candidate;
     }
     throw invalid("Too many credential name collisions in one import");
   }
 
   entries(): ImportedSecret[] {
-    return [...this.byName].map(([name, value]) => ({ name, value }));
+    return [...this.byName].flatMap(([name, { value, example, opaque }]) =>
+      example || this.fills.has(name) ? [] : [{ name, value, ...(opaque ? { opaque } : {}) }],
+    );
   }
+
+  requiredKeys() {
+    return [...this.byName].flatMap(([name, { label, example }]) =>
+      example ? [{ name, label, serverId: this.serverId }] : [],
+    );
+  }
+
+  protect(label: string, value: string, header: boolean): string {
+    const headerScheme = header ? (/^(?:Bearer|Basic|Token|ApiKey) +/i.exec(value)?.[0] ?? "") : "";
+    const protectedValue = value.slice(headerScheme.length);
+    if (value.includes(SECRET_MARKER)) {
+      if (/^\$\{secret:[A-Z][A-Z0-9_]{0,63}\}$/.test(protectedValue)) return value;
+      throw invalid("Literal values beside secret references are unsupported");
+    }
+    const base = secretNameFromHeader(label) ?? fallbackSecretName(label);
+    const shown = label.slice(0, 64);
+    const name = this.register(base, protectedValue, false, shown, !headerScheme);
+    const slot = (leaf: string) => {
+      const scheme = /^(?:Bearer|Basic|Token|ApiKey) +/i.exec(leaf)?.[0] ?? "";
+      const candidate = leaf.slice(scheme.length);
+      const external = externalValue.exec(candidate)?.[1];
+      if (!candidate.trim() || (!external && !isExampleCredential(candidate))) return undefined;
+      const field = this.register(base, "", true, external ?? shown);
+      return (read: (name: string) => string) => `${scheme}${read(field)}`;
+    };
+    const fill = slot(protectedValue) ?? (!header ? jsonCredentialFill(value, slot) : undefined);
+    if (fill) this.fills.set(name, fill);
+    else if (
+      !headerScheme &&
+      !looksLikeCredential(label, value) &&
+      !credentialUrl(value) &&
+      importedCredentialParts(value).length === 0 &&
+      !/\b(?:Bearer|Basic|Token|ApiKey)\s+\S|["'](?:authorization|cookie|password|(?:api[-_]?key|access[-_]?token))["']\s*:/i.test(
+        value,
+      )
+    )
+      this.plainFields.push({ name, label: shown, serverId: this.serverId });
+    return `${headerScheme}\${secret:${name}}`;
+  }
+}
+
+const isExampleCredential = (value: string) =>
+  !value.trim() ||
+  /^(?:(?:Bearer|Basic|Token|ApiKey) +)?(?:your[-_ ]?[a-z][a-z0-9_ -]*|[<{][a-z][a-z0-9_ -]*[>}]|\$\{[A-Z][A-Z0-9_]{0,63}\}|replace[-_ ]?me|changeme)$/i.test(
+    value.trim(),
+  );
+
+const externalValue = /^\$\{(?:env:)?([A-Za-z_][A-Za-z0-9_]{0,63})\}$/;
+
+/** Replace JSON string values at their original offsets, escaping the inserted key for JSON. */
+function jsonCredentialFill(value: string, slot: (leaf: string) => FillValue | undefined) {
+  if (!/^\s*[{[]/.test(value)) return undefined;
+  try {
+    JSON.parse(value);
+  } catch {
+    // An arbitrary env string is still protected as an opaque value.
+    return undefined;
+  }
+  const fills = [...value.matchAll(/"(?:[^"\\]|\\.)*"/g)].flatMap(({ 0: literal, index }) => {
+    const end = index + literal.length;
+    if (value.slice(end).trimStart().startsWith(":")) return [];
+    const fill = slot(JSON.parse(literal) as string);
+    return fill ? [{ index, end, fill }] : [];
+  });
+  if (!fills.length) return undefined;
+  return (read: Parameters<FillValue>[0]) => {
+    let offset = 0;
+    let result = "";
+    for (const { index, end, fill } of fills) {
+      result += value.slice(offset, index) + JSON.stringify(fill(read));
+      offset = end;
+    }
+    return result + value.slice(offset);
+  };
+}
+
+const URLsInText = /[a-z][a-z0-9+.-]*:\/\/[^\s<>"']+/gi;
+
+function credentialUrl(value: string): boolean {
+  for (const [candidate] of value.matchAll(URLsInText)) {
+    const url = URL.parse(candidate);
+    if (url?.username || url?.password || /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*@/i.test(candidate))
+      return true;
+    const query = candidate.split(/[?#]/).slice(1);
+    if (query.some((part) => [...new URLSearchParams(part).keys()].some(looksLikeCredentialName)))
+      return true;
+  }
+  return false;
+}
+
+/** The MCP process may echo a credential from a composite value without its enclosing JSON. */
+export function importedCredentialParts(value: string, allJsonValues = false): string[] {
+  const parts: string[] = [];
+  const authValue = (text: string) => /^(?:Bearer|Basic|Token|ApiKey) +([^\s]+)$/i.exec(text)?.[1];
+  const token = authValue(value);
+  if (token) parts.push(token);
+  if (!/^\s*[{[]/.test(value)) return parts;
+  try {
+    JSON.parse(value, (key, item: unknown) => {
+      if (
+        typeof item === "string" &&
+        (allJsonValues || looksLikeCredentialName(key) || authValue(item))
+      )
+        parts.push(authValue(item) ?? item);
+      return item;
+    });
+  } catch {
+    // Non-JSON values are already protected in their entirety.
+  }
+  return parts;
 }
 
 export interface ImportedSecret {
   name: string;
   value: string;
+  opaque?: true;
 }
 
 export interface ConnectorPreview {
@@ -76,11 +216,16 @@ export interface ConnectorPreview {
   /** Sanitized manifest: plaintext secrets replaced by ${secret:NAME} refs. */
   manifest: ConnectorManifest;
   declaredVersion?: string;
+  ignoredMcpMetadata?: true;
+  requiredKeys?: RequiredKey[];
+  plainFields?: PrivateField[];
+  fills?: ReadonlyMap<string, FillValue>;
   /** Plaintext values backing the references; never serialized to the renderer. */
   secrets: ImportedSecret[];
   plugin?: ClaudePluginBundle;
   /** Brain-derived destination; never accepted from an imported manifest. */
   installationRoot?: string;
+  discovery?: { tool: string; key: string; name?: string; path: string };
 }
 
 export interface ConnectorImportReceipt {
@@ -96,6 +241,9 @@ export interface ConnectorImportIntent {
   skillTargets?: { bots: string[]; groups: string[] };
   enable: boolean;
   config: Readonly<Record<string, string | number | boolean>>;
+  plainFields?: readonly string[];
+  useSavedKeys?: true;
+  networkDomains?: Readonly<Record<string, readonly string[]>>;
 }
 
 const invalid = (reason: string) => new RpcError(RpcErrorCodes.pluginImportInvalid, reason);
@@ -205,6 +353,45 @@ function finalManifestStrings(value: unknown): string[] {
   return [];
 }
 
+function rejectCopiedSecrets(manifest: ConnectorManifest, secrets: readonly ImportedSecret[]) {
+  if (!secrets.length) return;
+  const regionArguments = new Map<string, ReadonlySet<string>>();
+  for (const server of manifest.servers) {
+    if (server.transport !== "stdio") continue;
+    const regions = new Set(
+      server.args.flatMap((arg, index) => {
+        const value =
+          arg === "--region" ? server.args[index + 1] : /^--region=(.+)$/u.exec(arg)?.[1];
+        return value && /^[a-z]{2,4}(?:-[a-z]+){1,3}-[0-9]+$/u.test(value) ? [value] : [];
+      }),
+    );
+    if (regions.size === 0) continue;
+    for (const [key, reference] of Object.entries(server.env)) {
+      const name = /^\$\{secret:([A-Z][A-Z0-9_]{0,63})\}$/u.exec(reference)?.[1];
+      if (name && /(?:^|_)REGION$/iu.test(key) && !looksLikeCredentialName(key))
+        regionArguments.set(name, regions);
+    }
+  }
+  const exact = new Set<string>();
+  for (const { name, value, opaque } of secrets) {
+    if (!value) continue;
+    // A provider region explicitly supplied in both places is ordinary command configuration.
+    if (opaque && regionArguments.get(name)?.has(value)) continue;
+    if (!opaque || value.length >= 8) exact.add(value);
+    for (const part of importedCredentialParts(value)) if (part) exact.add(part);
+    for (const [candidate] of value.matchAll(URLsInText)) {
+      const password = URL.parse(candidate)?.password;
+      if (password) exact.add(password);
+    }
+  }
+  const embedded = [...exact].filter((value) => value.length >= 8);
+  for (const field of finalManifestStrings(manifest)) {
+    const visible = field.replaceAll(SECRET_REF_GLOBAL, "");
+    if (exact.has(visible) || embedded.some((value) => visible.includes(value)))
+      throw invalid("connector_paste_commandCredential");
+  }
+}
+
 function serverSecretReferences(server: ConnectorManifest["servers"][number]): string[] {
   const names = new Set<string>();
   const values =
@@ -266,8 +453,12 @@ function validateFinalImportManifest(
     validateFinalPluginPath(server.command, options);
     for (const arg of server.args) {
       const optionName = /^--?([^=]+)/.exec(arg)?.[1];
-      if (hasSecretPlaceholder(arg) || (optionName && looksLikeCredentialName(optionName)))
-        throw invalid("Command arguments cannot carry credentials; use env secret references");
+      if (
+        credentialUrl(arg) ||
+        hasSecretPlaceholder(arg) ||
+        (optionName && looksLikeCredentialName(optionName))
+      )
+        throw invalid("connector_paste_commandCredential");
       validateFinalPluginPath(arg, options);
     }
   }
@@ -367,9 +558,15 @@ function hasSafeReferences(name: string, value: string, header: boolean): boolea
   return true;
 }
 
+/** Mutable only within one normalization; a repair must match exactly one command key. */
+type CommandKeyMigration = { name: string; applied: boolean };
+const commandKeyOption = /^--(?:api[-_]?key|token)(?:=(.*))?$/i;
+
 function sanitizeServer(
   server: ConnectorManifest["servers"][number],
   registry: ImportSecretRegistry,
+  keyMigration?: CommandKeyMigration,
+  protectValues = false,
 ): ConnectorManifest["servers"][number] {
   if (server.transport === "stdio") {
     if (
@@ -380,168 +577,183 @@ function sanitizeServer(
     )
       throw invalid("Working directory cannot contain substitutions or credentials");
     if (hasPluginCommandSubstitution(server.command)) rejectCommandSubstitution();
-    if (looksLikeCredentialValue(server.command) || server.command.includes(SECRET_MARKER))
+    if (
+      credentialUrl(server.command) ||
+      looksLikeCredentialValue(server.command) ||
+      server.command.includes(SECRET_MARKER)
+    )
       throw invalid("Command cannot carry credentials; use env secret references");
-    for (const arg of server.args) {
+    const env: Record<string, string> = { ...server.env };
+    const args: string[] = [];
+    const program = server.command
+      .split(/[\\/]/)
+      .at(-1)
+      ?.replace(/\.(?:exe|cmd|bat)$/i, "");
+    const firstPackageArg = server.args[0] === "-y" || server.args[0] === "--yes" ? 1 : 0;
+    const packageRunner = /^(?:npx|bunx)$/i.test(program ?? "");
+    // Context7's documented stdio API-key flag and env variable are interchangeable.
+    const context7 =
+      program === "context7-mcp" ||
+      (packageRunner &&
+        /^@upstash\/context7-mcp(?:@[a-zA-Z0-9.-]+)?$/.test(server.args[firstPackageArg] ?? ""));
+    const mcpRemote =
+      program === "mcp-remote" ||
+      (packageRunner &&
+        /^mcp-remote(?:@[a-zA-Z0-9.-]+)?$/.test(server.args[firstPackageArg] ?? ""));
+    for (let index = 0; index < server.args.length; index++) {
+      const arg = server.args[index] as string;
+      const headerFlag = /^(?:--header|-H)(?:=(.*))?$/.exec(arg);
+      const attachedHeader = arg.startsWith("-H") && !headerFlag ? arg.slice(2) : undefined;
+      if (headerFlag || attachedHeader) {
+        if (!mcpRemote) throw invalid("connector_paste_commandCredential");
+        const inlineHeader = headerFlag?.[1] ?? attachedHeader;
+        const header = inlineHeader ?? server.args[index + 1];
+        const fields = header && /^([!#$%&'*+.^_`|~0-9A-Za-z-]+):[ \t]*(.+)$/.exec(header);
+        const headerName = fields ? fields[1] : undefined;
+        const headerValue = fields ? fields[2] : undefined;
+        if (headerName && headerValue) {
+          if (/[\0\r\n]/.test(headerValue)) throw invalid("connector_paste_commandCredential");
+          // mcp-remote expands this in-process. The sandbox and confirmation only see the reference.
+          const scheme = /^(Bearer|Basic|Token|ApiKey) +/i.exec(headerValue);
+          const value = headerValue.slice(scheme?.[0].length ?? 0);
+          const variable = /^\$\{(?:env:)?([A-Z][A-Z0-9_]{0,63})\}$/.exec(value)?.[1];
+          const name = variable ?? `PIBOT_MCP_AUTH_HEADER_${index}`;
+          if (!variable) {
+            if (value.includes("${") || Object.hasOwn(env, name))
+              throw invalid("connector_paste_commandCredential");
+            env[name] = value;
+          } else if (!Object.hasOwn(env, name)) {
+            env[name] = `\${env:${name}}`;
+          }
+          if (!hasSafeReferences(name, env[name] ?? "", false)) {
+            const current = env[name] ?? "";
+            const external = externalValue.exec(current)?.[1];
+            const label =
+              external ?? secretNameFromHeader(headerName) ?? fallbackSecretName(headerName);
+            const secret = registry.register(label, external ? "" : current);
+            env[name] = `\${secret:${secret}}`;
+          }
+          args.push("--header", `${headerName}:${scheme?.[0] ?? ""}\${${name}}`);
+          if (inlineHeader === undefined) index++;
+          continue;
+        }
+        throw invalid("connector_paste_commandCredential");
+      }
+      // Standalone auth headers can occur in positional arguments as well.
+      const header = /^([a-zA-Z0-9_-]+):\s*(\S.*)$/.exec(arg);
+      if (header?.[1] && header[2] && looksLikeCredential(header[1], header[2]))
+        throw invalid("connector_paste_commandCredential");
+      const keyOption = commandKeyOption.exec(arg);
+      if (keyOption) {
+        const value = keyOption[1] ?? server.args[index + 1];
+        if (
+          !value ||
+          value.startsWith("--") ||
+          /[\0\r\n]/.test(value) ||
+          hasSecretPlaceholder(value)
+        )
+          throw invalid("connector_paste_commandCredential");
+        // Some READMEs show the alternative environment setting alongside the CLI option.
+        // Only infer the destination from one matching example explicitly present in this entry.
+        const expectedSuffix = /api[-_]?key/i.test(arg.split("=")[0] ?? "")
+          ? /API_?KEY$/i
+          : /TOKEN$/i;
+        const examples = Object.keys(env).filter(
+          (name) => expectedSuffix.test(name) && isExampleCredential(env[name] ?? ""),
+        );
+        const documentedName =
+          context7 && expectedSuffix.test("CONTEXT7_API_KEY") ? "CONTEXT7_API_KEY" : undefined;
+        const name =
+          keyMigration?.name ?? documentedName ?? (examples.length === 1 ? examples[0] : undefined);
+        if (!name) throw invalid("connector_paste_moveCommandKey");
+        if (
+          keyMigration?.applied ||
+          (Object.hasOwn(env, name) && !isExampleCredential(env[name] ?? ""))
+        )
+          throw invalid("connector_paste_keyConflict");
+        if (keyMigration) keyMigration.applied = true;
+        env[name] = `\${secret:${registry.register(name, value)}}`;
+        if (keyOption[1] === undefined) index++;
+        continue;
+      }
       const optionName = /^--?([^=]+)/.exec(arg)?.[1];
       if (
+        credentialUrl(arg) ||
         looksLikeCredentialValue(arg) ||
         (optionName !== undefined && looksLikeCredentialName(optionName)) ||
         arg.includes(SECRET_MARKER)
       )
-        throw invalid("Command arguments cannot carry credentials; use env secret references");
+        throw invalid("connector_paste_commandCredential");
+      args.push(arg);
     }
-    const env: Record<string, string> = {};
-    for (const [name, value] of Object.entries(server.env)) {
-      if (
-        hasSafeReferences(name, value, false) ||
-        (!looksLikeCredentialName(name) && !looksLikeCredentialValue(value))
-      ) {
-        env[name] = value;
+    for (const [name, value] of Object.entries(env)) {
+      if (protectValues) {
+        env[name] = registry.protect(name, value, false);
         continue;
       }
-      env[name] = `\${secret:${registry.register(name, value)}}`;
+      if (hasSafeReferences(name, value, false)) continue;
+      const external = externalValue.exec(value)?.[1];
+      if (
+        external ||
+        looksLikeCredentialName(name) ||
+        looksLikeCredentialValue(value) ||
+        (value.trim() && isExampleCredential(value)) ||
+        credentialUrl(value)
+      )
+        env[name] = `\${secret:${registry.register(external ?? name, external ? "" : value)}}`;
     }
-    return { ...server, env };
+    return { ...server, args, env };
   }
   if (server.transport !== "http") return server;
   const headers: Record<string, string> = {};
   for (const [name, value] of Object.entries(server.headers)) {
     if (looksLikeCredentialValue(name))
       throw invalid("HTTP header names cannot contain credentials");
+    if (protectValues) {
+      headers[name] = registry.protect(name, value, true);
+      continue;
+    }
     if (hasSafeReferences(name, value, true)) {
       headers[name] = value;
       continue;
     }
-    const bearer = /^(Bearer|Basic) (\S+)$/i.exec(value);
-    const candidate = bearer?.[2] ?? value;
-    if (!looksLikeCredentialName(name) && !bearer && !looksLikeCredentialValue(candidate)) {
+    const scheme = /^(Bearer|Basic|Token|ApiKey) +(.*)$/i.exec(value);
+    const candidate = scheme?.[2] ?? value;
+    const external = externalValue.exec(candidate)?.[1];
+    if (
+      !external &&
+      !looksLikeCredentialName(name) &&
+      !scheme &&
+      !looksLikeCredentialValue(candidate) &&
+      !(candidate.trim() && isExampleCredential(candidate))
+    ) {
       headers[name] = value;
       continue;
     }
     const derived = secretNameFromHeader(name) ?? fallbackSecretName(name);
     // The token is migrated, the literal scheme stays in the manifest.
-    const secretName = registry.register(derived, candidate);
-    headers[name] = bearer ? `${bearer[1]} \${secret:${secretName}}` : `\${secret:${secretName}}`;
+    const secretName = registry.register(external ?? derived, external ? "" : candidate);
+    headers[name] = `${scheme ? `${scheme[1]} ` : ""}\${secret:${secretName}}`;
   }
-  return { ...server, url: sanitizeHttpUrl(server.url, registry), headers };
-}
-
-function compatibleSource(value: unknown): unknown {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-  const source = value as Record<string, unknown>;
-  if (source.schemaVersion !== undefined) return source;
-  const servers =
-    source.mcpServers && typeof source.mcpServers === "object" && !Array.isArray(source.mcpServers)
-      ? Object.entries(source.mcpServers as Record<string, unknown>)
-      : source.command || source.url
-        ? [["custom", source] as const]
-        : undefined;
-  if (!servers?.length || servers.length > 100)
-    throw invalid("Expected a manifest, mcpServers map or a single MCP server");
-  const used = new Set<string>();
-  const normalized = servers.map(([name, raw], index) => {
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw invalid("Invalid MCP server");
-    const entry = raw as Record<string, unknown>;
-    const allowed = new Set([
-      "type",
-      "transport",
-      "command",
-      "args",
-      "env",
-      "url",
-      "headers",
-      "networkDomains",
-      "auth",
-      "sseFallback",
-      "cwd",
-      "startup_timeout_sec",
-      "startupTimeoutSec",
-    ]);
-    for (const field of Object.keys(entry))
-      if (!allowed.has(field)) throw invalid(`Unsupported MCP field: ${field}`);
-    let id = name
-      .toLowerCase()
-      .replaceAll(/[^a-z0-9.-]/g, "-")
-      .slice(0, 56);
-    if (!/^[a-z]/.test(id)) id = `server-${index}-${id}`.slice(0, 64);
-    if (used.has(id)) throw invalid("MCP server names collide after normalization");
-    used.add(id);
-    const headers =
-      entry.headers && typeof entry.headers === "object"
-        ? (entry.headers as Record<string, unknown>)
-        : {};
-    const bearer = Object.entries(headers).some(
-      ([header, value]) =>
-        header.toLowerCase() === "authorization" &&
-        typeof value === "string" &&
-        /^Bearer /i.test(value),
-    );
-    const transport = entry.url ? "http" : "stdio";
-    const declared = entry.type ?? entry.transport;
-    if (
-      declared &&
-      ![
-        transport,
-        transport === "http" ? "streamable-http" : "stdio",
-        ...(transport === "http" ? ["sse"] : []),
-      ].includes(String(declared).toLowerCase())
-    )
-      throw invalid("Unsupported MCP transport");
-    return {
-      id,
-      transport,
-      auth: entry.auth ?? { kind: bearer ? "bearer" : "none", secretNames: [] },
-      networkDomains:
-        entry.networkDomains ??
-        (typeof entry.url === "string" ? [new URL(entry.url).hostname] : []),
-      ...(entry.startup_timeout_sec !== undefined || entry.startupTimeoutSec !== undefined
-        ? {
-            startupTimeoutSec: boundedStartupTimeout(
-              entry.startup_timeout_sec ?? entry.startupTimeoutSec,
-            ),
-          }
-        : {}),
-      ...(transport === "http"
-        ? {
-            url: entry.url,
-            headers: entry.headers ?? {},
-            ...((String(declared).toLowerCase() === "sse" || entry.sseFallback === true) && {
-              sseFallback: true,
-            }),
-          }
-        : {
-            command: entry.command,
-            args: entry.args ?? [],
-            env: entry.env ?? {},
-            ...(entry.cwd !== undefined ? { cwd: entry.cwd } : {}),
-          }),
-    };
-  });
-  const digest = createHash("sha256").update(JSON.stringify(source)).digest("hex").slice(0, 16);
+  const url = sanitizeHttpUrl(server.url, registry);
+  const endpoint = ConnectorNetworkSiteSchema.safeParse(connectorEndpointSite(new URL(url))).data;
   return {
-    schemaVersion: 1,
-    id: `custom.${digest}`,
-    version: "1.0.0",
-    name: { zh: "自定义 MCP", en: "Custom MCP" },
-    description: { zh: "从 MCP 配置导入", en: "Imported from MCP configuration" },
-    servers: normalized,
+    ...server,
+    url,
+    headers,
+    networkDomains: endpoint && !server.networkDomains.length ? [endpoint] : server.networkDomains,
   };
 }
 
-function boundedStartupTimeout(value: unknown) {
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 1)
-    throw invalid("Invalid MCP startup timeout");
-  return Math.min(value, 300);
-}
-
-function packageManagerDomains(command: string): readonly string[] {
+export function packageManagerDomains(command: string): readonly string[] {
   const executable = command
     .split(/[\\/]/)
     .at(-1)
     ?.toLowerCase()
-    .replace(/\.cmd$/, "");
-  return executable === "npx" || executable === "uvx" ? PACKAGE_MANAGER_DOMAINS[executable] : [];
+    .replace(/\.(?:cmd|exe|bat)$/, "");
+  return executable && Object.hasOwn(PACKAGE_MANAGER_DOMAINS, executable)
+    ? PACKAGE_MANAGER_DOMAINS[executable as keyof typeof PACKAGE_MANAGER_DOMAINS]
+    : [];
 }
 
 function addPackageManagerDomains(manifest: ConnectorManifest): ConnectorManifest {
@@ -564,19 +776,68 @@ export function normalizeConnectorSource(
   text: string,
   installationId?: string,
   finalValidation: FinalImportValidation = {},
+  userHome?: string,
+  moveCommandKeyTo?: string,
+  protectValues = true,
 ): {
   manifest: ConnectorManifest;
   secrets: ImportedSecret[];
   digest: string;
+  ignoredMcpMetadata?: true;
+  requiredKeys?: RequiredKey[];
+  plainFields?: PrivateField[];
+  fills?: ReadonlyMap<string, FillValue>;
 } {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(text);
+    parsed = parseJsonc(text);
   } catch {
-    throw invalid("Import source is not valid JSON");
+    throw invalid("connector_paste_json");
   }
-  const parsedManifest = ConnectorManifestSchema.safeParse(compatibleSource(parsed));
-  if (!parsedManifest.success) throw invalid("Import source is not a valid connector manifest");
+  const compatible = compatibleSource(parsed);
+  const candidate = compatible.manifest;
+  // Only expand a leading home marker. Relative paths have no stable base in copied settings.
+  if (
+    userHome &&
+    candidate &&
+    typeof candidate === "object" &&
+    "servers" in candidate &&
+    Array.isArray(candidate.servers)
+  ) {
+    candidate.servers = candidate.servers.map((server: unknown) => {
+      if (!server || typeof server !== "object") return server;
+      const cwd =
+        "cwd" in server && typeof server.cwd === "string"
+          ? importWorkingDirectory(server.cwd, userHome)
+          : undefined;
+      if ("cwd" in server && typeof server.cwd === "string" && !cwd)
+        throw invalid("connector_paste_workingDirectory");
+      const args =
+        "args" in server && Array.isArray(server.args)
+          ? server.args.map((arg: unknown) => {
+              if (typeof arg !== "string" || !/^~[\\/]/.test(arg)) return arg;
+              const path = importWorkingDirectory(arg, userHome);
+              if (!path) throw invalid("connector_paste_arguments");
+              return path;
+            })
+          : undefined;
+      return { ...server, ...(cwd ? { cwd } : {}), ...(args ? { args } : {}) };
+    });
+  }
+  const parsedManifest = ConnectorManifestSchema.safeParse(candidate);
+  if (!parsedManifest.success) {
+    const issue = parsedManifest.error.issues[0];
+    const field = issue?.path[2];
+    if (field === "cwd") throw invalid("connector_paste_workingDirectory");
+    if (field === "args") throw invalid("connector_paste_arguments");
+    if (field === "env") throw invalid("connector_paste_variables");
+    if (field === "headers") throw invalid("connector_paste_headers");
+    if (field === "url") throw invalid("connector_paste_url");
+    if (field === "networkDomains") throw invalid("connector_paste_sites");
+    if (field === "startupTimeoutSec") throw invalid("connector_paste_timeout");
+    if (field === "command") throw invalid("connector_paste_command");
+    throw invalid("connector_paste_shape");
+  }
   const manifest = addPackageManagerDomains(parsedManifest.data);
   rejectCredentialMetadata([
     manifest.id,
@@ -605,21 +866,48 @@ export function normalizeConnectorSource(
   const prefix = installationId
     ? `IMPORT_${IdSchema.parse(installationId).replaceAll("-", "").toUpperCase()}_`
     : "";
-  const registry = new ImportSecretRegistry(reserved, prefix);
-  const servers = manifest.servers.map((server) => sanitizeServer(server, registry));
+  const keyMigration = moveCommandKeyTo ? { name: moveCommandKeyTo, applied: false } : undefined;
+  const registries: ImportSecretRegistry[] = [];
+  const servers = manifest.servers.map((server, index) => {
+    const registry = new ImportSecretRegistry(
+      reserved,
+      manifest.servers.length > 1 ? `${prefix}S${index + 1}_` : prefix,
+      server.id,
+    );
+    registries.push(registry);
+    return sanitizeServer(server, registry, keyMigration, protectValues);
+  });
+  if (keyMigration && !keyMigration.applied) throw invalid("connector_paste_commandCredential");
   const sanitized = recordFinalSecretReferences({ ...manifest, servers });
   validateFinalImportManifest(sanitized, finalValidation);
-  const secrets = registry.entries();
+  const secrets = registries.flatMap((registry) => registry.entries());
+  const requiredKeys = registries.flatMap((registry) => registry.requiredKeys());
+  const plainFields = registries.flatMap((registry) => registry.plainFields);
+  const fills = new Map(registries.flatMap((registry) => [...registry.fills]));
+  rejectCopiedSecrets(sanitized, secrets);
   validateImportSecretLimit(sanitized, secrets);
+  if (requiredKeys.length > MAX_IMPORT_SECRET_NAMES) throw invalid("connector_import_secret_limit");
   return {
     manifest: sanitized,
     secrets,
     digest: createHash("sha256").update(JSON.stringify(sanitized)).digest("hex"),
+    ...(compatible.ignoredMcpMetadata ? { ignoredMcpMetadata: true as const } : {}),
+    ...(requiredKeys.length ? { requiredKeys } : {}),
+    ...(plainFields.length ? { plainFields } : {}),
+    ...(fills.size ? { fills } : {}),
   };
 }
 
 export function importSecretPrefix(installationId: string) {
   return `IMPORT_${IdSchema.parse(installationId).replaceAll("-", "").toUpperCase()}_`;
+}
+
+export function importSavedKeys(manifest: ConnectorManifest, installationId: string) {
+  const prefix = importSecretPrefix(installationId);
+  return manifest.servers.flatMap((server) => {
+    const names = server.auth.secretNames.filter((name) => !name.startsWith(prefix));
+    return names.length ? [{ serverId: server.id, names }] : [];
+  });
 }
 
 function configSecretName(installationId: string, key: string) {
@@ -632,7 +920,7 @@ function configuredValue(
   preview: boolean,
 ) {
   const value = values[field.key] ?? field.default;
-  if (value === undefined) {
+  if (value === undefined || (field.required && missingPluginConfigValue(value))) {
     if (!preview && field.required) throw invalid(`Missing required plugin setting: ${field.key}`);
     if (!preview) return undefined;
     if (field.type === "number") return 0;
@@ -652,25 +940,13 @@ function configuredValue(
   return value;
 }
 
-function configFieldVisible(
-  field: ClaudePluginBundle["config"][number],
-  values: Record<string, string | number | boolean>,
-  fields: ReadonlyMap<string, ClaudePluginBundle["config"][number]>,
-) {
-  if (!field.visibleWhen) return true;
-  // Non-UI callers (old clients and plugin_install) may omit the controlling field.
-  // Evaluate the manifest default so the same branch is active everywhere.
-  const controlling = fields.get(field.visibleWhen.key);
-  const value = values[field.visibleWhen.key] ?? controlling?.default;
-  return value === field.visibleWhen.equals;
-}
-
 function configureBundle(
   bundle: ClaudePluginBundle,
   installationId: string,
   values: Record<string, string | number | boolean>,
   preview: boolean,
   deferSensitive = false,
+  storedSecrets?: ReadonlySet<string>,
 ) {
   for (const source of Object.values(bundle.mcpServers)) {
     if (!source || typeof source !== "object" || Array.isArray(source)) continue;
@@ -687,9 +963,25 @@ function configureBundle(
   const settings: Record<string, string | number | boolean> = {};
   const validateConfigured = new Set<string>();
   for (const field of bundle.config) {
-    if (!configFieldVisible(field, values, fields)) {
+    if (!pluginConfigFieldVisible(field, values, fields)) {
       // Keep inactive placeholders empty so a manifest may declare both branches in one MCP env.
       resolved.set(field.key, "");
+      continue;
+    }
+    // Re-evaluating an installed package: its secrets stay the values already stored for it,
+    // referenced by name; a value for one never arrives here.
+    if (
+      storedSecrets &&
+      (storedSecrets.has(field.key) || field.sensitive || looksLikeCredentialName(field.key))
+    ) {
+      if (Object.hasOwn(values, field.key))
+        throw invalid("Sensitive plugin configuration must be replaced as a key");
+      resolved.set(
+        field.key,
+        storedSecrets.has(field.key)
+          ? `\${secret:${configSecretName(installationId, field.key)}}`
+          : "",
+      );
       continue;
     }
     if (deferSensitive && (field.sensitive || looksLikeCredentialName(field.key))) {
@@ -752,8 +1044,16 @@ function normalizeClaudePlugin(
   preview: boolean,
   installationRoot?: string,
   deferSensitive = false,
+  storedSecrets?: ReadonlySet<string>,
 ) {
-  const configured = configureBundle(bundle, installationId, values, preview, deferSensitive);
+  const configured = configureBundle(
+    bundle,
+    installationId,
+    values,
+    preview,
+    deferSensitive,
+    storedSecrets,
+  );
   const identity = createHash("sha256").update(JSON.stringify(bundle)).digest("hex").slice(0, 16);
   const normalized = Object.keys(configured.mcpServers).length
     ? normalizeConnectorSource(
@@ -763,6 +1063,9 @@ function normalizeClaudePlugin(
           ...(installationRoot ? { installationRoot } : {}),
           substitutedStrings: configured.substitutedStrings,
         },
+        undefined,
+        undefined,
+        false,
       )
     : {
         manifest: ConnectorManifestSchema.parse({
@@ -774,6 +1077,7 @@ function normalizeClaudePlugin(
           servers: [],
         }),
         secrets: [],
+        requiredKeys: undefined,
         digest: "",
       };
   const manifest = ConnectorManifestSchema.parse({
@@ -797,8 +1101,70 @@ function normalizeClaudePlugin(
     manifest,
     secrets,
     settings: configured.settings,
+    requiredKeys: normalized.requiredKeys,
     digest: createHash("sha256").update(JSON.stringify(manifest)).digest("hex"),
   };
+}
+
+/** The name an imported plugin setting's value is stored under when it is a secret. */
+export const pluginSettingSecretName = configSecretName;
+
+/**
+ * What an installed package keeps so its plain settings can be changed later: the evaluated bundle
+ * without skills or components. Kept only when the package's own MCP text carries no credential
+ * (those would be plaintext here); otherwise settings change only by updating from the source.
+ */
+export function pluginSettingsTemplate(
+  bundle: ClaudePluginBundle,
+  installationId: string,
+  installationRoot?: string,
+): ClaudePluginBundle | undefined {
+  if (
+    !editablePluginSettings(bundle.config, new Set()).length ||
+    !Object.keys(bundle.mcpServers).length
+  )
+    return undefined;
+  const literal = normalizeClaudePlugin(bundle, installationId, {}, true, installationRoot);
+  if (literal.secrets.length) return undefined;
+  return { ...bundle, skills: [], components: [] };
+}
+
+/** Settings a person may edit after install: never a secret, by declaration, name or storage. */
+export function editablePluginSettings(
+  fields: ClaudePluginBundle["config"],
+  storedSecrets: ReadonlySet<string>,
+) {
+  return fields.filter(
+    (field) =>
+      !field.sensitive && !looksLikeCredentialName(field.key) && !storedSecrets.has(field.key),
+  );
+}
+
+/** Re-evaluates an installed package with changed plain settings; secrets stay references. */
+export function reconfigureInstalledPlugin(
+  template: ClaudePluginBundle,
+  installationId: string,
+  installationRoot: string | undefined,
+  config: Record<string, string | number | boolean>,
+  storedSecrets: ReadonlySet<string>,
+) {
+  return normalizeClaudePlugin(
+    template,
+    installationId,
+    config,
+    false,
+    installationRoot,
+    false,
+    storedSecrets,
+  );
+}
+
+function separateRequiredKeys(
+  preview: ConnectorPreview,
+  config: Record<string, string | number | boolean>,
+) {
+  const keys = new Set(preview.requiredKeys?.map(({ name }) => name));
+  return Object.fromEntries(Object.entries(config).filter(([name]) => !keys.has(name)));
 }
 
 export function finalizeConnectorPreview(
@@ -806,22 +1172,88 @@ export function finalizeConnectorPreview(
   config: Record<string, string | number | boolean>,
   networkDomains: Readonly<Record<string, readonly string[]>> = {},
   deferSensitive = false,
+  plainFields: readonly string[] = [],
 ) {
   const finalized = !preview.plugin
     ? {
         manifest: preview.manifest,
         secrets: preview.secrets,
+        requiredKeys: preview.requiredKeys,
         settings: {},
         digest: preview.digest,
       }
     : normalizeClaudePlugin(
         preview.plugin,
         preview.installationId,
-        config,
+        separateRequiredKeys(preview, config),
         false,
         preview.installationRoot,
         deferSensitive,
       );
+  const filledKeys = (finalized.requiredKeys ?? []).map(({ name }) => {
+    const value = config[name];
+    if (
+      typeof value !== "string" ||
+      !value.trim() ||
+      /[\0\r\n]/.test(value) ||
+      isExampleCredential(value)
+    )
+      throw invalid("connector_paste_keyRequired");
+    return { name, value };
+  });
+  if (filledKeys.some(({ name }) => !preview.requiredKeys?.some((key) => key.name === name)))
+    throw invalid("connector_paste_keyRequired");
+  const pending = new Map(filledKeys.map(({ name, value }) => [name, value]));
+  const resolvedValues = [...(preview.fills ?? [])].map(([name, fill]): ImportedSecret => {
+    const value = fill((slot) => {
+      const key = pending.get(slot);
+      if (key === undefined) throw invalid("connector_paste_keyRequired");
+      pending.delete(slot);
+      return key;
+    });
+    if (value.length > 4096) throw invalid("connector_paste_keyRequired");
+    return { name, value, opaque: true };
+  });
+  const requestedPlain = new Set(plainFields);
+  if (
+    (deferSensitive && plainFields.length > 0) ||
+    requestedPlain.size !== plainFields.length ||
+    plainFields.some((name) => !preview.plainFields?.some((field) => field.name === name))
+  )
+    throw invalid("connector_paste_variables");
+  if (requestedPlain.size) {
+    const plain = new Map(
+      finalized.secrets
+        .filter(({ name }) => requestedPlain.has(name))
+        .map(({ name, value }) => [name, value]),
+    );
+    const replace = (fields: Record<string, string>) =>
+      Object.fromEntries(
+        Object.entries(fields).map(([key, value]) => {
+          const name = /^\$\{secret:([A-Z][A-Z0-9_]{0,63})\}$/.exec(value)?.[1];
+          return [key, (name && plain.get(name)) ?? value];
+        }),
+      );
+    finalized.manifest = recordFinalSecretReferences({
+      ...finalized.manifest,
+      servers: finalized.manifest.servers.map((server) =>
+        server.transport === "stdio"
+          ? { ...server, env: replace(server.env) }
+          : server.transport === "http"
+            ? { ...server, headers: replace(server.headers) }
+            : server,
+      ),
+    });
+    finalized.digest = createHash("sha256")
+      .update(JSON.stringify(finalized.manifest))
+      .digest("hex");
+  }
+  finalized.secrets = [
+    ...finalized.secrets.filter(({ name }) => !requestedPlain.has(name)),
+    ...resolvedValues,
+    ...[...pending].map(([name, value]) => ({ name, value })),
+  ];
+  rejectCopiedSecrets(finalized.manifest, finalized.secrets);
   assertConfirmedConnectionTargets(preview.manifest, finalized.manifest);
   const previewServers = new Map(preview.manifest.servers.map((server) => [server.id, server]));
   for (const [serverId, requested] of Object.entries(networkDomains)) {
@@ -911,6 +1343,9 @@ export class ConnectorPreviewStore {
         JSON.stringify({
           enable: intent.enable,
           config,
+          plainFields: [...(intent.plainFields ?? [])].sort(),
+          useSavedKeys: intent.useSavedKeys === true,
+          networkDomains: Object.entries(intent.networkDomains ?? {}).sort(),
           skillTargets: {
             bots: [...new Set(intent.skillTargets?.bots ?? [])].sort(),
             groups: [...new Set(intent.skillTargets?.groups ?? [])].sort(),
@@ -929,16 +1364,18 @@ export class ConnectorPreviewStore {
     text: string,
     sourceKind: "json" | "plugin",
     now = Date.now(),
-    installationId = randomUUID(),
+    installationId: string = randomUUID(),
     installationRoot?: string,
+    userHome?: string,
+    moveCommandKeyTo?: string,
   ): ConnectorPreview {
     this.prune(now);
     if (this.entries.size >= 64) throw invalid("Too many pending previews");
     let parsed: unknown;
     try {
-      parsed = JSON.parse(text);
+      parsed = sourceKind === "json" ? parseJsonc(text) : JSON.parse(text);
     } catch {
-      throw invalid("Import source is not valid JSON");
+      throw invalid("connector_paste_json");
     }
     let plugin: ClaudePluginBundle | undefined;
     if (sourceKind === "plugin") {
@@ -959,13 +1396,16 @@ export class ConnectorPreviewStore {
     }
     const normalized = plugin
       ? normalizeClaudePlugin(plugin, installationId, {}, true, installationRoot)
-      : normalizeConnectorSource(text, installationId);
+      : normalizeConnectorSource(text, installationId, {}, userHome, moveCommandKeyTo);
     const preview = {
       previewId: randomUUID(),
       installationId,
       digest: plugin ? createHash("sha256").update(text).digest("hex") : normalized.digest,
       expiresAt: new Date(now + PREVIEW_TTL_MS).toISOString(),
       manifest: normalized.manifest,
+      ...("ignoredMcpMetadata" in normalized && normalized.ignoredMcpMetadata
+        ? { ignoredMcpMetadata: true as const }
+        : {}),
       ...(plugin
         ? plugin.versionDeclared
           ? { declaredVersion: normalized.manifest.version }
@@ -978,6 +1418,13 @@ export class ConnectorPreviewStore {
           ? { declaredVersion: normalized.manifest.version }
           : {}),
       secrets: normalized.secrets,
+      ...("requiredKeys" in normalized && normalized.requiredKeys
+        ? { requiredKeys: normalized.requiredKeys }
+        : {}),
+      ...("plainFields" in normalized && normalized.plainFields
+        ? { plainFields: normalized.plainFields }
+        : {}),
+      ...("fills" in normalized && normalized.fills ? { fills: normalized.fills } : {}),
       ...(plugin ? { plugin } : {}),
       ...(installationRoot ? { installationRoot } : {}),
     };
@@ -996,7 +1443,7 @@ export class ConnectorPreviewStore {
     const normalized = normalizeClaudePlugin(
       current.plugin,
       current.installationId,
-      config,
+      separateRequiredKeys(current, config),
       false,
       current.installationRoot,
     );
@@ -1010,7 +1457,9 @@ export class ConnectorPreviewStore {
       ...(current.declaredVersion ? { declaredVersion: current.declaredVersion } : {}),
       // Final import re-evaluates the same settings; never retain submitted secret values here.
       secrets: [],
+      ...(normalized.requiredKeys ? { requiredKeys: normalized.requiredKeys } : {}),
       plugin: current.plugin,
+      ...(current.discovery ? { discovery: current.discovery } : {}),
       ...(current.installationRoot ? { installationRoot: current.installationRoot } : {}),
     };
     this.entries.delete(current.previewId);
@@ -1031,6 +1480,12 @@ export class ConnectorPreviewStore {
       throw invalid("Preview expired");
     }
     return entry;
+  }
+
+  markDiscovered(previewId: string, discovery: NonNullable<ConnectorPreview["discovery"]>) {
+    this.take(previewId);
+    const entry = this.entries.get(previewId);
+    if (entry) entry.discovery = discovery;
   }
 
   /** Read the normalized preview while keeping the single-use entry available for commit. */

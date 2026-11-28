@@ -19,7 +19,14 @@ import {
 import { remoteZh } from "@pibot/remote-contract/i18n";
 import { routineProposalsZh, routinesZh } from "@pibot/routines-contract/i18n";
 import { skillsZh, teachZh, workflowsZh } from "@pibot/skills-contract/i18n";
-import { builtinZh, piManagerZh, teamsZh } from "@pibot/teams-contract/i18n";
+import {
+  builtinZh,
+  piHealthZh,
+  piManagerZh,
+  piSettingsZh,
+  teamsZh,
+} from "@pibot/teams-contract/i18n";
+import { videoZh } from "@pibot/videos-contract/i18n";
 import { changesZh, managedResourcesZh } from "@pibot/workspaces-contract/i18n";
 import { mergeTranslations } from "./merge-translations.ts";
 import { activityZh } from "./sections/activity.ts";
@@ -191,8 +198,9 @@ const common = {
   "startup.clearFailed": "界面缓存未能清除，旧预览可能仍在磁盘上。请重试；运行历史尚未清理。",
   "startup.newerData":
     "此数据由更新版本的 Pi Bot 创建，当前版本无法打开。请升级 Pi Bot 后重试；不要删除数据。",
-  "startup.clear": "清除界面缓存",
-  "startup.clearNote": "移除本机保存的侧栏和最近消息预览，本次退出前不再保存。",
+  "startup.clear": "清除启动快速预览",
+  "startup.clearNote":
+    "仅清除下次打开软件时的侧栏和最近消息快速预览缓存，不会删除任何聊天记录或数据。",
   "brain.starting": "后台服务启动中…",
   "brain.ready": "后台服务已就绪",
   "brain.restarting": "后台服务重启中…",
@@ -234,16 +242,27 @@ const common = {
   "settings.browserSection": "浏览器",
   "settings.browserDefault": "默认浏览器",
   "settings.browserUnknown": "未知",
-  "settings.browserExtension": "Pi Bot 插件",
+  "settings.browserExtension": "Pi Bot 浏览器扩展",
   "settings.browserExtensionStatus.connected": "已连接",
   "settings.browserExtensionStatus.installed": "未连接（以前连接过）",
-  "settings.browserExtensionStatus.edgeNotListed": "尚未在 Microsoft Edge 加载项商店上架",
-  "settings.browserExtensionStatus.not_installed": "未安装",
-  "settings.browserExtensionStatus.unsupported": "不支持",
+  "settings.browserExtensionStatus.not_installed": "尚未检测到扩展",
+  "settings.browserExtensionStatus.unsupported": "使用 Bot 自带浏览器",
   "settings.browserExtensionStatus.separate_data_dir":
-    "这个 Pi Bot 使用单独的数据目录，没有接管浏览器扩展。点「在这里连接」后，扩展改为连接这里，主程序会连不上扩展，直到这里退出。",
+    "请在使用默认数据目录的已安装 Pi Bot 中注册浏览器扩展。",
   "settings.browserExtensionStatus.other_instance":
     "浏览器扩展已连接到另一个 Pi Bot。点「在这里连接」可改为连接这里。",
+  "settings.browserExtensionInstall": "打开商店页",
+  "settings.browserExtensionCheck": "检查连接",
+  "settings.browserExtensionRetry": "重试连接",
+  "settings.browserExtensionEdgeHelp":
+    "可从 Chrome 网上应用店安装。Edge 如有提示，请选择允许来自其他商店的扩展。",
+  "settings.browserExtensionSafariHelp":
+    "Safari 没有 Pi Bot 扩展。Bot 会自动用自带浏览器。如果想用你已有的登录状态，可以在 Chrome 或 Firefox 中安装扩展。",
+  "settings.browserExtensionStoreHelp":
+    "如果 Chrome 网上应用店打不开，请检查浏览器的网络或代理设置。也可以在 Firefox 中安装 Pi Bot 浏览器扩展，或继续用 Bot 自带的浏览器。",
+  "settings.browserExtensionCheckHelp": "在浏览器工具栏打开 Pi Bot 扩展，再点「检查连接」。",
+  "settings.browserExtensionStatus.registration_failed":
+    "Pi Bot 没能设置与浏览器的连接。请点「重试连接」。",
   "settings.browserExtensionConnectHere": "在这里连接",
   "settings.browserPreference": "使用方式",
   "settings.browserPreferenceUser": "优先用你的浏览器（用你的登录）",
@@ -262,9 +281,33 @@ const common = {
   "settings.logsExported": "日志已导出",
   "settings.logsExportError": "日志导出失败，请重试。",
   "settings.data": "数据与存储",
-  "settings.runCleanup": "清理旧运行记录",
+  "settings.dataLocation": "数据位置",
+  "settings.dataLocationNote":
+    "聊天记录、附件、日志和技能运行环境的本机副本存放在这个文件夹中（如已配对手机，手机端也可查看聊天记录）。模型密钥和保存的密码使用操作系统提供的加密能力加密后保存在本地数据库中。",
+  "settings.dataLocationLoading": "正在读取数据文件夹位置…",
+  "settings.dataLocationError": "暂时无法读取数据文件夹位置，请重试。",
+  "settings.openDataDir.darwin": "在访达中打开",
+  "settings.openDataDir.win32": "在资源管理器中打开",
+  "settings.openDataDir.linux": "打开数据文件夹",
+  "settings.openDataDirError": "无法打开数据文件夹，请重试。",
+  "settings.storageUsageLoading": "正在统计磁盘占用…",
+  "settings.storageUsageError": "暂时无法统计磁盘占用，请重试。",
+  "settings.storageUsageSummary":
+    "共约 {total} · 数据库和 Bot 文件 {chats} · 技能与运行环境 {runtimes} · 应用日志与缓存 {logs} · 其他文件 {other}",
+  "settings.storageUsageTruncated": "（仅统计了部分文件）",
+  "settings.storageUsageRefresh": "重新统计",
+  "settings.runCleanup": "清理旧的任务记录与临时文件",
   "settings.runCleanupNote":
-    "清理指定天数以前的运行事件、结果文件、会话文件和执行登记；聊天内容保留，操作审计仍保留 90 天。",
+    "清理符合条件的旧任务记录及未使用的临时文件。聊天记录和有文件恢复记录的任务会保留。被清理的任务将无法再撤销文件改动。清理还会清空启动预览，移除已闲置至少 10 分钟的临时结果文件。操作审计保留 90 天。",
+  "settings.runCleanupEstimateLoading": "正在估算清理 {days} 天前的任务记录可腾出的空间…",
+  "settings.runCleanupEstimate":
+    "预计可清理 {runs} 条旧任务记录和 {files} 个临时文件。临时文件共约 {size}，启动预览也会清空。",
+  "settings.runCleanupEstimateEmpty":
+    "没有找到可清理的 {days} 天前的任务记录或临时文件。清理时仍会清空启动预览。",
+  "settings.runCleanupEstimateError": "暂时无法估算可清理大小，你可以重试估算，或直接继续清理。",
+  "settings.runCleanupEstimateIncomplete":
+    "目前只估算了 Pi Bot 能检查的文件。可以重试，获取更完整的估算。",
+  "settings.runCleanupEstimateRetry": "重试估算",
   "settings.runCleanupDays": "天数",
   "settings.backgroundCommands": "后台命令",
   "settings.backgroundLimit": "总时长上限",
@@ -277,9 +320,9 @@ const common = {
   "settings.runCleanupConfirm": "确认清理",
   "settings.runCleaning": "正在清理…",
   "settings.runCleanupInvalid": "请输入 1 到 36500 之间的整数天数。",
-  "settings.runCleanupError": "运行记录清理失败；未完成的文件清理会在下次启动时重试。",
+  "settings.runCleanupError": "未能完成旧任务记录和临时文件的清理，请重试。",
   "settings.runCleanupDone":
-    "已清理 {runs} 条运行、{events} 条事件、{executions} 条执行登记和 {files} 个文件。",
+    "已清理 {runs} 条旧任务记录和 {files} 个临时文件（这些文件共 {size}），并清空了启动预览。聊天记录仍可查看。",
   "audit.runRetention.cleaned":
     "清理 {days} 天前的运行记录：{runs} 条运行、{events} 条事件、{executions} 条执行登记、{files} 个文件",
   "audit.commandLogs.requested": "按保留设置清理命令日志（{count} 个）",
@@ -354,6 +397,7 @@ export const zhSections = {
   independentBackgroundZh,
   toolFoldZh,
   mediaZh,
+  videoZh,
   externalAgentsZh,
   routineProposalsZh,
   routinesZh,
@@ -362,6 +406,8 @@ export const zhSections = {
   groupZh,
   teamsZh,
   piManagerZh,
+  piSettingsZh,
+  piHealthZh,
   builtinZh,
   activityZh,
   providerAuthZh,

@@ -1,9 +1,13 @@
-import { useRpc, useWorkspace } from "@pibot/renderer-kit";
+import { useRpc, useT, useWorkspace } from "@pibot/renderer-kit";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  type ConversationList,
   type Destination,
   type FolderTarget,
+  isLocalSource,
   known,
+  type LocalSource,
+  MAX_CONVERSATION_SELECTION,
   type MemoryChoice,
   type Plan,
   type PlanMemory,
@@ -14,10 +18,14 @@ import {
   reviewOptions,
   type Source,
   sameFolder,
+  selectionPreviewOptions,
   startError,
 } from "./import-state.ts";
 
-type Action = "preview" | "plan" | "persona" | "project" | "quote" | "pick";
+type Action = "list" | "preview" | "plan" | "persona" | "project" | "quote" | "pick";
+type QuoteResult = { scope: string } & ({ quote: Quote | null } | { failed: true });
+
+const LIST_PAGE_SIZE = 25;
 
 /**
  * Projects default to a matching work folder and its Bot, else the source folder, else new. A
@@ -49,6 +57,7 @@ function initialProjects(preview: Preview, plan: Plan, botId: string) {
 
 export function useImportDraft() {
   const { peer } = useRpc();
+  const t = useT();
   const workspace = useWorkspace();
   // The main Bot leads every Bot menu, as in the approved destination menu.
   const bots = useMemo(
@@ -60,6 +69,12 @@ export function useImportDraft() {
   );
   const mainBot = bots.find((bot) => bot.isMain)?.id ?? bots[0]?.id ?? "";
   const [source, setSource] = useState<Source>("chatgpt");
+  const [listSource, setListSource] = useState<LocalSource>();
+  const [conversationList, setConversationList] = useState<ConversationList>();
+  const [listQuery, setListQuery] = useState("");
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [includeMemory, setIncludeMemory] = useState(false);
+  const [includeProjectRules, setIncludeProjectRules] = useState(false);
   const [preview, setPreview] = useState<Preview>();
   const [plan, setPlan] = useState<Plan>();
   const [botId, setBotId] = useState("");
@@ -72,8 +87,8 @@ export function useImportDraft() {
     review?: Review;
     open: boolean;
   }>({ on: false, botId: "", open: false });
-  const [quote, setQuote] = useState<Quote>();
-  const [quoteUnavailable, setQuoteUnavailable] = useState(false);
+  const [quoteResult, setQuoteResult] = useState<QuoteResult>();
+  const [consent, setConsent] = useState<string>();
   const [busy, setBusy] = useState<Action>();
   const [error, setError] = useState<ReturnType<typeof startError>>();
   const request = useRef<AbortController | undefined>(undefined);
@@ -112,30 +127,155 @@ export function useImportDraft() {
     setProjects({});
     setMemoryChoices({});
     setPersona({ on: false, botId: "", open: false });
-    setQuote(undefined);
-    setQuoteUnavailable(false);
+    setQuoteResult(undefined);
+    setConsent(undefined);
     setError(undefined);
   };
+
+  const resetList = () => {
+    setListSource(undefined);
+    setConversationList(undefined);
+    setListQuery("");
+    setSelectedIds([]);
+    setIncludeMemory(false);
+    setIncludeProjectRules(false);
+  };
+
+  async function hydratePreview(next: Preview, signal: AbortSignal) {
+    if (!peer || signal.aborted) return;
+    setPreview(next);
+    setConversations(true);
+    setBotId(mainBot);
+    setPersona({ on: false, botId: mainBot, open: false });
+    const reviewed = await peer.call(
+      "import.reviewPlan",
+      { importId: next.importId },
+      { ...reviewOptions, signal },
+    );
+    if (signal.aborted) return;
+    setPlan(reviewed);
+    setProjects(initialProjects(next, reviewed, mainBot));
+  }
 
   function pick() {
     if (!peer || busy) return;
     reset();
     void run("preview", async (signal) => {
       // preview performs source detection and opens the native picker only after this click.
-      const next = await peer.call("import.preview", { source }, { ...reviewOptions, signal });
+      const next = await peer.call(
+        "import.preview",
+        { source, filterLabel: t("conversationImport.exportFilter") },
+        { ...reviewOptions, signal },
+      );
       if (signal.aborted || !next) return;
-      setPreview(next);
-      setConversations(true);
-      setBotId(mainBot);
-      setPersona({ on: false, botId: mainBot, open: false });
-      const reviewed = await peer.call(
-        "import.reviewPlan",
-        { importId: next.importId },
+      resetList();
+      await hydratePreview(next, signal);
+    }).catch(() => undefined);
+  }
+
+  function openConversationList() {
+    if (!peer || busy || !isLocalSource(source)) return;
+    const target = source;
+    reset();
+    resetList();
+    void run("list", async (signal) => {
+      const result = await peer.call(
+        "import.listConversations",
+        { source: target, cursor: 0, limit: LIST_PAGE_SIZE },
         { ...reviewOptions, signal },
       );
       if (signal.aborted) return;
-      setPlan(reviewed);
-      setProjects(initialProjects(next, reviewed, mainBot));
+      setListSource(target);
+      setConversationList(result);
+    }).catch(() => undefined);
+  }
+
+  const searchConversations = useCallback(
+    (query: string) => {
+      if (!peer || !listSource) return;
+      setListQuery(query);
+      setError(undefined);
+      generation.current++;
+      request.current?.abort();
+      void run("list", async (signal) => {
+        const result = await peer.call(
+          "import.listConversations",
+          {
+            source: listSource,
+            cursor: 0,
+            limit: LIST_PAGE_SIZE,
+            ...(query.trim() ? { query: query.trim() } : {}),
+          },
+          { ...reviewOptions, signal },
+        );
+        if (signal.aborted) return;
+        setConversationList(result);
+      }).catch(() => undefined);
+    },
+    [listSource, peer, run],
+  );
+
+  function loadMoreConversations() {
+    if (!peer || busy || !listSource || conversationList?.next === null || !conversationList)
+      return;
+    const nextCursor = conversationList.next;
+    void run("list", async (signal) => {
+      const page = await peer.call(
+        "import.listConversations",
+        {
+          source: listSource,
+          cursor: nextCursor,
+          limit: LIST_PAGE_SIZE,
+          ...(listQuery.trim() ? { query: listQuery.trim() } : {}),
+        },
+        { ...reviewOptions, signal },
+      );
+      if (signal.aborted) return;
+      setConversationList((current) =>
+        current
+          ? {
+              ...page,
+              items: [
+                ...current.items,
+                ...page.items.filter(
+                  (item) => !current.items.some((existing) => existing.id === item.id),
+                ),
+              ],
+            }
+          : page,
+      );
+    }).catch(() => undefined);
+  }
+
+  function toggleConversation(id: string) {
+    setSelectedIds((current) => {
+      if (current.includes(id)) return current.filter((item) => item !== id);
+      if (current.length >= MAX_CONVERSATION_SELECTION) return current;
+      return [...current, id];
+    });
+  }
+
+  function previewSelected() {
+    if (!peer || busy || !listSource) return;
+    if (!selectedIds.length && !includeMemory && !includeProjectRules) return;
+    const target = listSource;
+    const ids = selectedIds;
+    const withMemory = includeMemory;
+    const withRules = includeProjectRules;
+    reset();
+    void run("preview", async (signal) => {
+      const next = await peer.call(
+        "import.previewSelection",
+        {
+          source: target,
+          conversationIds: ids,
+          ...(withMemory ? { includeMemory: true } : {}),
+          ...(withRules ? { includeProjectRules: true } : {}),
+        },
+        { ...selectionPreviewOptions, signal },
+      );
+      if (signal.aborted) return;
+      await hydratePreview(next, signal);
     }).catch(() => undefined);
   }
 
@@ -194,21 +334,47 @@ export function useImportDraft() {
     return memoryChoices[memory.id]?.on ?? true;
   };
 
-  function toggleQuote(enabled: boolean) {
-    setQuote(undefined);
-    setQuoteUnavailable(false);
-    if (!enabled || !conversations || !botId || !peer || !preview) return;
+  const projectTopics = (preview?.projects ?? []).reduce((sum, { topics }) => sum + topics, 0);
+  const quoteOtherChats = conversations && (preview?.topics ?? 0) > projectTopics;
+  const quotedProjects = (preview?.projects ?? [])
+    .filter(({ key, topics }) => topics > 0 && projects[key]?.on)
+    .map(({ key }) => key);
+  const quoteScope = JSON.stringify([preview?.importId, botId, quoteOtherChats, quotedProjects]);
+  const importId = preview?.importId;
+  const canQuote =
+    !!plan && !!importId && !!botId && (quoteOtherChats || quotedProjects.length > 0);
+  const currentQuote = canQuote && quoteResult?.scope === quoteScope ? quoteResult : undefined;
+  const quote =
+    currentQuote && "quote" in currentQuote ? (currentQuote.quote ?? undefined) : undefined;
+
+  const requestQuote = useCallback(() => {
+    if (!peer || !canQuote || !importId) return;
+    setQuoteResult(undefined);
+    const [, , includeChats, projectKeys] = JSON.parse(quoteScope) as [
+      string,
+      string,
+      boolean,
+      string[],
+    ];
     void run("quote", async (signal) => {
-      const result = await peer.call(
-        "import.estimateDistillation",
-        { importId: preview.importId, botId },
-        { signal },
-      );
-      if (!signal.aborted) {
-        setQuote(result ?? undefined);
-        setQuoteUnavailable(!result);
+      try {
+        const estimate = await peer.call(
+          "import.estimateDistillation",
+          { importId, botId, conversations: includeChats, projectKeys },
+          { ...selectionPreviewOptions, signal },
+        );
+        if (!signal.aborted) setQuoteResult({ scope: quoteScope, quote: estimate });
+      } catch {
+        // Keep the selection usable and let the user retry the same estimate.
+        if (!signal.aborted) setQuoteResult({ scope: quoteScope, failed: true });
       }
     }).catch(() => undefined);
+  }, [peer, canQuote, importId, botId, quoteScope, run]);
+
+  useEffect(requestQuote, [requestQuote]);
+
+  function toggleQuote(enabled: boolean) {
+    setConsent(enabled ? quote?.quoteId : undefined);
   }
 
   function comparePersona(targetBot = persona.botId, on = true) {
@@ -250,6 +416,7 @@ export function useImportDraft() {
       updateProject(key, {
         folder: { kind: "folder", folderId: folder.id },
         confirmed: false,
+        needsReview: false,
         open: false,
         diffFailed: false,
       });
@@ -261,6 +428,12 @@ export function useImportDraft() {
     preview,
     plan,
     source,
+    listSource,
+    conversationList,
+    listQuery,
+    selectedIds,
+    includeMemory,
+    includeProjectRules,
     bots,
     botId,
     conversations,
@@ -270,31 +443,68 @@ export function useImportDraft() {
     memoryOn,
     persona,
     quote,
-    quoteUnavailable,
+    distillationOn: !!quote && consent === quote.quoteId,
+    quoteLoading: canQuote && !currentQuote,
+    quoteFailed: !!currentQuote && "failed" in currentQuote,
+    retryQuote: requestQuote,
     busy,
     error,
     pick,
+    openConversationList,
+    searchConversations,
+    loadMoreConversations,
+    toggleConversation,
+    clearSelectedConversations: () => setSelectedIds([]),
+    setIncludeMemory,
+    setIncludeProjectRules,
+    previewSelected,
+    closeConversationList() {
+      reset();
+      resetList();
+    },
     toggleQuote,
     comparePersona,
     pickFolder,
+    refreshProjectReviews() {
+      setProjects((current) =>
+        Object.fromEntries(
+          Object.entries(current).map(([key, choice]) => [
+            key,
+            choice.on && choice.confirmed
+              ? {
+                  ...choice,
+                  diff: undefined,
+                  diffFor: undefined,
+                  diffFailed: false,
+                  confirmed: false,
+                  needsReview: true,
+                  open: true,
+                }
+              : choice,
+          ]),
+        ),
+      );
+    },
     selectSource(value: Source) {
       setSource(value);
       setError(undefined);
     },
     changeBot(value: string) {
       setBotId(value);
-      setQuote(undefined);
-      setQuoteUnavailable(false);
+      setConsent(undefined);
     },
     changeConversations(value: boolean) {
       setConversations(value);
-      if (!value) toggleQuote(false);
+      setConsent(undefined);
     },
     setProject(key: string, change: Partial<ProjectChoice>) {
+      if (change.on !== undefined) setConsent(undefined);
       // A different folder needs a new diff; a different Bot keeps it.
       updateProject(
         key,
-        change.folder ? { ...change, confirmed: false, open: false, diffFailed: false } : change,
+        change.folder
+          ? { ...change, confirmed: false, needsReview: false, open: false, diffFailed: false }
+          : change,
       );
     },
     setMemory(id: string, change: MemoryChoice) {
@@ -315,6 +525,7 @@ export function useImportDraft() {
     },
     back() {
       reset();
+      resetList();
       setPreview(undefined);
     },
   };

@@ -2,10 +2,23 @@ import { z } from "zod";
 import { BotCategorySchema, ImageModeSchema } from "../chat/media.ts";
 import { IdSchema } from "../core/ids.ts";
 import { BotPermissionOverridesSchema } from "../permissions/settings.ts";
-import { ThinkingLevelSchema } from "../providers/providers.ts";
+import { ModelPreferenceSchema, ThinkingLevelSchema } from "../providers/providers.ts";
 import { AvatarImageSchema } from "./app-profile.ts";
 
 const name = z.string().min(1);
+export const BOT_AVATAR_COLORS = [
+  "orange",
+  "amber",
+  "blue",
+  "violet",
+  "pink",
+  "teal",
+  "green",
+  "brown",
+  "ink",
+  "gray",
+] as const;
+
 export const BotSchema = z.strictObject({
   id: IdSchema,
   name,
@@ -18,6 +31,7 @@ export const BotSchema = z.strictObject({
   avatarImage: AvatarImageSchema.nullable().optional(),
   modelProvider: name.nullable(),
   modelId: name.nullable(),
+  defaultVideoModel: ModelPreferenceSchema.nullable().optional(),
   thinkingLevel: ThinkingLevelSchema,
   thinkingPreference: ThinkingLevelSchema.nullable().optional(),
   systemPrompt: z.string(),

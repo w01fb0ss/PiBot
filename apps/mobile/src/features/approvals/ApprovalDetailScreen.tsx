@@ -1,12 +1,15 @@
 import {
-  approvalCountdown,
   approvalExplanation,
   approvalFactText,
   approvalText,
+  isDirectRunApproval,
+  isolationReasonText,
+  isWindowsDirectRunApproval,
+  systemServiceLabel,
 } from "@pibot/client-core";
 import type { Approval } from "@pibot/protocol";
 import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLanguage, useLinkState, useSharedText, useText } from "../../runtime/context.tsx";
@@ -21,22 +24,15 @@ import { Icon } from "../../ui/icons.tsx";
 import { Sheet, SheetIcon, SheetText, SheetTitle } from "../../ui/sheet.tsx";
 import { useTimeText } from "../../ui/time.ts";
 import { useToast } from "../../ui/toast.tsx";
-import { ApprovalHeader, CodeBlock } from "../chat/messages/cards.tsx";
+import { ApprovalHeader, CodeBlock, ConnectorNetworkDestination } from "../chat/messages/cards.tsx";
 import { useApprovals } from "./approvals-context.tsx";
 import { approvalLead, approvalTarget, isPiManagerApproval, piRememberText } from "./card-facts.ts";
 import { RiskTag } from "./RiskTag.tsx";
+import { useApprovalDeadline } from "./use-approval-deadline.ts";
 import { canRemember, desktopOnly } from "./use-approvals.ts";
 import { useApprovalSource } from "./where.ts";
 
 const mono = new Set(["program", "read", "write", "cwd"]);
-function useSecondsLeft(expiresAt: string | undefined) {
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-  return expiresAt ? Math.max(0, Math.floor((Date.parse(expiresAt) - now) / 1000)) : 0;
-}
 export function ApprovalDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const approvals = useApprovals(),
@@ -57,7 +53,21 @@ function Facts({ approval }: { approval: Approval }) {
   const colors = useColors(),
     language = useLanguage(),
     shared = useSharedText();
-  const facts = approvalText(approval, language).facts;
+  const directRun = isDirectRunApproval(approval);
+  const facts = approvalText(approval, language).facts.filter(
+    (fact) =>
+      !directRun ||
+      fact.kind !== "warning" ||
+      !(
+        fact.value === "outside_sandbox" ||
+        fact.value === shared("facts.value.outside_sandbox") ||
+        /只放行这一次，不会记住$|Allowed this once only, never remembered$/.test(fact.value)
+      ),
+  );
+  const systemTarget = approval.explanation?.some((step) => step.code === "system_service_once")
+    ? approval.facts.findLast((fact) => fact.kind === "network")?.value
+    : undefined;
+  const [advanced, setAdvanced] = useState(false);
   if (!facts.length) return null;
   return (
     <View style={{ marginHorizontal: 16, marginBottom: 12, gap: 6 }}>
@@ -67,7 +77,7 @@ function Facts({ approval }: { approval: Approval }) {
           style={{ flexDirection: "row", alignItems: "baseline", gap: 14 }}
         >
           <Text style={{ width: 64, fontSize: 13, lineHeight: 20, color: colors.text2 }}>
-            {fact.label ?? shared(`facts.${fact.kind}`)}
+            {fact.label ?? shared(`facts.${fact.labelKey ?? fact.kind}`)}
           </Text>
           <Text
             selectable
@@ -79,10 +89,27 @@ function Facts({ approval }: { approval: Approval }) {
               fontFamily: mono.has(fact.kind) ? monoFont : undefined,
             }}
           >
-            {approvalFactText(fact, shared)}
+            {systemTarget && fact.kind === "network" && fact.value === systemTarget
+              ? systemServiceLabel(systemTarget, shared)
+              : approvalFactText(fact, shared)}
           </Text>
         </View>
       ))}
+      {systemTarget && (
+        <>
+          <Button
+            variant="ghost"
+            title={shared("approval.systemServiceDetails")}
+            onPress={() => setAdvanced(!advanced)}
+          />
+          {advanced && <CodeBlock text={systemTarget} />}
+        </>
+      )}
+      {!!approval.secretUses?.length && (
+        <Text style={{ fontSize: 13, color: colors.text2 }}>
+          {shared("approval.tokenInjection")}
+        </Text>
+      )}
     </View>
   );
 }
@@ -143,18 +170,39 @@ function Detail({ approval }: { approval: Approval }) {
     mobile = useLinkState(),
     approvals = useApprovals(),
     source = useApprovalSource()(approval);
-  const [face, setFace] = useState(false);
-  const left = useSecondsLeft(approval.expiresAt);
+  const [face, setFace] = useState<"once" | "remember">();
+  const deadline = useApprovalDeadline(approval);
   const online = mobile.status === "online";
   const desktop = desktopOnly(approval);
-  const disabled = !online || desktop || approvals.action.busy || left <= 0;
+  const disabled = !online || desktop || approvals.action.busy || deadline.expired;
   const firstFact = approvalText(approval, language).facts[0];
   const target = approvalTarget(approval, language, shared);
-  const remembered = !!approvals.remember[approval.id];
-  const decide = async (decision: "allow" | "deny", allowConversation = false) => {
-    setFace(false);
-    if ((await approvals.resolve(approval, decision, allowConversation)) === undefined) return;
-    toast(t(decision === "allow" ? "allowedToast" : "deniedToast"));
+  const windowsDirectRun = isWindowsDirectRunApproval(approval);
+  const remembered = !deadline.paused && canRemember(approval) && !!approvals.remember[approval.id];
+  const directRunRemember = deadline.paused ? undefined : approval.directRunRemember;
+  const legacyDirectRun =
+    approval.directRunRemember === undefined &&
+    (approval.explanation?.some((step) => step.code === "outside_sandbox_once") ?? false);
+  const decide = async (
+    decision: "allow" | "deny",
+    allowConversation = false,
+    rememberDirectRun = false,
+  ) => {
+    setFace(undefined);
+    const outcome = await approvals.resolve(approval, decision, {
+      allowConversation,
+      rememberDirectRun,
+    });
+    if (outcome === undefined) return;
+    toast(
+      t(
+        outcome === "superseded"
+          ? "supersededToast"
+          : outcome === "allow"
+            ? "allowedToast"
+            : "deniedToast",
+      ),
+    );
     // Only while this page is still shown: after a back gesture during the decision, a second
     // back popped the page underneath too (or switched tabs).
     if (navigation.isFocused()) router.back();
@@ -192,89 +240,130 @@ function Detail({ approval }: { approval: Approval }) {
                   approval={approval}
                   title={approvalText(approval, language).title}
                 />
-                {!!target && <CodeBlock text={target} />}
-                {!!approvalLead(approval, language) && (
-                  <Text
-                    style={{
-                      marginHorizontal: 16,
-                      fontSize: 13,
-                      lineHeight: 19,
-                      color: colors.text2,
-                    }}
-                  >
-                    {approvalLead(approval, language)}
-                  </Text>
-                )}
-                <Facts approval={approval} />
-                <Why approval={approval} />
-                {canRemember(approval) && !desktop ? (
-                  <Pressable
-                    accessibilityRole="checkbox"
-                    accessibilityState={{ checked: remembered, disabled }}
-                    disabled={disabled}
-                    onPress={() =>
-                      approvals.setRemember((rows) => ({ ...rows, [approval.id]: !remembered }))
-                    }
-                    style={({ pressed }) => ({
-                      flexDirection: "row",
-                      alignItems: "flex-start",
-                      gap: 10,
-                      paddingVertical: 12,
-                      paddingHorizontal: 16,
-                      borderTopWidth: 1,
-                      borderTopColor: colors.b1,
-                      backgroundColor: pressed ? colors.hover : "transparent",
-                      opacity: disabled ? 0.5 : 1,
-                    })}
-                  >
-                    <CheckMark on={remembered} />
-                    <Text style={{ flex: 1, fontSize: 14, lineHeight: 21, color: colors.text }}>
-                      {isPiManagerApproval(approval)
-                        ? piRememberText(approval, shared)
-                        : approval.grantScope?.kind === "paid_image"
-                          ? shared("approval.rememberPaidImage", {
-                              model: `${approval.grantScope.provider} / ${approval.grantScope.model}`,
-                            })
-                          : t("remember")}
-                    </Text>
-                  </Pressable>
+                {approval.connectorNetworkSite ? (
+                  <ConnectorNetworkDestination host={approval.connectorNetworkSite} />
                 ) : (
-                  <View
-                    style={{
-                      flexDirection: "row",
-                      alignItems: "center",
-                      gap: 10,
-                      paddingVertical: 12,
-                      paddingHorizontal: 16,
-                      borderTopWidth: 1,
-                      borderTopColor: colors.b1,
-                    }}
-                  >
-                    <Icon name="lock" color={colors.text2} size={16} />
-                    <Text style={{ flex: 1, fontSize: 14, color: colors.text2 }}>
-                      {t(approval.risk === "danger" ? "rememberDanger" : "rememberNo")}
-                    </Text>
-                  </View>
+                  <>
+                    {!!target && <CodeBlock text={target} />}
+                    {!approval.isolation.available &&
+                      approval.command &&
+                      approval.isolation.reason === "windows_unisolated" && (
+                        <Text style={{ marginHorizontal: 16, color: colors.text2 }}>
+                          {isolationReasonText(
+                            approval.isolation.reason,
+                            shared,
+                            approval.isolation.windowsYoloConsent,
+                          )}
+                        </Text>
+                      )}
+                    {!!approvalLead(approval, language) && (
+                      <Text
+                        style={{
+                          marginHorizontal: 16,
+                          fontSize: 13,
+                          lineHeight: 19,
+                          color: colors.text2,
+                        }}
+                      >
+                        {approvalLead(approval, language)}
+                      </Text>
+                    )}
+                    {isDirectRunApproval(approval) && (
+                      <View style={{ marginHorizontal: 16, marginBottom: 12 }}>
+                        <SheetText text={shared("facts.value.outside_sandbox")} />
+                      </View>
+                    )}
+                    <Facts approval={approval} />
+                    <Why approval={approval} />
+                    {canRemember(approval) && !deadline.paused && !desktop ? (
+                      <Pressable
+                        accessibilityRole="checkbox"
+                        accessibilityState={{ checked: remembered, disabled }}
+                        disabled={disabled}
+                        onPress={() =>
+                          approvals.setRemember((rows) => ({ ...rows, [approval.id]: !remembered }))
+                        }
+                        style={({ pressed }) => ({
+                          flexDirection: "row",
+                          alignItems: "flex-start",
+                          gap: 10,
+                          paddingVertical: 12,
+                          paddingHorizontal: 16,
+                          borderTopWidth: 1,
+                          borderTopColor: colors.b1,
+                          backgroundColor: pressed ? colors.hover : "transparent",
+                          opacity: disabled ? 0.5 : 1,
+                        })}
+                      >
+                        <CheckMark on={remembered} />
+                        <Text style={{ flex: 1, fontSize: 14, lineHeight: 21, color: colors.text }}>
+                          {isPiManagerApproval(approval)
+                            ? piRememberText(approval, shared)
+                            : approval.grantScope?.kind === "paid_image"
+                              ? shared("approval.rememberPaidImage", {
+                                  model: `${approval.grantScopeProviderName || approval.grantScope.provider} / ${approval.grantScope.model}`,
+                                })
+                              : t("remember")}
+                        </Text>
+                      </Pressable>
+                    ) : legacyDirectRun ? (
+                      <View style={{ paddingHorizontal: 16, paddingBottom: 12 }}>
+                        <SheetText text={shared("approval.directRunLegacy")} />
+                      </View>
+                    ) : directRunRemember ? (
+                      <View style={{ paddingHorizontal: 16, paddingBottom: 12, gap: 8 }}>
+                        <SheetText
+                          text={shared("approval.directRunRememberHint", directRunRemember)}
+                        />
+                        <Button
+                          title={shared("approval.directRunRemember")}
+                          disabled={disabled}
+                          onPress={() => setFace("remember")}
+                        />
+                      </View>
+                    ) : (
+                      <View
+                        style={{
+                          flexDirection: "row",
+                          alignItems: "center",
+                          gap: 10,
+                          paddingVertical: 12,
+                          paddingHorizontal: 16,
+                          borderTopWidth: 1,
+                          borderTopColor: colors.b1,
+                        }}
+                      >
+                        <Icon name="lock" color={colors.text2} size={16} />
+                        <Text style={{ flex: 1, fontSize: 14, color: colors.text2 }}>
+                          {t(approval.risk === "danger" ? "rememberDanger" : "rememberNo")}
+                        </Text>
+                      </View>
+                    )}
+                  </>
                 )}
               </ListCard>
-              {(approval.conversationWebDomain || approval.taskWebRead) && !desktop && (
-                <>
-                  <Text style={{ color: colors.text2 }}>
-                    {approval.taskWebRead
-                      ? shared("approval.taskWebsiteHint")
-                      : shared("approval.conversationWebsiteHint", {
-                          domain: approval.conversationWebDomain ?? "",
-                        })}
-                  </Text>
-                  <Button
-                    title={shared(
-                      approval.taskWebRead ? "approval.allowTaskWeb" : "approval.allowConversation",
-                    )}
-                    disabled={disabled}
-                    onPress={() => void decide("allow", true)}
-                  />
-                </>
-              )}
+              {(approval.conversationWebDomain || approval.taskWebRead) &&
+                !desktop &&
+                !deadline.paused && (
+                  <>
+                    <Text style={{ color: colors.text2 }}>
+                      {approval.taskWebRead
+                        ? shared("approval.taskWebsiteHint")
+                        : shared("approval.conversationWebsiteHint", {
+                            domain: approval.conversationWebDomain ?? "",
+                          })}
+                    </Text>
+                    <Button
+                      title={shared(
+                        approval.taskWebRead
+                          ? "approval.allowTaskWeb"
+                          : "approval.allowConversation",
+                      )}
+                      disabled={disabled}
+                      onPress={() => void decide("allow", true)}
+                    />
+                  </>
+                )}
               {!online && <OfflineBanner text={t("approvalDetailOffline")} />}
               {desktop && <Banner tone="warn" icon="laptop" text={t("desktopOnly")} />}
               {source.chat && (
@@ -290,6 +379,11 @@ function Detail({ approval }: { approval: Approval }) {
             </ScrollView>
           </BlurTarget>
           <ApprovalBar>
+            {windowsDirectRun && (
+              <Text style={[type.caption, { color: colors.text, paddingBottom: 8 }]}>
+                {shared("facts.value.windows_unisolated")}
+              </Text>
+            )}
             <View style={{ flexDirection: "row", gap: 10 }}>
               <Button
                 size="lg"
@@ -302,10 +396,16 @@ function Detail({ approval }: { approval: Approval }) {
                 size="lg"
                 variant="prim"
                 icon={approval.risk === "danger" ? "face" : undefined}
-                title={t("allowOnce")}
+                title={
+                  approval.connectorNetworkSite
+                    ? shared("connectors.network.allowRemember")
+                    : t(remembered || deadline.paused || legacyDirectRun ? "allow" : "allowOnce")
+                }
                 disabled={disabled}
                 style={{ flex: 1.4 }}
-                onPress={() => (approval.risk === "danger" ? setFace(true) : void decide("allow"))}
+                onPress={() =>
+                  approval.risk === "danger" ? setFace("once") : void decide("allow")
+                }
               />
             </View>
             <Text
@@ -317,24 +417,35 @@ function Detail({ approval }: { approval: Approval }) {
                 fontVariant: ["tabular-nums"],
               }}
             >
-              {t("autoDeny", { time: approvalCountdown(left) })}
+              {deadline.label}
             </Text>
           </ApprovalBar>
-          <Sheet visible={face} onClose={() => setFace(false)}>
+          <Sheet visible={!!face} onClose={() => setFace(undefined)}>
             <SheetIcon name="face" />
             <SheetTitle center text={t("faceTitle")} />
             <SheetText
               center
-              text={t("faceHint", { fact: firstFact ? approvalFactText(firstFact, shared) : "" })}
+              text={
+                face === "remember" && directRunRemember
+                  ? shared("approval.directRunRememberHint", directRunRemember)
+                  : legacyDirectRun
+                    ? shared("approval.directRunLegacy")
+                    : t("faceHint", { fact: firstFact ? approvalFactText(firstFact, shared) : "" })
+              }
             />
             <Button
               size="lg"
               variant="prim"
-              title={t("faceConfirm")}
+              title={face === "remember" ? shared("approval.directRunRemember") : t("faceConfirm")}
               disabled={disabled}
-              onPress={() => void decide("allow")}
+              onPress={() => void decide("allow", false, face === "remember")}
             />
-            <Button size="lg" variant="ghost" title={t("cancel")} onPress={() => setFace(false)} />
+            <Button
+              size="lg"
+              variant="ghost"
+              title={t("cancel")}
+              onPress={() => setFace(undefined)}
+            />
           </Sheet>
         </View>
       </GlassScope>

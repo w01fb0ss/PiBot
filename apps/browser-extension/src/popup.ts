@@ -12,13 +12,13 @@ const t = zh
       checking: "检查中",
       connected: "已连接",
       missing: "未找到 Pi Bot",
-      closed: "Pi Bot 未打开",
+      closed: "未连接",
       idle: "现在没有 Bot 在这个浏览器里工作。",
       missingTitle: "没有找到 Pi Bot",
       missingBody:
-        "请将 Pi Bot 更新到 0.0.4 或更新版本并打开。若改过浏览器偏好，请在 设置 › 浏览器 选「优先用你的浏览器」。",
-      closedTitle: "Pi Bot 没有打开",
-      closedBody: "打开 Pi Bot 后，Bot 就能在这个浏览器里用你的登录状态工作。",
+        "请把 Pi Bot 更新到 0.1.0 或更新版本并打开，在「设置 › 浏览器」选「优先用你的浏览器」，然后重试连接。",
+      closedTitle: "还没连上 Pi Bot",
+      closedBody: "请确认 Pi Bot 已打开，然后重试连接。",
       bot: "Bot",
       stop: "停止",
       stopping: "已停止",
@@ -26,18 +26,19 @@ const t = zh
       accessBody:
         "Firefox 默认不让扩展读取网页。允许后，Bot 才能在这个浏览器里读页面、点击和填写。",
       allow: "允许",
+      retry: "重试连接",
     }
   : {
       checking: "Checking",
       connected: "Connected",
       missing: "Pi Bot not found",
-      closed: "Pi Bot closed",
+      closed: "Disconnected",
       idle: "No Bot is working in this browser right now.",
       missingTitle: "Pi Bot was not found",
       missingBody:
-        "Open Pi Bot 0.0.4 or later. If you changed the browser preference, choose “Prefer your browser” in Settings › Browser.",
-      closedTitle: "Pi Bot is not open",
-      closedBody: "Open Pi Bot and Bots can work in this browser with your sign-ins.",
+        "Open Pi Bot 0.1.0 or later, choose “Prefer your browser” in Settings › Browser, then retry.",
+      closedTitle: "Pi Bot is not connected",
+      closedBody: "Make sure Pi Bot is open, then retry the connection.",
       bot: "Bot",
       stop: "Stop",
       stopping: "Stopped",
@@ -45,6 +46,7 @@ const t = zh
       accessBody:
         "Firefox keeps extensions from reading pages until you allow it. Bots need it to read, click and type in this browser.",
       allow: "Allow",
+      retry: "Retry connection",
     };
 
 // The app's tokens switch on data-theme; the popup follows the system setting.
@@ -80,9 +82,18 @@ function render(state: PopupState) {
   statusText.textContent = t[key];
   content.replaceChildren();
   if (!state.connected) {
-    content.append(
-      key === "missing" ? note(t.missingTitle, t.missingBody) : note(t.closedTitle, t.closedBody),
-    );
+    const box =
+      key === "missing" ? note(t.missingTitle, t.missingBody) : note(t.closedTitle, t.closedBody);
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "allow";
+    retry.textContent = t.retry;
+    retry.onclick = () => {
+      retry.disabled = true;
+      refresh(true);
+    };
+    box.append(retry);
+    content.append(box);
     return;
   }
   if (state.siteAccess === false) {
@@ -130,8 +141,11 @@ function render(state: PopupState) {
   content.append(list);
 }
 
-if (statusText) statusText.textContent = t.checking;
-chrome.runtime
-  .sendMessage({ type: "working" })
-  .then((raw: unknown) => render(raw as PopupState))
-  .catch(() => render({ connected: false, problem: "disconnected", bots: [] }));
+function refresh(retry = false) {
+  if (statusText) statusText.textContent = t.checking;
+  void chrome.runtime
+    .sendMessage({ type: retry ? "retry_connection" : "working" })
+    .then((raw: unknown) => render(raw as PopupState))
+    .catch(() => render({ connected: false, problem: "disconnected", bots: [] }));
+}
+refresh();

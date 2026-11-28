@@ -23,7 +23,13 @@ function AppTabBar({ state, navigateToTab }: TabBarProps) {
         { name: "chat", label: t("chat"), icon: "message", badge: conversations.unread.size > 0 },
         { name: "todos", label: t("todos"), icon: "calendar" },
         { name: "tasks", label: t("tasks"), icon: "clock" },
-        { name: "approvals", label: t("approvals"), icon: "inbox", badge: approvals.items.length },
+        {
+          name: "approvals",
+          label: t("approvals"),
+          icon: "inbox",
+          // Group plans waiting for a choice count like approvals: both wait for the person.
+          badge: approvals.waiting,
+        },
         { name: "devices", label: t("devices"), icon: "laptop" },
       ]}
     />

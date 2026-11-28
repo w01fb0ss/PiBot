@@ -1,5 +1,6 @@
 import { win32 } from "node:path";
 import { powershellSegments } from "./powershell-segments.ts";
+import { windowsLiteralPath } from "./windows-approval-shape.ts";
 
 type Piece = ReturnType<typeof powershellSegments>["pieces"][number];
 
@@ -52,10 +53,8 @@ function project(path: string, directories: readonly string[]): string[] | undef
   // Rooted/drive-relative paths depend on per-drive state, which this scanner cannot certify.
   if (!absolute(path) && /^[\\/]|^[a-z]:/i.test(path)) return undefined;
   if (providerPath.test(path)) return undefined;
-  // `win32.normalize` is display and identity only, never authorization: Windows resolves `..`
-  // lexically, so the normalized form is the same target and reads as the folder it lands in.
-  if (absolute(path)) return [win32.normalize(path)];
-  return directories.map((directory) => win32.normalize(`${directory}\\${path}`));
+  if (absolute(path)) return [path];
+  return directories.map((directory) => `${directory}\\${path}`);
 }
 
 /** Targets of a directory change; undefined means the cwd can no longer be trusted. */
@@ -67,8 +66,16 @@ function directoryTargets(
   if (/^(?:popd|pop-location)$/i.test(program ?? "")) return undefined;
   let args = raw.slice(1);
   if (/^-(?:literalpath|path)$/i.test(args[0] ?? "")) args = args.slice(1);
-  const target = args.length === 1 ? literal(args[0]) : undefined;
-  if (!target || target.startsWith("-") || target.startsWith("~")) return undefined;
+  const token = args[0] ?? "";
+  const target = args.length === 1 ? literal(token) : undefined;
+  if (
+    !target ||
+    /^[#-]/.test(token) ||
+    /[\u2018-\u201f\p{Cc}]/u.test(target) ||
+    (token === target && token.includes(",")) ||
+    !windowsLiteralPath(target, true)
+  )
+    return undefined;
   return project(target, directories);
 }
 
@@ -136,8 +143,8 @@ function readonly(piece: Piece, program: string | undefined) {
 /**
  * Whether a segment is a directory switch, a recognized write, or a read-only tail. Anything else
  * (`iex (…'function'…)`, `Import-Alias`, `Import-Module`, `. .\defs.ps1`, a splat, an assignment
- * into `$ExecutionContext`) can change what later cmdlet names mean, so it taints the whole
- * command: after a `cd`, no pipeline tail is exempt any more.
+ * into `$ExecutionContext`) can change what later cmdlet names mean. When the directory is
+ * uncertain, an opaque segment prevents later pipeline tails from being treated as harmless.
  */
 function exempt(piece: Piece) {
   const raw = piece.tokens;
@@ -149,11 +156,16 @@ function exempt(piece: Piece) {
 }
 
 /** Display-only facts: PowerShell remains opaque and never gains readonly authorization here. */
-export function powershellDirectoryWrites(command: string, cwd: string) {
+export async function powershellDirectoryWrites(
+  command: string,
+  cwd: string,
+  verifyDirectory: (path: string) => Promise<boolean>,
+) {
   const writes = new Set<string>();
   let directories: string[] = [cwd];
   let unknown = false;
   let changed = false;
+  let unverifiedDirectory = false;
   let unknownWrite = false;
   const parsed = powershellSegments(command);
   if (parsed.unclosed || parsed.tooLong) unknown = true;
@@ -163,16 +175,20 @@ export function powershellDirectoryWrites(command: string, cwd: string) {
     if (!raw.length) continue;
     const program = literal(raw[0])?.toLowerCase();
     if (directoryChange.test(program ?? "")) {
-      // Set even when the target cannot be parsed: a nonterminating Set-Location error leaves the
-      // previous cwd live, so the initial directory is no longer a fact either way.
+      // A nonterminating Set-Location error leaves the previous cwd live. Every possible cwd
+      // must be verified before an opaque command can be treated like one with no cd prefix.
       changed = true;
       const projected = directoryTargets(raw, program, directories);
       if (!projected?.length) unknown = true;
       else {
-        directories = [...new Set([...directories, ...projected])];
+        const candidates = [...new Set([...directories, ...projected])];
+        directories = [...new Set(candidates.map((path) => win32.normalize(path)))];
         if (directories.length > 16) {
           directories = [];
           unknown = true;
+        } else if (!unknown && !unverifiedDirectory) {
+          const verified = await Promise.all(candidates.map(verifyDirectory));
+          unverifiedDirectory = verified.includes(false);
         }
       }
       continue;
@@ -188,11 +204,13 @@ export function powershellDirectoryWrites(command: string, cwd: string) {
     }
     const redirect = raw.findIndex((value) => /^(?:\d|\*)?>>?/.test(value));
     if (!mutator.test(program ?? "") && redirect < 0) {
-      // Arbitrary functions, aliases and methods may write; a known location must not be reported
-      // as unchanged just because the segment looks like a pipeline tail. One unexplained segment
-      // anywhere removes every exemption, so a write hidden in `iex`/aliases cannot ride on a
-      // later `... | Select-Object`.
-      if (changed && (tainted || !readonly(piece, program))) unknownWrite = true;
+      if (changed) {
+        // Even at a verified directory, an expression can change the location before writing.
+        const opaqueCode =
+          !readonly(piece, program) &&
+          (!program || program === "." || runsCode(raw.filter((token) => !dataHead(token))));
+        if (((unknown || unverifiedDirectory) && tainted) || opaqueCode) unknownWrite = true;
+      }
       continue;
     }
     const operands = writeOperands(raw, redirect, program ?? "", () => {
@@ -209,7 +227,9 @@ export function powershellDirectoryWrites(command: string, cwd: string) {
         unknownWrite = true;
         continue;
       }
-      const paths = value ? project(value, directories) : undefined;
+      const paths = value
+        ? project(value, directories)?.map((path) => win32.normalize(path))
+        : undefined;
       if (!changed) {
         // No switch: relative targets resolve from the cwd the caller verified, but `..` can leave
         // it, so record the normalized target instead of assuming it stays inside.
@@ -219,8 +239,9 @@ export function powershellDirectoryWrites(command: string, cwd: string) {
         else if (!unknown) for (const path of paths) writes.add(path);
         continue;
       }
-      if (!paths || (unknown && !absolute(value ?? ""))) unknownWrite = true;
-      if (!unknown || absolute(value ?? "")) for (const path of paths ?? []) writes.add(path);
+      const absoluteOperand = absolute(value ?? "");
+      if (!paths || ((unknown || unverifiedDirectory) && !absoluteOperand)) unknownWrite = true;
+      if (!unknown || absoluteOperand) for (const path of paths ?? []) writes.add(path);
     }
     if (!operands.length && changed) unknownWrite = true;
   }

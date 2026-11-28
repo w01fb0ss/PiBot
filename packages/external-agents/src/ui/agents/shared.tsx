@@ -25,6 +25,17 @@ export function errorKey(error: unknown): TranslationKey {
   return Object.hasOwn(externalAgentsZh, key) ? (key as TranslationKey) : "errors.internal";
 }
 
+/** A read-only grant as shown: the login keychain by name, any other folder as its path. */
+export function readOnlyLabel(
+  path: string,
+  t: (key: TranslationKey, values?: Record<string, string>) => string,
+) {
+  const shown = path.startsWith("~/") ? path : `~/${path}`;
+  return shown === "~/Library/Keychains/login.keychain-db"
+    ? t("externalAgents.create.keychain")
+    : t("externalAgents.create.readOnlyPath", { path: shown });
+}
+
 export function megabytes(bytes: number) {
   return `${Math.max(0.1, bytes / 1024 / 1024).toFixed(1)} MB`;
 }

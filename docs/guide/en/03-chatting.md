@@ -17,13 +17,25 @@ On this page:
 Each Bot's chats are split into **topics**. A topic has its own context and working folder.
 
 - **New topic**: click **+ New topic** at the top right. A new topic opens on a greeting page with suggestions in the interface language; click one to put it in the message box.
-- **Switch topics**: click the topic name under the Bot's name to open the topic list. You can search it and see Archived topics.
+- **Switch topics**: click the topic name under the Bot's name to open the topic list. You can search it and see Archived topics. Imported topics have a source label.
 
   ![Topic list](../images/en/topic-list.png)
 
 - **Archive**: "…" at the top right › **Archive** hides the topic and keeps its chats and attachments.
 
   ![The "…" menu](../images/en/topic-more.png)
+
+### Continuing an imported conversation
+
+Open your avatar menu (bottom left) › **Import from another AI**. Choose a ChatGPT, Claude or Gemini export ZIP, or bring in chats from Claude Code, Codex, Cursor, OpenCode or Antigravity. For local tools, list and pick conversations or choose a supported local file. A Gemini My Activity export creates a separate topic for each imported turn. The import reads the source on your computer. If you choose to distill memories with a cloud model, conversation text is sent to that model.
+
+After importing, **Open imported topic** opens a single topic directly. For several topics, **View imported topics** opens the latest one and shows that batch under **Imported** in the Bot's **Topics** tab.
+
+- **Continue in place**: open the imported topic and use the message box as usual, on desktop or from a phone connected to your paired computer. The topic keeps its **Imported from …** label, the timestamps of the imported messages and the working folder chosen at import. Restore the topic first if it is archived.
+- **Context sent to the Bot**: on your first reply to a Pi Bot chat Bot, it gets both sides' text as background. It also gets short notes about tool calls, results and attachment names when available. Pi Bot leaves out tool arguments and output bodies. A long message shows its beginning. Its full text is attached if it fits the attachment limit. Pi Bot labels the history as untrusted background and summarizes it if it is too long. Old tool calls and approvals do not carry over.
+- **Model used**: a chat Bot uses its configured model. On desktop, choose **Topic model** at the top of the chat to switch models for just this topic. If you imported into an external agent Bot, that agent uses its own model and does not get the imported history automatically.
+- **Imported messages** stay read-only. You cannot edit or delete them individually. Importing the conversation leaves its source transcript untouched. Your new messages work like any normal chat.
+- **Undoing an import**: open **Import from another AI** › **Past imports** › **Undo**. This removes imported messages and their attachments. Topics with new messages keep those messages and their working folder. Topics without new messages are removed. Wait for any active runs in the batch to finish first.
 
 ## Execute and Plan only
 
@@ -46,6 +58,14 @@ Execute / Plan only shares a row with the working folder: in a new topic you can
 
 - **Stop**: while a Bot runs, the send button becomes a stop button; in group chats each member also has "Stop this run by …". Text generated before stopping is kept.
 - **Suggested reply**: after a run, a grey suggested reply appears in the message box. Tab accepts it, Esc dismisses it; you still send it yourself.
+
+### Video generation and playback
+
+Ask a Bot to generate a clip using a [configured video model](09-models-and-keys.md#video-generation-models). You can give it a prompt and optionally specify duration, aspect ratio, size or an image to use as the first frame. The approval card shows the provider, output settings and estimated price when available.
+
+The job card shows progress and lets you cancel. Pi Bot resumes a job with a provider ID after a restart. The default timeout is 15 minutes, and generated files share the 20 MiB attachment limit. The finished MP4 is attached to the conversation and saved in the topic folder when write permissions and the folder still permit it.
+
+On desktop, load the inline player from a video or audio attachment. The player starts muted and waits for you to press play. Supported extensions are MP4, WebM, MOV and M4V for video, and M4A, MP3, WAV and OGG for audio. On the phone, tap the file card and choose **Open with** to use a system player.
 
 ## Reading a run
 
@@ -98,7 +118,7 @@ Background commands run for up to 2 hours by default (Settings › General › B
 
 Pi Bot prefers your browser by default. If you use Chrome or Firefox, install the Pi Bot Browser extension from its store. In Firefox, also allow website access from the extension button.
 
-- [Chrome Web Store](https://chromewebstore.google.com/detail/jfaelafpdicbnlnbngicngehehafpmbk)
+- [Chrome Web Store](https://chromewebstore.google.com/detail/pi-bot-browser/pnjdgninncjgoedhbaiollbhkhfmlngl)
 - [Firefox Add-ons](https://addons.mozilla.org/firefox/addon/pibot-browser/)
 
 Once the extension connects, Bots can use your existing sign-ins in dedicated tabs. Site access and form submissions still follow Pi Bot's permissions and approvals. When the extension is disconnected, tasks continue in the Bot browser. The extension is not yet listed in Microsoft Edge Add-ons. To always use the isolated browser, choose **Use only Pi Bot's built-in Bot browser** in Settings › Browser.

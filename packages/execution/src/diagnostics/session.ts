@@ -6,6 +6,7 @@ import { createExec } from "../command/command.ts";
 import { commandEnvironment } from "../command/environment.ts";
 import { ExecError, type ExecOptions, type NetworkSettings } from "../core/types.ts";
 import { childNodeRuntime } from "../runtime/child-node.ts";
+import { isolationProbeStderr } from "../sandbox/isolation-probe.ts";
 import { directoryIdentity } from "../sandbox/workspace.ts";
 import { diagnosticCommand, diagnosticSignatures, type SandboxDiagnosticRow } from "./report.ts";
 
@@ -58,6 +59,7 @@ export async function createSandboxDiagnosticSession(options: SandboxDiagnosticO
       LANG: "en_US.UTF-8",
     };
     const signatures = new Set<string>();
+    let probingIsolation = true;
     exec = createExec({
       ...options,
       env,
@@ -72,7 +74,12 @@ export async function createSandboxDiagnosticSession(options: SandboxDiagnosticO
               for (const feature of diagnosticSignatures(tail)) signatures.add(feature);
               return "";
             },
-            finish: () => "",
+            finish() {
+              // The shared isolation probe sees only redacted stderr. Preserve the canonical
+              // diagnosis here so the doctor can identify the missing host dependency.
+              const feature = probingIsolation ? isolationProbeStderr(tail) : undefined;
+              return feature ? `${feature}\n` : "";
+            },
           };
         },
       },
@@ -82,6 +89,7 @@ export async function createSandboxDiagnosticSession(options: SandboxDiagnosticO
     // Negative checks use kernel/proxy evidence or an independently verified fixture receipt.
     const identities = [await directoryIdentity(project), await directoryIdentity(home)];
     const isolation = await runner.isolationStatus(options.signal);
+    probingIsolation = false;
     const search = commandEnvironment(options.platform, env, home, temp).PATH ?? "";
     const executable = async (name: string): Promise<string | undefined> => {
       const names =

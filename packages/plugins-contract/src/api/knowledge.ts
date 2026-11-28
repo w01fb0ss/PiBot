@@ -1,7 +1,7 @@
 import { IdSchema, KnowledgeVaultSchema } from "@pibot/protocol-base";
 import { z } from "zod";
 
-// Knowledge sources are read-only mounts of something the person already keeps elsewhere
+// Knowledge sources are references to something the person already keeps elsewhere
 // (an Obsidian vault folder, a Notion workspace). Only the reference is stored here, never note
 // content or an index copy, so these methods carry metadata and assignments and nothing else.
 const time = z.iso.datetime();
@@ -22,40 +22,104 @@ export const KnowledgeTargetsSchema = z.strictObject({
 });
 export type KnowledgeTargets = z.output<typeof KnowledgeTargetsSchema>;
 
-export const KnowledgeKindSchema = z.enum(["obsidian", "notion"]);
+export const KnowledgeKindSchema = z.enum(["obsidian", "notion", "folder"]);
 export type KnowledgeKind = z.output<typeof KnowledgeKindSchema>;
 
+const LocalKnowledgeConfigFields = {
+  path: z.string().min(1).max(32768),
+  // Recorded when the folder is added, in execution's own encoding (see
+  // `@pibot/execution` file-identity), so a folder that was moved or replaced fails closed
+  // instead of silently searching whichever folder now sits at the same path. Absent on
+  // records created before that, which require the user to select the folder again.
+  device: z.string().min(1).max(64).nullish(),
+  inode: z.string().min(1).max(64).nullish(),
+};
+
 /**
- * Stored configuration. The vault path is the canonical folder the host dialog returned; the
+ * Stored configuration. Local folder paths are canonical folders the host dialog returned; the
  * Notion side only points at the connector that holds its OAuth credential. Kept in one place so
  * the store, the RPC results and the later readers share exactly one shape.
  */
+const NotionWriteActionSchema = z.enum(["create", "update", "delete"]);
+export type NotionWriteAction = z.output<typeof NotionWriteActionSchema>;
+const NotionWriteActionsSchema = z.array(NotionWriteActionSchema).max(3);
+
 export const KnowledgeConfigSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("obsidian"), ...LocalKnowledgeConfigFields }),
+  z.strictObject({ kind: z.literal("folder"), ...LocalKnowledgeConfigFields }),
   z.strictObject({
-    kind: z.literal("obsidian"),
-    path: z.string().min(1).max(32768),
-    // Recorded when the vault is added, in execution's own encoding (see
-    // `@pibot/execution` file-identity), so a folder that was moved or replaced fails closed
-    // instead of silently searching whichever folder now sits at the same path. Absent on
-    // records created before that, which can only be checked by canonical path.
-    device: z.string().min(1).max(64).nullish(),
-    inode: z.string().min(1).max(64).nullish(),
+    kind: z.literal("notion"),
+    connectorId: IdSchema,
+    writeActions: NotionWriteActionsSchema.optional(),
   }),
-  z.strictObject({ kind: z.literal("notion"), connectorId: IdSchema }),
 ]);
 export type KnowledgeConfig = z.output<typeof KnowledgeConfigSchema>;
+
+export const KnowledgeFolderSummarySchema = z.strictObject({
+  status: z.enum(["ok", "changed", "denied", "unreadable", "timeout"]),
+  supported: z.number().int().nonnegative(),
+  unsupported: z.number().int().nonnegative(),
+  scannedPdf: z.number().int().nonnegative().default(0),
+  skippedLarge: z.number().int().nonnegative().default(0),
+  skippedUnreadable: z.number().int().nonnegative().default(0),
+  unexamined: z.number().int().nonnegative().default(0),
+  byKind: z.strictObject({
+    markdown: z.number().int().nonnegative(),
+    text: z.number().int().nonnegative(),
+    pdf: z.number().int().nonnegative(),
+    word: z.number().int().nonnegative(),
+  }),
+  truncated: z.boolean(),
+});
+export type KnowledgeFolderSummary = z.output<typeof KnowledgeFolderSummarySchema>;
+
+export const KnowledgeNotionWriteToolsSchema = z.strictObject({
+  revision: z.number().int().nonnegative(),
+  total: z.number().int().nonnegative(),
+  enabled: z.number().int().nonnegative(),
+  readOnlyMode: z.boolean().default(false),
+  availableWrites: NotionWriteActionsSchema,
+  missingWrites: NotionWriteActionsSchema,
+  readAvailable: z.boolean(),
+  readToolToEnable: z.string().optional(),
+});
+export type KnowledgeNotionWriteTools = z.output<typeof KnowledgeNotionWriteToolsSchema>;
 
 export const KnowledgeSourceSchema = z.strictObject({
   id: IdSchema,
   kind: KnowledgeKindSchema,
   name: KnowledgeNameSchema,
   targets: KnowledgeTargetsSchema,
+  writable: z.boolean().default(false),
   createdAt: time,
   updatedAt: time,
   /** Written by the search / read tools; null until first use. */
   lastUsedAt: time.nullable(),
 });
 export type KnowledgeSource = z.output<typeof KnowledgeSourceSchema>;
+
+export const KnowledgeRepointRecipientsSchema = z
+  .array(
+    z.strictObject({
+      kind: z.enum(["bot", "group"]),
+      name: z.string().min(1).nullable(),
+      archived: z.boolean(),
+    }),
+  )
+  .max(1000);
+
+const KnowledgeRepointResultSchema = z.strictObject({
+  source: KnowledgeSourceSchema.nullable(),
+  conflict: KnowledgeSourceSchema.pick({ id: true, name: true }).optional(),
+  preview: z
+    .strictObject({
+      token: IdSchema,
+      path: LocalKnowledgeConfigFields.path,
+      source: KnowledgeSourceSchema,
+      recipients: KnowledgeRepointRecipientsSchema,
+    })
+    .optional(),
+});
 
 /**
  * Which Notion account a source is connected as, read with Notion's `notion-get-self` tool
@@ -125,11 +189,20 @@ export const KnowledgeMethods = {
   },
   "knowledge.get": {
     params: z.strictObject({ id: IdSchema }),
-    result: z.strictObject({ source: KnowledgeSourceSchema, origin: KnowledgeConfigSchema }),
+    result: z.strictObject({
+      source: KnowledgeSourceSchema,
+      origin: KnowledgeConfigSchema,
+      notionWriteTools: KnowledgeNotionWriteToolsSchema.optional(),
+    }),
+  },
+  /** Read-only summary of a local folder's recognized vs. unsupported files and identity health. */
+  "knowledge.inspect": {
+    params: z.strictObject({ id: IdSchema }),
+    result: z.strictObject({ summary: KnowledgeFolderSummarySchema.nullable() }),
   },
   /**
    * The host owns the folder dialog: the renderer never hands the brain a read root, so adding a
-   * vault is one user action rather than a path parameter. null means the dialog was cancelled.
+   * local folder is one user action rather than a path parameter. null means the dialog was cancelled.
    */
   "knowledge.addObsidian": {
     params: z.strictObject({
@@ -139,12 +212,35 @@ export const KnowledgeMethods = {
        * is never "any folder the renderer names"; absent when the person picks in the dialog.
        */
       detectedPath: z.string().min(1).max(32768).optional(),
+      /** Distinguishes an Obsidian vault from a general local document folder. */
+      kind: z.enum(["obsidian", "folder"]).optional(),
+      /** Optional initial Bot/group assignments chosen explicitly in the add confirmation step. */
+      targets: KnowledgeTargetsSchema.optional(),
     }),
-    result: z.strictObject({ source: KnowledgeSourceSchema.nullable() }),
+    result: z.strictObject({
+      source: KnowledgeSourceSchema.nullable(),
+      alreadyAdded: z.literal(true).optional(),
+    }),
+  },
+  /** Re-selects a local source's folder via the OS dialog, preserving name and Bot assignments. */
+  "knowledge.repoint": {
+    params: z.strictObject({ id: IdSchema, confirmationToken: IdSchema.optional() }),
+    result: KnowledgeRepointResultSchema,
+  },
+  /**
+   * Identifies the local library to open in Settings for a citation that needs reselection.
+   * Derives the source id from the stored reply and current assignment.
+   */
+  "knowledge.repointReference": {
+    params: KnowledgeOpenReferenceSchema,
+    result: z.strictObject({ sourceId: IdSchema }),
   },
   /** Creates the remote MCP connector and returns it, so the UI can run connectors.authorize. */
   "knowledge.addNotion": {
-    params: z.strictObject({}),
+    params: z.strictObject({
+      /** Optional initial Bot/group assignments chosen explicitly in the add confirmation step. */
+      targets: KnowledgeTargetsSchema.optional(),
+    }),
     result: z.strictObject({ source: KnowledgeSourceSchema, connectorId: IdSchema }),
   },
   /**
@@ -160,6 +256,9 @@ export const KnowledgeMethods = {
       id: IdSchema,
       name: KnowledgeNameSchema,
       targets: KnowledgeTargetsSchema,
+      writable: z.boolean().optional(),
+      notionWriteActions: NotionWriteActionsSchema.optional(),
+      notionConnectorRevision: z.number().int().nonnegative().optional(),
     }),
     result: KnowledgeSourceSchema,
   },
@@ -170,12 +269,18 @@ export const KnowledgeMethods = {
   },
   /**
    * Opens a note in the person's own Obsidian through a host port that rebuilds the URI
-   * from verified identities. `opened` means the system open was dispatched, not that Obsidian
-   * showed the note; a failure after dispatch is reported as unknown, never retried here.
+   * from verified identities, or falls back to revealing the verified local file in the system
+   * file manager when Obsidian cannot resolve the folder.
    */
   "knowledge.openReference": {
     params: KnowledgeOpenReferenceSchema,
-    result: z.strictObject({ opened: z.literal(true) }),
+    result: z.strictObject({
+      opened: z.literal(true),
+      method: z.enum(["obsidian", "revealed"]).optional(),
+      fallbackReason: z
+        .enum(["obsidian_unavailable", "duplicate_vault", "not_in_obsidian", "document_file"])
+        .optional(),
+    }),
   },
 } as const;
 

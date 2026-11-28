@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, open, realpath, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
+import { Writable } from "node:stream";
 import { commandEnvironment } from "../command/environment.ts";
 import { executeHostedCommand } from "../command/foreground-host.ts";
 import { withDeadline } from "../core/deadline.ts";
@@ -11,7 +12,8 @@ import {
   type NetworkSettings,
 } from "../core/types.ts";
 import { type GitHookSnapshot, gitHookSnapshotDirectory } from "../git/git-hook-snapshot.ts";
-import { linuxIsolationFailure, linuxProbeDiagnostic } from "./linux-isolation.ts";
+import { type IsolationProbeStage, isolationProbeStderr } from "./isolation-probe.ts";
+import { linuxIsolationFailure } from "./linux-isolation.ts";
 import { cleanupSandboxPlaceholders, recordSandboxPlaceholders } from "./placeholder-ledger.ts";
 import { createSandboxConfig } from "./sandbox-config.ts";
 import type { BotReadContext } from "./sensitive-paths.ts";
@@ -38,21 +40,39 @@ export function createSandboxProfiles(options: ExecOptions) {
     let dir: string | undefined;
     let drained = true;
     let output = "";
+    let stage: IsolationProbeStage = "dependencies";
     const probeId = randomUUID();
     try {
-      const config = await builder.config([], { allowAll: false, domains: [] }, signal);
+      await builder.dependencies();
+      stage = "prepare_profile";
       dir = await mkdtemp(join(await realpath(options.tempDir), "sandbox-status-"));
-      const file = await open(join(dir, "output.log"), "wx", 0o600);
-      const log = file.createWriteStream({ autoClose: false });
+      const config = await builder.config(
+        [],
+        { allowAll: false, domains: [] },
+        signal,
+        undefined,
+        [],
+        false,
+        false,
+        undefined,
+        false,
+        dir,
+      );
+      // A probe has no user-visible command log. Only the bounded stderr summary survives it.
+      const log = new Writable({ write: (_chunk, _encoding, done) => done() });
       try {
+        stage = "start_host";
         const result = await executeHostedCommand({
           options,
           config,
           allowAll: false,
           command: "true",
           commandId: probeId,
-          onOutput: (text) => {
+          onStderr: (text) => {
             output = (output + text).slice(-8192);
+          },
+          onProbeStage: (current) => {
+            stage = current;
           },
           cwd: dir,
           env: {
@@ -64,12 +84,10 @@ export function createSandboxProfiles(options: ExecOptions) {
           log,
           prepared: async () => signal.throwIfAborted(),
         });
-        output = (output + result.truncatedOutput).slice(-8192);
         if (result.exitCode !== 0) throw new ExecError("isolation_unavailable");
         return { available: true };
       } finally {
         log.destroy();
-        await file.close();
       }
     } catch (error) {
       if (error instanceof ExecError && error.reason === "cleanup_failed") {
@@ -77,28 +95,27 @@ export function createSandboxProfiles(options: ExecOptions) {
         throw error;
       }
       if (lifetime.signal.aborted) return { available: false, reason: "exec_closed" };
-      const diagnostic =
-        options.platform !== "linux"
-          ? undefined
-          : error instanceof ExecError && error.reason === "seccomp_helper_unavailable"
-            ? "apply-seccomp: unavailable (not found or not executable)"
-            : linuxProbeDiagnostic(output);
+      const stderr =
+        error instanceof ExecError && error.reason === "seccomp_helper_unavailable"
+          ? "apply-seccomp: unavailable (not found or not executable)"
+          : error instanceof ExecError && error.reason === "ripgrep_unavailable"
+            ? "ripgrep: not found"
+            : isolationProbeStderr(output);
+      const probe = { stage, ...(stderr ? { stderr } : {}) };
       const reason =
         options.platform === "linux"
-          ? await linuxIsolationFailure(
-              await builder.ripgrepPath().catch(() => ""),
-              diagnostic,
-              options.env?.PATH,
-            )
+          ? await linuxIsolationFailure(probe)
           : "sandbox_dependencies_or_runtime_unavailable";
+      if (lifetime.signal.aborted) return { available: false, reason: "exec_closed" };
       options.onDiagnostic?.({
         runId: probeId,
         stage: "isolation",
         code: reason,
         readonlyRoots: 0,
-        ...(diagnostic ? { diagnostic } : {}),
+        probeStage: stage,
+        ...(stderr ? { diagnostic: stderr } : {}),
       });
-      return { available: false, reason };
+      return { available: false, reason, probe };
     } finally {
       if (dir && drained) await rm(dir, { recursive: true, force: true });
     }

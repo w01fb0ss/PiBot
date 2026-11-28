@@ -84,7 +84,13 @@ export class PermissionService {
   /** A self-check that did not finish (timeout under load) is reported as such, never thrown. */
   private async status(): Promise<Permissions["isolation"]> {
     try {
-      return await this.isolation();
+      const { available, reason, windowsYoloConsent } = await this.isolation();
+      // The execution status also carries probe diagnostics. Project it to the permissions contract.
+      return {
+        available,
+        ...(reason === undefined ? {} : { reason }),
+        ...(windowsYoloConsent === undefined ? {} : { windowsYoloConsent }),
+      };
     } catch {
       return { available: false, reason: "isolation_check_unfinished" };
     }

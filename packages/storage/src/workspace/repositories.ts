@@ -4,6 +4,7 @@ import type { DatabaseSync } from "node:sqlite";
 import {
   attachmentContinuationOf,
   ImageDeliverySchema,
+  imageGenerationResults,
   type KernelMethodResults,
   LIVE_ISLAND_KINDS,
   MessageSchema,
@@ -11,6 +12,8 @@ import {
   UserQuestionPauseSchema,
 } from "@pibot/protocol-base";
 import { BotsRepo } from "../bots/bots.ts";
+import { MemoryDreamRepo } from "../bots/memory-dream.ts";
+import { memoryBudgetDayStart, memoryMaintenanceUsage } from "../bots/memory-maintenance.ts";
 import { AttachmentsRepo } from "../conversations/attachments.ts";
 import { ConversationsRepo, visibleImport } from "../conversations/conversations.ts";
 import { routineTopicReference } from "../conversations/routine-topic-reference.ts";
@@ -109,11 +112,30 @@ export class SettingsRepo {
   set(patch: Partial<Settings>): Settings {
     const parsed = SettingsSchema.partial().parse(patch);
     return transaction(this.db, () => {
+      const previous =
+        parsed.memoryDreamCostUsd !== undefined || parsed.memoryExtractionDailyCostUsd !== undefined
+          ? this.get({ initializeDefaultModel: false })
+          : undefined;
       const insert = this.db.prepare(
         "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
       );
       for (const [key, value] of Object.entries(parsed)) {
         if (value !== undefined) insert.run(key, JSON.stringify(value));
+      }
+      if (previous) {
+        const oldDailyLimit = previous.memoryExtractionDailyCostUsd ?? 0.5;
+        const dailyRaised =
+          parsed.memoryExtractionDailyCostUsd !== undefined &&
+          parsed.memoryExtractionDailyCostUsd > oldDailyLimit;
+        const wasDailyExhausted =
+          dailyRaised &&
+          memoryMaintenanceUsage(this.db, memoryBudgetDayStart()).costUsd >= oldDailyLimit;
+        new MemoryDreamRepo(this.db).budgetsSaved(
+          dailyRaised,
+          parsed.memoryDreamCostUsd !== undefined &&
+            parsed.memoryDreamCostUsd > (previous.memoryDreamCostUsd ?? 0.05),
+          wasDailyExhausted,
+        );
       }
       return this.get();
     });
@@ -124,16 +146,17 @@ export class SettingsRepo {
   }
 }
 
-const messageColumns = `id, conversation_id AS conversationId, role, content, status,
+const messageColumns = `id, import_id IS NOT NULL AS imported, conversation_id AS conversationId, role, content, status,
   run_id AS runId, error_code AS errorCode, usage, bot_id AS botId, mentions,
   routine_trigger AS routineTrigger, task_result_id AS taskResultId,
   (SELECT thread_conversation_id FROM group_tasks WHERE id=messages.task_result_id) AS taskResultThreadId,
   created_at AS createdAt, updated_at AS updatedAt`;
 
-function parseMessage(row: Record<string, unknown>): Message {
+function parseMessage({ imported, ...row }: Record<string, unknown>): Message {
   const { taskResultId, taskResultThreadId, ...fields } = row;
   return MessageSchema.parse({
     ...fields,
+    ...(imported === 1 ? { imported: true } : {}),
     routineTrigger:
       fields.routineTrigger == null ? undefined : JSON.parse(String(fields.routineTrigger)),
     ...(taskResultId && taskResultThreadId
@@ -171,6 +194,16 @@ export class MessagesRepo {
       .prepare(`SELECT ${messageColumns} FROM messages WHERE id = ? AND ${visibleImport}`)
       .get(id);
     return row ? this.withDetails([parseMessage(row)])[0] : undefined;
+  }
+
+  /** Only content typed on this computer or its paired phone, from this topic's own history. */
+  personTypedContent(conversationId: string) {
+    return this.db
+      .prepare(`SELECT content FROM messages WHERE conversation_id=? AND role='user'
+        AND import_id IS NULL AND json_extract(usage,'$.inputOrigin') IN ('user','phone')
+        AND json_type(usage,'$.forward') IS NULL AND json_type(usage,'$.dispatch') IS NULL
+        AND json_type(usage,'$.systemEvent') IS NULL`)
+      .iterate(conversationId);
   }
   /** The program's own plan checkpoint only; explicit user pauses keep their original meaning. */
   clearPlanCheckpoint(runId: string, planId: string): Message[] {
@@ -393,16 +426,20 @@ export class MessagesRepo {
       source?.usage && typeof source.usage === "object" && !Array.isArray(source.usage)
         ? source.usage
         : {};
+    if (!target || source?.botId !== target.botId) return;
+    const hasImage = (id: string) =>
+      target.attachments?.some((a) => a.id === id && a.kind === "image");
     const delivery = ImageDeliverySchema.safeParse(sourceUsage.imageDelivery);
-    if (
-      !delivery.success ||
-      !target ||
-      source?.botId !== target.botId ||
-      !delivery.data.workspace.every((entry) =>
-        target.attachments?.some((a) => a.id === entry.attachmentId && a.kind === "image"),
-      )
-    )
-      return;
+    const results = imageGenerationResults(sourceUsage);
+    const copyDelivery =
+      delivery.success &&
+      delivery.data.workspace.every(({ attachmentId }) => hasImage(attachmentId));
+    const copyResults = results?.items.every(
+      (item) =>
+        item.status === "failed" ||
+        [item.attachmentId, ...(item.additionalAttachmentIds ?? [])].every(hasImage),
+    );
+    if (!copyDelivery && !copyResults) return;
     const targetUsage =
       target.usage && typeof target.usage === "object" && !Array.isArray(target.usage)
         ? target.usage
@@ -418,7 +455,8 @@ export class MessagesRepo {
     this.update(targetId, {
       usage: {
         ...targetUsage,
-        imageDelivery: delivery.data,
+        ...(copyDelivery ? { imageDelivery: delivery.data } : {}),
+        ...(copyResults ? { imageResults: results, imageGeneration: true } : {}),
         ...(generation ? { imageArtifactSourceRunId: String(generation.id) } : {}),
       },
     });

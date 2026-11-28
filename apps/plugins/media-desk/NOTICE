@@ -1,0 +1,23 @@
+Pi Bot Media Desk Plugin
+========================
+
+This plugin adapts workflow prompts, style extraction rules, style presets, and
+review heuristics from `dsh-media-desk`:
+
+- Upstream project: https://github.com/woniuniuniu/dsh-media-desk
+- Upstream commit:  d51464345705489b942bdcec242375ee3930c2b6
+- Author:           woniuniuniu (蜗牛的科技笔记)
+- License:          MIT License (see LICENSE in this directory)
+
+Adapted source files:
+- `src/produce.js`       -> staged planning, drafting, asset prompt framing, and surgical revision rules
+- `src/ai.js`            -> planning brief schema, voiceover script vs. article format rules, voice fidelity rubric
+- `src/images.js`        -> cover, editorial illustration, and B&W pencil storyboard prompt frames (without external HTTP API keys)
+- `src/style.js`         -> writing-style card extraction schema and prompt formatting
+- `src/style-presets.js` -> 15 bilingual creator style presets across 8 content categories
+- `src/intents.js`       -> natural-language workflow commands (idea capture, drafting, scheduling, status)
+- `src/learn.js`         -> performance & edit-diff review heuristics for proposing durable writing rules
+
+Intentionally omitted:
+- Monid CLI integration and external social-account scraping/import
+- Direct third-party image API key management and HTTP image gateways (replaced with Pi Bot's built-in image/video generation capabilities)

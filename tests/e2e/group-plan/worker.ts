@@ -8,6 +8,7 @@ try {
   const { runGroupPlanProbe } = await createJiti(import.meta.url, { fsCache: false }).import(
     "./probe.ts",
   );
+  parentPort?.postMessage({ progress: { type: "loaded" } });
   parentPort?.postMessage({
     result: await runGroupPlanProbe(workerData.root, workerData.selected, (progress: unknown) =>
       // Forward scenario boundaries so the supervisor times one scenario at a time.

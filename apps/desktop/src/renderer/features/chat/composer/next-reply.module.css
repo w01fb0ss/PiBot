@@ -55,13 +55,7 @@
   font: inherit;
   font-size: 11px;
 }
-/* The suggestion is labelled by a small chip in the conversation's colour. In a narrow
-   composer the chip shortens first, so the Tab key never runs under the send options. */
 .label {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
   align-self: center;
   padding: 1px 8px;
@@ -79,6 +73,23 @@
 }
 .suggestion:hover .text {
   color: var(--text);
+}
+.suggestion[data-completion] {
+  font-size: var(--chat-input, 15px);
+  line-height: var(--chat-input-line, 22px);
+  gap: 0;
+  overflow: hidden;
+}
+.suggestion[data-completion] .text,
+.prefix {
+  white-space: pre;
+}
+.suggestion[data-completion] .accept {
+  margin-inline-start: 8px;
+}
+.prefix {
+  visibility: hidden;
+  flex: none;
 }
 @media (max-width: 600px) {
   .accept {

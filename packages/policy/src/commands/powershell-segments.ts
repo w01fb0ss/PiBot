@@ -7,6 +7,8 @@ export function powershellSegments(command: string) {
   const pieces: Piece[] = [{ tokens: [], afterPipeOrCall: false, separator: "" }];
   let word = "";
   let quote = "";
+  const groups: string[] = [];
+  let mismatchedGroup = false;
   const flush = () => {
     if (word) pieces.at(-1)?.tokens.push(word);
     word = "";
@@ -24,6 +26,12 @@ export function powershellSegments(command: string) {
     if (char === "'" || char === '"') {
       quote = char;
       word += char;
+    } else if (char === "(" || char === "[" || char === "{") {
+      groups.push(char === "(" ? ")" : char === "[" ? "]" : "}");
+      word += char;
+    } else if (char === ")" || char === "]" || char === "}") {
+      if (groups.pop() !== char) mismatchedGroup = true;
+      word += char;
     } else if (char === ">") {
       // `echo hi>notes.txt` attaches the redirect to the word; split it so the target is a path.
       const prefix = /(?:\d+|\*)$/.exec(word)?.[0] ?? "";
@@ -40,5 +48,9 @@ export function powershellSegments(command: string) {
     else word += char;
   }
   flush();
-  return { pieces, unclosed: Boolean(quote), tooLong: command.length > 32_768 };
+  return {
+    pieces,
+    unclosed: Boolean(quote) || groups.length > 0 || mismatchedGroup,
+    tooLong: command.length > 32_768,
+  };
 }

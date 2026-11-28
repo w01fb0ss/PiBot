@@ -4,10 +4,7 @@ import { z } from "zod";
 export const IMAGE_LIMIT = 10 * 1024 * 1024;
 export const FILE_LIMIT = 20 * 1024 * 1024;
 export const MAX_ATTACHMENTS = 5;
-/**
- * A Bot's reply may carry more files than a person attaches at once — the files a run
- * produced are attached by the program — so stored and shown messages allow up to ten.
- */
+/** Limit for files attached by a Bot's reply tools. Image generation has its own output limit. */
 export const MAX_REPLY_ATTACHMENTS = 10;
 export const IMAGE_MIMES = ["image/png", "image/jpeg", "image/webp", "image/gif"] as const;
 export const TEXT_EXTENSIONS = new Set([
@@ -66,7 +63,24 @@ export const TEXT_EXTENSIONS = new Set([
   "erl",
   "hs",
 ]);
+const MEDIA_MIMES = {
+  mp4: "video/mp4",
+  webm: "video/webm",
+  mov: "video/quicktime",
+  m4v: "video/mp4",
+  m4a: "audio/mp4",
+  mp3: "audio/mpeg",
+  wav: "audio/wav",
+  ogg: "audio/ogg",
+} as const;
+export function mediaMime(name: string) {
+  const ext = name.includes(".") ? name.split(".").at(-1)?.toLowerCase() : undefined;
+  return ext && Object.hasOwn(MEDIA_MIMES, ext)
+    ? MEDIA_MIMES[ext as keyof typeof MEDIA_MIMES]
+    : undefined;
+}
 export const FILE_MIMES = [
+  ...Object.values(MEDIA_MIMES),
   "image/svg+xml",
   "text/plain",
   "text/markdown",
@@ -83,6 +97,8 @@ export const FILE_MIMES = [
 ] as const;
 export function fileMime(name: string): (typeof FILE_MIMES)[number] | undefined {
   const ext = name.split(".").at(-1)?.toLowerCase() ?? "";
+  const media = mediaMime(name);
+  if (media) return media;
   if (ext === "svg") return "image/svg+xml";
   if (ext === "pdf") return "application/pdf";
   if (ext === "docx")

@@ -1,15 +1,35 @@
-import type { MemoryDreamSummary, MethodResults } from "@pibot/protocol";
-import { useRpc, useRpcEvent, useSettings } from "@pibot/renderer-kit";
-import { Button, IconTile, Switch } from "@pibot/ui";
+import {
+  type MemoryDreamSummary,
+  type MemoryMaintenanceStatus,
+  type MethodResults,
+  memoryFailureNeedsSettings,
+} from "@pibot/protocol";
+import {
+  layoutStyles,
+  SettingsLine,
+  SettingsRow,
+  SettingsSection,
+  useRpc,
+  useRpcEvent,
+  useSettings,
+} from "@pibot/renderer-kit";
+import { Button } from "@pibot/ui";
 import { useEffect, useRef, useState } from "react";
-import styles from "../workspace/memory/settings/memory-settings.module.css";
+import { MemoryFallbackNotice } from "../workspace/memory/MemoryFallbackNotice.tsx";
 import menu from "./app-menu.module.css";
+import { MemoryDreamSettings } from "./MemoryDreamSettings.tsx";
 
 type Changes = MethodResults["memory.dream.changes"];
 
-export function MemoryDreamCards() {
+export function MemoryDreamCards({
+  dailyUsage,
+  budgetFocus,
+}: {
+  dailyUsage?: MemoryMaintenanceStatus["dailyUsage"];
+  budgetFocus?: string;
+}) {
   const { peer } = useRpc();
-  const { t, settings, update } = useSettings();
+  const { t, settings } = useSettings();
   const [snapshot, setSnapshot] = useState<{
     peer: typeof peer;
     revision: number;
@@ -85,51 +105,93 @@ export function MemoryDreamCards() {
       }
     }
   };
-  const changeSettings = async (patch: Parameters<typeof update>[0]) => {
-    try {
-      await update(patch);
-    } catch {
-      setStatus("failed");
-    }
-  };
   const changed = summary && (summary.merged || summary.retired || summary.proposed);
   return (
-    <>
-      {!!changed && summary && (
-        <div className={`${styles.card} ${menu.sortCard} ${menu.dreamCard}`}>
-          <div className={menu.sortHead}>
-            <IconTile icon="moon" tone="violet" />
-            <p className={styles.meta}>
-              <strong>{t("memorySettings.dream.title")}</strong>{" "}
-              {t("memorySettings.dream.summary", {
+    <div className={menu.dreamSettings}>
+      <SettingsSection title={t("memorySettings.dream.heading")} bare>
+        <div className={layoutStyles.card} aria-busy={pending}>
+          <SettingsRow
+            icon="refresh"
+            tone="violet"
+            label={t("memorySettings.dream.lead")}
+            note={t("memorySettings.dream.sharedNote")}
+          >
+            <Button variant="pill" disabled={!peer || pending} onClick={() => void action("run")}>
+              {t("memorySettings.dream.run")}
+            </Button>
+          </SettingsRow>
+          {status && (
+            <SettingsLine
+              role={status === "failed" ? "alert" : "status"}
+              tone={status === "failed" ? "danger" : status === "busy" ? "warn" : undefined}
+            >
+              {t(`memorySettings.dream.${status}`)}
+            </SettingsLine>
+          )}
+          {summary?.status === "failed" && (
+            <SettingsLine role="status" tone="warn" dot="warn">
+              {summary.failureReason === "local_only_no_model"
+                ? t("memorySettings.dream.localOnlyNoModel")
+                : summary.failureReason === "no_model"
+                  ? t("memorySettings.dream.noModel")
+                  : summary.failureReason && memoryFailureNeedsSettings(summary.failureReason)
+                    ? t("memorySettings.dream.runFailed")
+                    : t("memorySettings.dream.runStopped", {
+                        reason: t(
+                          `memorySettings.maintenance.${summary.failureReason ?? "failed"}`,
+                        ),
+                      })}
+            </SettingsLine>
+          )}
+          {summary?.budgetUpdated && (
+            <SettingsLine role="status">{t("memorySettings.dream.budgetUpdated")}</SettingsLine>
+          )}
+          {!summary?.budgetUpdated &&
+            (summary?.status === "limited" || summary?.status === "interrupted") && (
+              <SettingsLine role="status" tone="warn" dot="warn">
+                {t(
+                  summary.status === "limited" && summary.failureReason === "budget_exhausted"
+                    ? "memorySettings.dream.dailyLimited"
+                    : `memorySettings.dream.${summary.status}`,
+                )}
+              </SettingsLine>
+            )}
+          {summary?.fallback && (
+            <MemoryFallbackNotice
+              fallback={summary.fallback}
+              partial={summary.status !== "done"}
+              settingsLine
+            />
+          )}
+          {!!changed && summary && (
+            <SettingsRow
+              icon="moon"
+              tone="violet"
+              label={t("memorySettings.dream.title")}
+              note={t("memorySettings.dream.summary", {
                 merged: summary.merged,
                 retired: summary.retired,
                 proposed: summary.proposed,
               })}
-            </p>
-            <div className={styles.toolbar}>
-              {summary.undoable && (
+            >
+              <div className={menu.dreamActions}>
+                {summary.undoable && (
+                  <Button variant="pill" disabled={pending} onClick={() => void action("undo")}>
+                    {t("memorySettings.dream.undo")}
+                  </Button>
+                )}
                 <Button
                   variant="pill"
-                  className={styles.small}
                   disabled={pending}
-                  onClick={() => void action("undo")}
+                  aria-expanded={!!changes}
+                  onClick={() => void action("changes")}
                 >
-                  {t("memorySettings.dream.undo")}
+                  {t("memorySettings.dream.changes")}
                 </Button>
-              )}
-              <Button
-                variant="pill"
-                className={styles.small}
-                disabled={pending}
-                aria-expanded={!!changes}
-                onClick={() => void action("changes")}
-              >
-                {t("memorySettings.dream.changes")}
-              </Button>
-            </div>
-          </div>
-          {changes && (
+              </div>
+            </SettingsRow>
+          )}
+          {changes && summary && (
             <ul aria-label={t("memorySettings.dream.changes")} className={menu.dreamChanges}>
               {changes.map((item) => (
                 <li key={item.proposalId}>
@@ -140,88 +202,13 @@ export function MemoryDreamCards() {
             </ul>
           )}
         </div>
-      )}
-      <div className={`${styles.card} ${menu.sortCard}`} aria-busy={pending}>
-        <div className={menu.sortHead}>
-          <IconTile icon="refresh" tone="pink" />
-          <p className={styles.meta}>{t("memorySettings.dream.lead")}</p>
-          <Button
-            variant="pill"
-            className={styles.small}
-            disabled={!peer || pending}
-            onClick={() => void action("run")}
-          >
-            {t("memorySettings.dream.run")}
-          </Button>
-        </div>
-        <details className={menu.dreamOptions}>
-          <summary>{t("memorySettings.dream.options")}</summary>
-          <div className={menu.dreamSwitch}>
-            {t("memorySettings.dream.automatic")}
-            <Switch
-              label={t("memorySettings.dream.automatic")}
-              checked={!!settings?.memoryDreamEnabled}
-              disabled={!settings || pending}
-              onCheckedChange={(value) => void changeSettings({ memoryDreamEnabled: value })}
-            />
-          </div>
-          <div className={menu.dreamSwitch}>
-            {t("memorySettings.dream.localOnly")}
-            <Switch
-              label={t("memorySettings.dream.localOnly")}
-              checked={!!settings?.memoryDreamLocalOnly}
-              disabled={!settings || pending}
-              onCheckedChange={(value) => void changeSettings({ memoryDreamLocalOnly: value })}
-            />
-          </div>
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              const input = new FormData(event.currentTarget).get("budget");
-              if (typeof input === "string" && input.trim())
-                void changeSettings({ memoryDreamCostUsd: Number(input) });
-            }}
-          >
-            <label>
-              {t("memorySettings.dream.budget")}
-              <input
-                type="number"
-                name="budget"
-                min={0}
-                max={100}
-                step={0.01}
-                required
-                key={settings?.memoryDreamCostUsd ?? 0.05}
-                defaultValue={settings?.memoryDreamCostUsd ?? 0.05}
-                disabled={!settings || pending}
-              />
-            </label>
-            <Button
-              type="submit"
-              variant="pill"
-              className={styles.small}
-              disabled={!settings || pending}
-            >
-              {t("memorySettings.dream.save")}
-            </Button>
-          </form>
-        </details>
-        {status && (
-          <p role={status === "failed" ? "alert" : "status"}>
-            {t(`memorySettings.dream.${status}`)}
-          </p>
-        )}
-        {summary &&
-          (summary.status === "limited" ||
-            summary.status === "interrupted" ||
-            summary.status === "failed") && (
-            <p role="status">
-              {t(
-                `memorySettings.dream.${summary.status === "failed" ? "runFailed" : summary.status}`,
-              )}
-            </p>
-          )}
-      </div>
-    </>
+        <MemoryDreamSettings
+          dailyUsage={dailyUsage}
+          budgetFocus={budgetFocus}
+          disabled={!peer || !settings || pending}
+          onBudgetSaved={() => setRevision((value) => value + 1)}
+        />
+      </SettingsSection>
+    </div>
   );
 }

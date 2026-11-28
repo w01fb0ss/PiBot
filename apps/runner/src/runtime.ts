@@ -31,6 +31,7 @@ import { readPassphrase } from "./passphrase.ts";
 import { openPhoneAuthorizations } from "./phone-authorizations.ts";
 import { phoneRunnerNetwork } from "./phone-network.ts";
 import { createRunnerPolicyFacts } from "./policy-facts.ts";
+import { directProxy, type RunnerProxy } from "./proxy/route.ts";
 import type { RunnerRedactor } from "./redactor.ts";
 import { runnerResources } from "./resources.ts";
 import { createRunnerRtcFactory } from "./rtc-peer.ts";
@@ -52,6 +53,8 @@ export async function runRunner(options: {
   /** `pair --name`; omitted means this computer's host name. */
   deviceName?: string;
   listen?: readonly string[];
+  /** Relay route; direct when omitted (fixture and tests). */
+  proxy?: RunnerProxy;
   pairingOutput?: (code: string) => void;
   /** Read by the fatal-exit line: what the runner was doing when it crashed. */
   lifecycle?: RunnerLifecycle;
@@ -99,9 +102,9 @@ export async function runRunner(options: {
       // (options.environmentPassphrase was already moved into `passphrase` above.)
       preferFile: passphrase !== undefined,
       signal: shutdown.signal,
-      passphrase: async () => {
+      passphrase: async (creating) => {
         if (passphrase === undefined)
-          passphrase = await readPassphrase(undefined, shutdown.signal, options.redactor);
+          passphrase = await readPassphrase(creating, shutdown.signal, options.redactor);
         return passphrase;
       },
     });
@@ -217,6 +220,7 @@ export async function runRunner(options: {
         createPeer: runnerRtc.createPeer,
         signal: shutdown.signal,
         logger: options.logger,
+        proxy: options.proxy ?? directProxy,
       });
       network = createRunnerNetwork({
         rtc: runnerRtc,
@@ -231,6 +235,7 @@ export async function runRunner(options: {
         pairCode: options.pairCode,
         onRevoked: stop,
         relay: options.relay ?? OFFICIAL_RUNNER_RELAY,
+        proxy: options.proxy ?? directProxy,
         deviceName: runnerDeviceName(options.deviceName),
         output: (code) => {
           pairingCode = code;

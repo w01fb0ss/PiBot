@@ -5,6 +5,7 @@ import {
   providerPlan,
   RpcErrorCodes,
   SafeSecretSchema,
+  validImageModelOptions,
 } from "@pibot/models-contract/full";
 import type { Peer } from "@pibot/renderer-kit";
 import { normalizedThinking, SetupError } from "@pibot/renderer-kit";
@@ -133,18 +134,32 @@ export function validateCustom(input: unknown): CustomProvider {
   if (!parsed.success) throw new SetupError("models.custom.invalid");
   const config = parsed.data;
   if (
-    (!config.models.length && (!config.imageApi || !config.imageModels?.length)) ||
+    (!config.models.length &&
+      (!config.imageApi || !config.imageModels?.length) &&
+      (!config.videoApi || !config.videoModels?.length)) ||
+    (config.videoModels?.length && !config.videoApi) ||
     (config.imageModels?.length && !config.imageApi)
   )
     throw new SetupError("models.custom.invalid");
   const imageIds = (config.imageModels ?? []).map((model) => model.id);
+  if (config.imageModels?.some((model) => !validImageModelOptions(config.imageApi, model)))
+    throw new SetupError(
+      config.imageApi === "comfyui-images" ? "media.invalidWorkflow" : "models.custom.invalid",
+    );
   const textIds = new Set(config.models.map((model) => model.id));
   if (imageIds.some((id) => textIds.has(id))) throw new SetupError("media.duplicateModelId");
   if (new Set(imageIds).size !== imageIds.length) throw new SetupError("models.custom.invalid");
+  const videoIds = (config.videoModels ?? []).map((model) => model.id);
+  if (
+    new Set(videoIds).size !== videoIds.length ||
+    videoIds.some((id) => textIds.has(id) || imageIds.includes(id))
+  )
+    throw new SetupError("media.duplicateModelId");
   const url = new URL(config.baseUrl);
   if (
     url.username ||
     url.password ||
+    ((config.videoApi || config.imageApi) && (url.search || url.hash)) ||
     [...url.searchParams.keys()].some((name) => /key|token|secret|password|auth/i.test(name))
   )
     throw new SetupError("models.custom.invalid");

@@ -13,6 +13,7 @@ import {
   RpcError,
   RpcErrorCodes,
   type RunnerBackgroundSnapshotSchema,
+  RunnerCommandInputSchema,
   type RunnerEvents,
   type RunnerMethods,
 } from "@pibot/protocol-base";
@@ -147,8 +148,15 @@ export function commandInput(
     gitInitialization: _gitInit,
     ...serializable
   } = input as typeof input & { gitInitialization?: unknown };
+  // Only fields the runner wire declares travel. Local-only grants the desktop adds for its own
+  // sandbox (private network hosts, system or local services, credential helpers) widen access,
+  // so leaving them out never loosens the runner; sending them made the strict schema reject
+  // every runner command.
+  const wire = Object.fromEntries(
+    Object.entries(serializable).filter(([key]) => key in RunnerCommandInputSchema.shape),
+  ) as Params<RunnerMethods, "runner.command.run">["input"];
   return {
-    ...serializable,
+    ...wire,
     rootIdentities: runnerRootIdentities(input.rootIdentities),
   };
 }

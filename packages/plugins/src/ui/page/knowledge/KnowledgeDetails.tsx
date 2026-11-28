@@ -1,12 +1,16 @@
+import type { TranslationKey } from "@pibot/i18n";
 import type {
   ConnectorAccess,
   KnowledgeAccount,
+  KnowledgeFolderSummary,
   KnowledgeSource,
+  NotionWriteAction,
+  PluginMethodResults,
 } from "@pibot/plugins-contract/full";
 import type { Peer } from "@pibot/renderer-kit";
-import { useRpc, useSettings, useWorkspace } from "@pibot/renderer-kit";
-import { Button, Chip, IconTile } from "@pibot/ui";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { SettingsFold, useRpc, useSettings, useWorkspace } from "@pibot/renderer-kit";
+import { Button, Chip, IconTile, Switch } from "@pibot/ui";
+import { useCallback, useEffect, useState } from "react";
 import { useConnectorAction, useConnectorRead } from "../../shell/remote.ts";
 import { ConnectorFeedback } from "../ConnectorFeedback.tsx";
 import { ConnectorPanel } from "../ConnectorPanel.tsx";
@@ -20,18 +24,20 @@ import { KIND_ICON, KIND_TONE } from "./kinds.ts";
 const NEEDS_SIGN_IN = ["needs_setup", "needs_auth", "error", "disabled"];
 
 /**
- * One knowledge source — where it reads from, who may use it, and how to forget it. A Notion
- * source owns a remote MCP connection, so signing in stays here instead of sending the person to
- * the connection pages, where that installation would look like any other import.
+ * One knowledge source — where it reads from, who may use it, read/write permissions, and how to
+ * forget it. A Notion source owns a remote MCP connection, so signing in and enabling write tools
+ * stay here instead of sending the person to the MCP tab.
  */
 export function KnowledgeDetails({
   id,
+  alreadyAdded,
   snapshot,
   changed,
   close,
   removed,
 }: {
   id: string;
+  alreadyAdded: boolean;
   snapshot: number;
   changed(): void;
   close(): void;
@@ -39,6 +45,7 @@ export function KnowledgeDetails({
 }) {
   const { t, language } = useSettings();
   const workspace = useWorkspace();
+  const { peer } = useRpc();
   const detail = useConnectorRead(
     // biome-ignore lint/correctness/useExhaustiveDependencies: a new snapshot re-reads the saved targets.
     useCallback(
@@ -51,6 +58,8 @@ export function KnowledgeDetails({
   const groups = workspace.groups.filter((group) => !group.archivedAt);
   const source = detail.value?.source;
   const origin = detail.value?.origin;
+  const notionWriteTools = detail.value?.notionWriteTools;
+  const isLocal = origin?.kind === "obsidian" || origin?.kind === "folder";
   const connectorId = origin?.kind === "notion" ? origin.connectorId : undefined;
   const connection = useConnectorRead(
     // biome-ignore lint/correctness/useExhaustiveDependencies: a new snapshot re-reads the connection's status.
@@ -63,44 +72,144 @@ export function KnowledgeDetails({
     ),
     knowledgeError,
   );
+  const inspection = useConnectorRead(
+    // biome-ignore lint/correctness/useExhaustiveDependencies: a new snapshot re-reads after repoint.
+    useCallback(
+      (peer: Peer, signal: AbortSignal) =>
+        isLocal ? peer.call("knowledge.inspect", { id }, { signal }) : Promise.resolve(undefined),
+      [id, isLocal, snapshot],
+    ),
+    knowledgeError,
+  );
   const action = useConnectorAction(changed, knowledgeError);
   const [confirming, setConfirming] = useState(false);
+  const [confirmingNotionWrite, setConfirmingNotionWrite] = useState<{
+    actions: NotionWriteAction[];
+    revision: number;
+  }>();
+  const [folderChoice, setFolderChoice] =
+    useState<PluginMethodResults["knowledge.repoint"]["preview"]>();
+  const [repointed, setRepointed] = useState(false);
+  const [repointConflict, setRepointConflict] = useState<string>();
   const [authorization, setAuthorization] = useState<{
     authorizationId: string;
-    expiresAt: string;
+    fresh: boolean;
   }>();
+  const [failedAuthorization, setFailedAuthorization] = useState<"initial" | "fresh">();
   const status = connection.value?.connector.status;
   // A sign-in finished here re-reads the account even when one is stored (a different
   // workspace may have been chosen); 重试 does the same.
-  const signingIn = useRef(false);
   const [force, setForce] = useState(0);
   const retryAccount = useCallback(() => setForce((n) => n + 1), []);
   useEffect(() => {
-    if (status !== "ready" && status !== "idle") return;
-    setAuthorization(undefined);
-    if (signingIn.current) {
-      signingIn.current = false;
-      setForce((n) => n + 1);
-    }
-  }, [status]);
-  const authorize = async () => {
+    if (!authorization || !peer) return;
+    const controller = new AbortController();
+    const finish = (outcome: "succeeded" | "failed" | "cancelled") => {
+      if (controller.signal.aborted) return;
+      setAuthorization(undefined);
+      if (outcome === "succeeded") retryAccount();
+      if (outcome === "failed") setFailedAuthorization(authorization.fresh ? "fresh" : "initial");
+    };
+    void peer
+      .call(
+        "connectors.waitAuthorization",
+        { authorizationId: authorization.authorizationId },
+        { signal: controller.signal, timeoutMs: 330_000 },
+      )
+      .then(
+        (result) => finish(result.status),
+        () => finish("failed"),
+      );
+    return () => controller.abort();
+  }, [authorization, peer, retryAccount]);
+  const authorize = async (fresh = false) => {
     const row = connection.value?.connector;
     if (!row || action.disabled) return;
+    setFailedAuthorization(undefined);
     // The host waits for native consent; both deadlines must outlive that wait.
     const timeoutMs = 660_000;
     const result = await action.run(
       (peer, signal) =>
         peer.call(
           "connectors.authorize",
-          { id: row.id, expectedRevision: row.revision },
+          { id: row.id, expectedRevision: row.revision, ...(fresh ? { fresh: true } : {}) },
           { signal, timeoutMs },
         ),
       timeoutMs,
     );
-    if (result) {
-      signingIn.current = true;
-      setAuthorization(result);
-    }
+    if (result) setAuthorization({ authorizationId: result.authorizationId, fresh });
+  };
+  const reconnectNotion = async () => {
+    if (!source || action.disabled) return;
+    await action.run((peer, signal) => peer.call("knowledge.addNotion", {}, { signal }));
+  };
+  const switchToAskWrites = async () => {
+    const row = connection.value?.connector;
+    if (!row || action.disabled) return;
+    await action.run((peer, signal) =>
+      peer.call(
+        "connectors.update",
+        { id: row.id, expectedRevision: row.revision, confirmationMode: "read_write" },
+        { signal },
+      ),
+    );
+  };
+  const enableNotionRead = async () => {
+    const row = connection.value?.connector;
+    const tool = notionWriteTools?.readToolToEnable;
+    if (!row || !tool || action.disabled) return;
+    await action.run((peer, signal) =>
+      peer.call(
+        "connectors.update",
+        {
+          id: row.id,
+          expectedRevision: row.revision,
+          tools: [{ tool, enabled: true, readOnly: true }],
+        },
+        { signal },
+      ),
+    );
+  };
+  const repoint = async (confirmationToken?: string) => {
+    if (!source || action.disabled) return;
+    setFolderChoice(undefined);
+    setRepointed(false);
+    setRepointConflict(undefined);
+    const timeoutMs = confirmationToken ? 30_000 : 660_000;
+    const result = await action.run(
+      (peer, signal) =>
+        peer.call("knowledge.repoint", { id: source.id, confirmationToken }, { signal, timeoutMs }),
+      timeoutMs,
+    );
+    setRepointConflict(result?.conflict?.name);
+    setFolderChoice(result?.preview);
+    setRepointed(Boolean(result?.source));
+  };
+  const requestNotionConsent = () => {
+    if (!notionWriteTools) return;
+    setConfirmingNotionWrite({
+      actions: notionWriteTools.availableWrites,
+      revision: notionWriteTools.revision,
+    });
+  };
+  const saveWritable = (writable: boolean) => {
+    if (!source || action.disabled) return;
+    const consent = writable ? confirmingNotionWrite : undefined;
+    setConfirmingNotionWrite(undefined);
+    void action.run((peer, signal) =>
+      peer.call(
+        "knowledge.update",
+        {
+          id: source.id,
+          name: source.name,
+          targets: source.targets,
+          writable,
+          notionWriteActions: consent?.actions,
+          notionConnectorRevision: consent?.revision,
+        },
+        { signal },
+      ),
+    );
   };
   // 「所有 Bot」 is one stored flag; the picker shows it as every Bot switched on and
   // the first click that removes one writes the explicit list, exactly like MCP's who-can-use.
@@ -142,6 +251,55 @@ export function KnowledgeDetails({
       ? t("knowledge.lastUsed", { time: new Date(value.lastUsedAt).toLocaleString(language) })
       : t("knowledge.neverUsed");
   const signedIn = status === "ready" || status === "idle";
+  const hasTargets = source
+    ? source.targets.all || source.targets.bots.length > 0 || source.targets.groups.length > 0
+    : true;
+  const targetsKey = source
+    ? JSON.stringify([
+        source.targets.all,
+        [...source.targets.bots].sort(),
+        [...source.targets.groups].sort(),
+      ])
+    : "";
+  const folderSummary = inspection.value?.summary ?? null;
+  const vaultChanged =
+    folderSummary?.status === "changed" ||
+    action.error === "knowledge.error.vault_changed" ||
+    inspection.error === "knowledge.error.vault_changed";
+  const notionReadOnlyMode =
+    origin?.kind === "notion" &&
+    (connection.value?.connector.confirmationMode === "read_only" ||
+      notionWriteTools?.readOnlyMode === true);
+  const notionWriteToolsUnavailable =
+    signedIn && !notionReadOnlyMode && (notionWriteTools?.missingWrites.length ?? 0) > 0;
+  const notionReadUnavailable =
+    signedIn && !notionReadOnlyMode && notionWriteTools?.readAvailable === false;
+  const notionWriteToolsMissing =
+    origin?.kind === "notion" &&
+    source?.writable &&
+    signedIn &&
+    !notionReadOnlyMode &&
+    notionWriteTools !== undefined &&
+    !notionReadUnavailable &&
+    notionWriteTools.enabled < notionWriteTools.total;
+  const notionWriteBlocked =
+    origin?.kind === "notion" &&
+    (!signedIn ||
+      notionReadOnlyMode ||
+      !notionWriteTools ||
+      notionWriteTools.total === 0 ||
+      notionReadUnavailable);
+  const notionConnectorMissing =
+    origin?.kind === "notion" && !connection.loading && !connection.value && !!connection.error;
+  const formatList = (items: string[]) => new Intl.ListFormat(language).format(items);
+  const formatActions = (actions: NotionWriteAction[]) =>
+    formatList(actions.map((action) => t(`knowledge.notionAction.${action}`)));
+  const chosenRecipients = folderChoice?.recipients.map(({ kind, name, archived }) => {
+    if (name === null) return t(`knowledge.repointUnknownRecipient.${kind}`);
+    const label = kind === "group" ? t("knowledge.repointGroupRecipient", { name }) : name;
+    return archived ? t("knowledge.repointArchivedRecipient", { name: label }) : label;
+  });
+
   return (
     <ConnectorPanel
       title={source?.name ?? t("knowledge.category")}
@@ -164,6 +322,23 @@ export function KnowledgeDetails({
               <Chip tone={signedIn ? "ok" : "warn"}>{t(`connectors.status.${status}`)}</Chip>
             )}
           </div>
+          {repointConflict && (
+            <p className={styles.quiet} role="alert">
+              {t("knowledge.repointConflict", { name: repointConflict })}
+            </p>
+          )}
+          {repointed && <p role="status">{t("knowledge.repointSuccess")}</p>}
+          {isLocal && vaultChanged && (
+            <div className={styles.softCard} data-tint="amber" role="alert">
+              <div className={styles.tileRow}>
+                <IconTile icon="folder" tone="amber" size="lg" />
+                <span className={styles.tileText}>
+                  <b>{t("knowledge.vaultChangedTitle")}</b>
+                  <small>{t("knowledge.vaultChangedNote")}</small>
+                </span>
+              </div>
+            </div>
+          )}
           <section className={styles.block}>
             <h3 className={styles.blockTitle}>
               <span>{t("knowledge.origin")}</span>
@@ -172,16 +347,85 @@ export function KnowledgeDetails({
               <div className={styles.tileRow}>
                 <IconTile icon={KIND_ICON[source.kind]} tone={KIND_TONE[source.kind]} size="lg" />
                 <span className={styles.tileText}>
-                  {origin?.kind === "obsidian" ? (
+                  {origin?.kind === "obsidian" || origin?.kind === "folder" ? (
                     <>
-                      <b>{t("knowledge.kind.obsidian")}</b>
-                      <small className={styles.mono}>{origin.path}</small>
+                      <b>{source.name}</b>
+                      <small>{t(`knowledge.kind.${origin.kind}`)}</small>
                     </>
                   ) : (
                     <b>{t("knowledge.origin.notion")}</b>
                   )}
                 </span>
+                {isLocal && !folderChoice && (
+                  <Button
+                    variant="secondary"
+                    disabled={action.disabled}
+                    onClick={() => void repoint()}
+                  >
+                    {t("knowledge.reselectFolder")}
+                  </Button>
+                )}
               </div>
+              {folderChoice && (
+                <div className={styles.tileRow}>
+                  <span className={styles.tileText}>
+                    <b>{t("knowledge.repointConfirmTitle", { name: folderChoice.source.name })}</b>
+                    <small>{folderChoice.path}</small>
+                    <small>
+                      {t("knowledge.repointRecipients", {
+                        recipients: folderChoice.source.targets.all
+                          ? t("knowledge.repointAllRecipients")
+                          : chosenRecipients?.length
+                            ? formatList(chosenRecipients)
+                            : t("knowledge.repointNoRecipients"),
+                      })}
+                    </small>
+                    {folderChoice.recipients.some((recipient) => recipient.name === null) && (
+                      <small>{t("knowledge.repointUnknownAssignmentsKept")}</small>
+                    )}
+                    <small>
+                      {t(
+                        folderChoice.source.writable
+                          ? "knowledge.repointWritable"
+                          : "knowledge.repointReadOnly",
+                      )}
+                    </small>
+                  </span>
+                  <Button variant="secondary" onClick={() => setFolderChoice(undefined)}>
+                    {t("common.cancel")}
+                  </Button>
+                  <Button
+                    disabled={action.disabled}
+                    onClick={() => void repoint(folderChoice.token)}
+                  >
+                    {t("knowledge.repointConfirmAction")}
+                  </Button>
+                </div>
+              )}
+              {isLocal && (
+                <FolderSummaryRow
+                  loading={inspection.loading}
+                  error={inspection.error}
+                  summary={folderSummary}
+                  onRetry={inspection.refresh}
+                />
+              )}
+              {notionConnectorMissing && (
+                <div className={styles.tileRow}>
+                  <IconTile icon="key" tone="amber" size="lg" />
+                  <span className={styles.tileText}>
+                    <small>{t("knowledge.notionConnectorMissing")}</small>
+                  </span>
+                  <Button
+                    variant="secondary"
+                    loading={action.busy}
+                    disabled={action.disabled}
+                    onClick={() => void reconnectNotion()}
+                  >
+                    {t("knowledge.notionReconnect")}
+                  </Button>
+                </div>
+              )}
               {origin?.kind === "notion" &&
                 (authorization ? (
                   <div className={styles.tileRow}>
@@ -198,7 +442,6 @@ export function KnowledgeDetails({
                             { authorizationId: authorization.authorizationId },
                             { signal },
                           );
-                          signingIn.current = false;
                           setAuthorization(undefined);
                         })
                       }
@@ -207,6 +450,7 @@ export function KnowledgeDetails({
                     </Button>
                   </div>
                 ) : (
+                  !failedAuthorization &&
                   status &&
                   NEEDS_SIGN_IN.includes(status) && (
                     <div className={styles.tileRow}>
@@ -225,6 +469,27 @@ export function KnowledgeDetails({
                     </div>
                   )
                 ))}
+              {failedAuthorization && (
+                <div className={styles.tileRow} role="alert">
+                  <span className={styles.tileText}>
+                    <small>
+                      {t(
+                        failedAuthorization === "fresh" && signedIn
+                          ? "knowledge.notionReauthFailed"
+                          : "knowledge.notionAuthFailed",
+                      )}
+                    </small>
+                  </span>
+                  <Button
+                    variant="secondary"
+                    loading={action.busy}
+                    disabled={action.disabled || !connection.value}
+                    onClick={() => void authorize(failedAuthorization === "fresh")}
+                  >
+                    {t("common.retry")}
+                  </Button>
+                </div>
+              )}
             </div>
             {origin?.kind === "notion" &&
               !authorization &&
@@ -233,12 +498,35 @@ export function KnowledgeDetails({
               )}
           </section>
           {origin?.kind === "notion" && (
-            <NotionAccount id={source.id} status={status} force={force} retry={retryAccount} />
+            <NotionAccount
+              id={source.id}
+              status={status}
+              connectorRevision={connection.value?.connector.revision}
+              targetsKey={targetsKey}
+              force={force}
+              retry={retryAccount}
+            />
           )}
           <section className={styles.block}>
             <h3 className={styles.blockTitle} data-mark="violet">
               <span>{t("connections.panel.who")}</span>
             </h3>
+            {alreadyAdded && (
+              <p className={styles.quiet} role="status">
+                {t("knowledge.add.alreadyAdded")}
+              </p>
+            )}
+            {!hasTargets && (
+              <div className={styles.softCard} data-tint="amber" role="status">
+                <div className={styles.tileRow}>
+                  <IconTile icon="user" tone="amber" size="lg" />
+                  <span className={styles.tileText}>
+                    <b>{t("knowledge.assignPromptTitle")}</b>
+                    <small>{t("knowledge.assignPromptNote")}</small>
+                  </span>
+                </div>
+              </div>
+            )}
             <div className={styles.softCard}>
               <div className={styles.tileRow}>
                 <FacePicker
@@ -257,6 +545,157 @@ export function KnowledgeDetails({
             <p className={styles.quiet}>{t("connections.panel.whoNote")}</p>
           </section>
           <section className={styles.block}>
+            <h3 className={styles.blockTitle} data-mark="amber">
+              <span>{t("knowledge.permissions")}</span>
+            </h3>
+            <div className={styles.softCard}>
+              <div className={styles.tileRow}>
+                <IconTile icon="edit" tone="amber" size="lg" />
+                <span className={styles.tileText}>
+                  <b>{t("knowledge.writable")}</b>
+                  <small>
+                    {t(isLocal ? "knowledge.writableNote.local" : "knowledge.writableNote")}
+                  </small>
+                </span>
+                <Switch
+                  checked={source.writable || confirmingNotionWrite !== undefined}
+                  label={t("knowledge.writable")}
+                  disabled={action.disabled || (notionWriteBlocked && !source.writable)}
+                  onCheckedChange={(writable) => {
+                    if (writable && origin?.kind === "notion" && !source.writable) {
+                      if (notionWriteBlocked) return;
+                      requestNotionConsent();
+                      return;
+                    }
+                    setConfirmingNotionWrite(undefined);
+                    saveWritable(writable);
+                  }}
+                />
+              </div>
+              {notionReadOnlyMode && (
+                <div className={styles.tileRow} role="alert">
+                  <span className={styles.tileText}>
+                    <small>{t("knowledge.notionReadOnlyBlocked")}</small>
+                  </span>
+                  <Button
+                    variant="secondary"
+                    loading={action.busy}
+                    disabled={action.disabled || !connection.value}
+                    onClick={() => void switchToAskWrites()}
+                  >
+                    {t("knowledge.notionSwitchToAskWrites")}
+                  </Button>
+                </div>
+              )}
+              {confirmingNotionWrite && (
+                <div className={styles.tileRow}>
+                  <span className={styles.tileText}>
+                    <b>{t("knowledge.writableConfirmTitle")}</b>
+                    <small>
+                      {t("knowledge.writableConfirmNote", {
+                        actions: formatActions(confirmingNotionWrite.actions),
+                      })}
+                    </small>
+                  </span>
+                  <Button
+                    variant="secondary"
+                    disabled={action.busy}
+                    onClick={() => setConfirmingNotionWrite(undefined)}
+                  >
+                    {t("common.cancel")}
+                  </Button>
+                  <Button
+                    loading={action.busy}
+                    disabled={action.disabled || notionWriteBlocked}
+                    onClick={() => saveWritable(true)}
+                  >
+                    {t("knowledge.writableConfirmAction")}
+                  </Button>
+                </div>
+              )}
+              {notionWriteToolsMissing && !confirmingNotionWrite && (
+                <div className={styles.tileRow}>
+                  <span className={styles.tileText}>
+                    <small>{t("knowledge.notionWriteToolsMissing")}</small>
+                  </span>
+                  <Button
+                    variant="secondary"
+                    loading={action.busy}
+                    disabled={action.disabled}
+                    onClick={requestNotionConsent}
+                  >
+                    {t("knowledge.notionWriteToolsEnable")}
+                  </Button>
+                </div>
+              )}
+              {notionWriteToolsUnavailable && (
+                <div className={styles.tileRow}>
+                  <span className={styles.tileText}>
+                    <small>
+                      {t("knowledge.notionWriteToolsUnavailable", {
+                        actions: formatActions(notionWriteTools?.missingWrites ?? []),
+                      })}
+                    </small>
+                  </span>
+                </div>
+              )}
+              {notionReadUnavailable && (
+                <div className={styles.tileRow}>
+                  <span className={styles.tileText}>
+                    <small>{t("knowledge.notionReadUnavailable")}</small>
+                  </span>
+                  {notionWriteTools?.readToolToEnable && (
+                    <Button
+                      variant="secondary"
+                      loading={action.busy}
+                      disabled={action.disabled}
+                      onClick={() => void enableNotionRead()}
+                    >
+                      {t("knowledge.notionEnableRead")}
+                    </Button>
+                  )}
+                </div>
+              )}
+              {origin?.kind === "notion" &&
+                !notionReadOnlyMode &&
+                (source.writable || (notionWriteTools?.total ?? 0) > 0) &&
+                signedIn &&
+                !authorization &&
+                !failedAuthorization && (
+                  <div className={styles.tileRow}>
+                    <span className={styles.tileText}>
+                      <small>{t("knowledge.notionNote")}</small>
+                    </span>
+                    <Button
+                      variant="secondary"
+                      loading={action.busy}
+                      disabled={action.disabled || !connection.value}
+                      onClick={() => void authorize(true)}
+                    >
+                      {t("knowledge.notionReauthPages")}
+                    </Button>
+                  </div>
+                )}
+            </div>
+          </section>
+          {(origin?.kind === "obsidian" || origin?.kind === "folder") && (
+            <SettingsFold
+              title={t("connections.drawer.tab.advanced")}
+              summary={t("knowledge.advancedNote")}
+              icon="folder"
+              tone="neutral"
+            >
+              <div className={styles.softCard}>
+                <div className={styles.tileRow}>
+                  <span className={styles.tileText}>
+                    <b>{t("knowledge.advancedPath")}</b>
+                    <small className={styles.mono}>{origin.path}</small>
+                  </span>
+                </div>
+              </div>
+            </SettingsFold>
+          )}
+          <section className={styles.block}>
             <h3 className={styles.blockTitle} data-mark="teal">
               <span>{t("connectors.recentUse")}</span>
             </h3>
@@ -266,7 +705,6 @@ export function KnowledgeDetails({
                 <span className={styles.tileText}>{lastUsed(source)}</span>
               </div>
             </div>
-            <p className={styles.quiet}>{t("knowledge.readOnlyNote")}</p>
           </section>
           <div className={styles.softCard}>
             {confirming ? (
@@ -313,25 +751,136 @@ export function KnowledgeDetails({
   );
 }
 
+function FolderSummaryRow({
+  loading,
+  error,
+  summary,
+  onRetry,
+}: {
+  loading: boolean;
+  error?: TranslationKey;
+  summary: KnowledgeFolderSummary | null;
+  onRetry(): void;
+}) {
+  const { t } = useSettings();
+  if (loading && !summary && !error) {
+    return (
+      <div className={styles.tileRow}>
+        <span className={styles.tileText} role="status">
+          <small>{t("knowledge.summary.scanning")}</small>
+        </span>
+      </div>
+    );
+  }
+  if (error) {
+    if (error === "knowledge.error.vault_changed") return null;
+    return (
+      <div className={styles.tileRow} role="alert">
+        <span className={styles.tileText}>
+          <b>{t("knowledge.summary.failed")}</b>
+          <small>{t(error)}</small>
+        </span>
+        <Button variant="secondary" onClick={onRetry}>
+          {t("common.retry")}
+        </Button>
+      </div>
+    );
+  }
+  if (!summary || summary.status === "changed") return null;
+  if (summary.status === "timeout") {
+    return (
+      <div className={styles.tileRow}>
+        <span className={styles.tileText}>
+          <small>{t("knowledge.summary.timeout")}</small>
+        </span>
+        <Button variant="secondary" onClick={onRetry}>
+          {t("common.retry")}
+        </Button>
+      </div>
+    );
+  }
+  if (summary.status === "unreadable" || summary.status === "denied") {
+    return (
+      <div className={styles.tileRow} role="alert">
+        <span className={styles.tileText}>
+          <small>
+            {t(
+              summary.status === "denied"
+                ? "knowledge.summary.denied"
+                : "knowledge.error.vault_unreadable",
+            )}
+          </small>
+        </span>
+        <Button variant="secondary" onClick={onRetry}>
+          {t("common.retry")}
+        </Button>
+      </div>
+    );
+  }
+  const hasSkippedOther =
+    summary.scannedPdf > 0 ||
+    summary.skippedLarge > 0 ||
+    summary.skippedUnreadable > 0 ||
+    summary.unexamined > 0;
+  const text =
+    summary.supported === 0 && summary.unsupported === 0 && !hasSkippedOther && !summary.truncated
+      ? t("knowledge.summary.empty")
+      : summary.unsupported > 0
+        ? t("knowledge.summary.withUnsupported", {
+            supported: summary.supported,
+            unsupported: summary.unsupported,
+          })
+        : t("knowledge.summary.allSupported", { supported: summary.supported });
+  const notes: string[] = [];
+  if (summary.scannedPdf > 0)
+    notes.push(t("knowledge.summary.scannedPdf", { count: summary.scannedPdf }));
+  if (summary.skippedLarge > 0)
+    notes.push(t("knowledge.summary.skippedLarge", { count: summary.skippedLarge }));
+  if (summary.skippedUnreadable > 0)
+    notes.push(t("knowledge.summary.skippedUnreadable", { count: summary.skippedUnreadable }));
+  if (summary.unexamined > 0)
+    notes.push(t("knowledge.summary.unexamined", { count: summary.unexamined }));
+  if (summary.truncated) notes.push(t("knowledge.summary.truncated"));
+  return (
+    <div className={styles.tileRow}>
+      <span className={styles.tileText}>
+        <small>{text}</small>
+        {notes.length > 0 && <small>{notes.join(" · ")}</small>}
+      </span>
+      <Chip tone={summary.supported > 0 ? "ok" : "warn"}>{summary.supported}</Chip>
+      {summary.truncated && (
+        <Button variant="secondary" loading={loading} onClick={onRetry}>
+          {t("common.retry")}
+        </Button>
+      )}
+    </div>
+  );
+}
+
 /**
  * Which Notion account the source is signed in as. Read lazily when the panel opens (the
- * brain answers the stored account, or asks Notion once), again when the sign-in status changes,
- * and with `refresh` after a sign-in finished here or on 重试. The email is shown, never logged.
+ * brain answers the stored account, or asks Notion once), again when the sign-in status or
+ * assigned Bot targets change, and with `refresh` after a sign-in finished here or on 重试.
  */
 function NotionAccount({
   id,
   status,
+  connectorRevision,
+  targetsKey,
   force,
   retry,
 }: {
   id: string;
   status?: string;
+  connectorRevision?: number;
+  targetsKey: string;
   force: number;
   retry(): void;
 }) {
   const { t } = useSettings();
   const { peer } = useRpc();
   const [state, setState] = useState<{ account?: KnowledgeAccount | null; failed?: boolean }>();
+  // biome-ignore lint/correctness/useExhaustiveDependencies: targetsKey and connectorRevision reload account state on assignment and sign-in.
   useEffect(() => {
     if (!peer || !status) return;
     const owner = new AbortController();
@@ -349,7 +898,7 @@ function NotionAccount({
         },
       );
     return () => owner.abort();
-  }, [peer, id, status, force]);
+  }, [peer, id, status, connectorRevision, targetsKey, force]);
   const account = state?.account;
   if (account === null) return null;
   const reason = state?.failed
@@ -394,6 +943,13 @@ function NotionAccount({
               )}
             </dl>
           </div>
+        ) : reason === "no_bot" || reason === "signin" ? (
+          <div className={styles.tileRow}>
+            <IconTile icon="user" tone="neutral" size="lg" />
+            <span className={styles.tileText}>
+              <small>{t(`knowledge.account.reason.${reason}`)}</small>
+            </span>
+          </div>
         ) : (
           <div className={styles.tileRow}>
             <IconTile icon="user" tone="neutral" size="lg" />
@@ -401,11 +957,9 @@ function NotionAccount({
               <b>{t("knowledge.account.unavailable")}</b>
               {reason && <small>{t(`knowledge.account.reason.${reason}`)}</small>}
             </span>
-            {reason !== "signin" && (
-              <Button variant="secondary" onClick={retry}>
-                {t("common.retry")}
-              </Button>
-            )}
+            <Button variant="secondary" onClick={retry}>
+              {t("common.retry")}
+            </Button>
           </div>
         )}
       </div>

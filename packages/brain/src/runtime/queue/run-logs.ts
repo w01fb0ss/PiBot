@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
 import { open, realpath, stat } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
-import { sameFile } from "@pibot/execution";
+import { basename, dirname, join, resolve } from "node:path";
+import { commandLogRoot, sameFile } from "@pibot/execution";
 import { IdSchema, type KernelMethodParams, RpcError, RpcErrorCodes } from "@pibot/protocol-base";
 import type { ToolCallsRepo } from "@pibot/storage";
 import { abortable } from "../../core/abort.ts";
@@ -60,26 +60,23 @@ export class RunLogs {
     if (!botId || !stored) throw new RpcError(RpcErrorCodes.runLogMissing, "run_log_missing");
     const base = await realpath(this.deps.dataDir);
     const name = basename(stored);
-    const rolling =
-      name.endsWith(".log") &&
-      IdSchema.safeParse(name.slice(0, -4)).success &&
-      [
-        join(base, "bots", botId, "home", ".pibot", "background", name),
-        join(resolve(this.deps.dataDir), "bots", botId, "home", ".pibot", "background", name),
-      ].includes(resolve(stored));
-    const directory = rolling ? "background" : "runs";
-    const filename = rolling ? name : `${runId}.log`;
-    const root = join(base, "bots", botId, "home", ".pibot", directory);
-    const path = join(root, filename);
-    if (
-      ![
-        path,
-        join(resolve(this.deps.dataDir), "bots", botId, "home", ".pibot", directory, filename),
-      ].includes(resolve(stored)) ||
-      (await realpath(root)) !== root ||
-      (await realpath(path)) !== path
-    )
+    const layouts = (data: string) => {
+      const home = join(data, "bots", botId, "home");
+      return [commandLogRoot(home), join(home, ".pibot")].flatMap((path) => [
+        join(path, "runs", `${runId}.log`),
+        ...(name.endsWith(".log") && IdSchema.safeParse(name.slice(0, -4)).success
+          ? [join(path, "background", name)]
+          : []),
+      ]);
+    };
+    const canonical = layouts(base);
+    const configured = layouts(resolve(this.deps.dataDir));
+    const path = canonical.find(
+      (candidate, index) => candidate === resolve(stored) || configured[index] === resolve(stored),
+    );
+    if (!path || (await realpath(path)) !== path)
       throw new RpcError(RpcErrorCodes.runLogInvalid, "run_log_invalid");
+    const root = dirname(path);
     // Exact (bigint) identity: number stats round NTFS file IDs and can alias two files.
     const info = await stat(path, { bigint: true });
     if (!info.isFile()) throw new RpcError(RpcErrorCodes.runLogInvalid, "run_log_invalid");

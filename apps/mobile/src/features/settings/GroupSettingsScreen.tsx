@@ -59,11 +59,11 @@ function GroupOverview({
   const { group, data } = state;
   const names = new Map(data?.bots.map((bot) => [bot.id, bot]));
   const execution = data?.execution;
-  // Image Bots cannot coordinate; same rule as the desktop group panel.
+  // Coordinators need Pi Bot's group planning tools.
   const coordinators =
     group?.members.filter(({ botId }) => {
       const bot = names.get(botId);
-      return !!bot && bot.category !== "image";
+      return !!bot && bot.category !== "image" && bot.kind !== "agent";
     }) ?? [];
   const options: { key: string; title: string; on: boolean; pick: () => void }[] =
     !group || !picker

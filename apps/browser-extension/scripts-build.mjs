@@ -49,5 +49,6 @@ for (const browser of ["chrome", "firefox"]) {
   // The app's theme tokens, so the popup uses the same colours, fonts and radii in both themes.
   await writeFile(`${out}/tokens.css`, await readFile("../../packages/ui/src/theme/tokens.css"));
   // The app's own icon (apps/desktop/build/icons), so the toolbar shows the same Pi Bot.
+  await cp("_locales", `${out}/_locales`, { recursive: true });
   await cp("icons", `${out}/icons`, { recursive: true });
 }

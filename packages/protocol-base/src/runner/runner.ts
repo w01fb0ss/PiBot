@@ -70,6 +70,7 @@ export const RunnerCommandInputSchema = z.strictObject({
   secretEnv: z.record(z.string().max(256), z.string()).optional(),
   /** Entry plan issued by this runner's `runner.git.entries`; single use. */
   gitEntryPlanId: z.string().uuid().optional(),
+  windowsReadOnly: z.literal(true).optional(),
   policyWritePaths: z.array(AbsolutePathSchema).max(8).optional(),
 });
 export const RunnerCommandResultSchema = z.strictObject({
@@ -400,6 +401,7 @@ export const RunnerGitEntriesParamsSchema = z.strictObject({
     .min(1)
     .max(16),
   compound: z.boolean(),
+  windowsReadRoots: z.array(AbsolutePathSchema).max(202).optional(),
   callId: z.string().min(1).max(128),
   command: z
     .string()
@@ -410,6 +412,7 @@ export const RunnerGitEntriesResultSchema = z.strictObject({
   status: z.enum(["none", "unsupported", "confirmation-required"]),
   facts: GitEntryFactsSchema.optional(),
   planId: z.string().uuid().optional(),
+  windowsReadScopeVerified: z.literal(true).optional(),
 });
 
 // Git object ids: SHA-1 (40) or SHA-256 (64). RunnerDigestSchema (64 only) refused every SHA-1 head.
@@ -611,7 +614,7 @@ export const runnerMethods = {
       idempotencyKey: RunnerIdempotencyKeySchema,
       issuedAt: CanonicalTimeSchema,
       dispatchOpId: RunnerDispatchOpIdSchema,
-      input: RunnerCommandInputSchema.omit({ timeoutSec: true }).extend({
+      input: RunnerCommandInputSchema.omit({ timeoutSec: true, windowsReadOnly: true }).extend({
         jobId: z.string().min(1).max(128),
       }),
     }),

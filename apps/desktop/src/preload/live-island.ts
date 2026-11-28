@@ -21,15 +21,19 @@ import {
 const SVG = "http://www.w3.org/2000/svg";
 const EYES = new Set(["marks", "dot", "oval", "pixel", "sleepy"]);
 const COLORS = new Set<string>(AVATAR_COLORS);
-// Trackpads send many small wheel events per gesture; one flip per this much travel and time.
 const WHEEL_STEP = 40;
 const FLIP_GAP_MS = 320;
+const TRACKPAD_STEP = 16;
+const WHEEL_IDLE_MS = 180;
+const mac = process.platform === "darwin";
 
 let state: IslandState | undefined;
 let currentKey: string | undefined;
 let hovering = false;
 let wheel = 0;
-let lastFlip = 0;
+let lastFlip = -Infinity;
+let lastWheel = -Infinity;
+let wheelFlipped = false;
 let flipped = false;
 let ticker: ReturnType<typeof setInterval> | undefined;
 let reported = "";
@@ -124,6 +128,27 @@ function flip(step: number) {
   render();
 }
 
+function statusTooltip(row: HTMLElement, label: string, ...parts: HTMLElement[]) {
+  let tooltip: HTMLElement | undefined;
+  row.addEventListener("pointermove", () => {
+    const host = document.getElementById("host");
+    if (!host || tooltip || !parts.some((part) => part.scrollWidth > part.clientWidth)) return;
+    // A DOM tooltip leaves with its row, even when the pointer stays still during a flip.
+    tooltip = document.createElement("div");
+    tooltip.className = "tooltip";
+    tooltip.setAttribute("aria-hidden", "true");
+    tooltip.textContent = label;
+    host.append(tooltip);
+    report(host);
+  });
+  row.addEventListener("pointerleave", () => {
+    tooltip?.remove();
+    tooltip = undefined;
+    const host = document.getElementById("host");
+    if (host) report(host);
+  });
+}
+
 function fullRow(current: IslandState) {
   const items = current.items;
   const index = currentIndex(items);
@@ -135,20 +160,36 @@ function fullRow(current: IslandState) {
   pill.setAttribute("role", "button");
   pill.setAttribute("aria-label", item.open);
   pill.addEventListener("click", () => send({ kind: "open", key: item.key }));
+  const details = document.createElement("span");
+  details.className = flipped ? "details flip" : "details";
   const text = document.createElement("span");
-  text.className = flipped ? "text flip" : "text";
+  text.className = "text";
   const name = document.createElement("b");
   name.textContent = item.name;
   const sep = document.createElement("span");
   sep.className = "sep";
   sep.textContent = " · ";
   text.append(name, sep, document.createTextNode(item.text));
-  text.title = `${item.name} · ${item.text}`;
+  details.append(text);
+  const label = `${item.name} · ${item.text}`;
+  if (item.runner) {
+    const runner = document.createElement("span");
+    runner.className = "runner";
+    const divider = document.createElement("span");
+    divider.className = "sep";
+    divider.textContent = "· ";
+    runner.append(divider, document.createTextNode(item.runner));
+    details.append(runner);
+    pill.setAttribute("aria-description", item.runner);
+    statusTooltip(details, `${label} · ${item.runner}`, text, runner);
+  } else {
+    statusTooltip(details, label, text);
+  }
   const time = document.createElement("span");
   time.className = "time";
   time.dataset.started = String(item.startedAt);
   time.textContent = elapsed(item.startedAt, current.labels);
-  pill.append(face(item.avatar), text, time);
+  pill.append(face(item.avatar), details, time);
   if (items.length > 1) {
     const nav = document.createElement("span");
     nav.className = "nav";
@@ -175,9 +216,13 @@ function fullRow(current: IslandState) {
 function avatarsRow(current: IslandState) {
   const pill = document.createElement("div");
   pill.className = "pill avatars";
-  const first = current.items[0];
-  if (first) pill.addEventListener("click", () => send({ kind: "open", key: first.key }));
-  for (const item of current.items.slice(0, 8)) pill.append(face(item.avatar));
+  const item = current.items[currentIndex(current.items)];
+  if (item) {
+    pill.setAttribute("role", "button");
+    pill.setAttribute("aria-label", item.open);
+    pill.addEventListener("click", () => send({ kind: "open", key: item.key }));
+  }
+  for (const item of current.items) pill.append(face(item.avatar));
   const dot = document.createElement("span");
   dot.className = "dot";
   const count = document.createElement("span");
@@ -213,36 +258,69 @@ function render() {
 }
 
 ipcRenderer.on(LIVE_ISLAND_STATE, (_event, raw: unknown) => {
+  if (raw === null) {
+    state = undefined;
+    hovering = false;
+    wheel = 0;
+    clearInterval(ticker);
+    ticker = undefined;
+    document.getElementById("host")?.replaceChildren();
+    return;
+  }
   const parsed = IslandStateSchema.safeParse(raw);
   if (!parsed.success) return;
+  if (state?.mode !== parsed.data.mode) hovering = false;
   state = parsed.data;
   render();
 });
 
 window.addEventListener("DOMContentLoaded", () => {
   const host = document.getElementById("host");
-  host?.addEventListener("mouseenter", () => {
+  // Resizing or showing a window under a stationary cursor can synthesize mouseenter.
+  host?.addEventListener("pointermove", () => {
+    if (hovering || state?.mode !== "avatars") return;
     hovering = true;
-    if (state?.mode === "avatars") render();
+    render();
   });
   host?.addEventListener("mouseleave", () => {
     hovering = false;
+    wheel = 0;
+    lastWheel = -Infinity;
     if (state?.mode === "avatars") render();
   });
-  window.addEventListener(
-    "wheel",
-    (event) => {
-      wheel += event.deltaY;
-      if (Math.abs(wheel) < WHEEL_STEP || Date.now() - lastFlip < FLIP_GAP_MS) return;
-      lastFlip = Date.now();
-      flip(wheel > 0 ? 1 : -1);
-      wheel = 0;
-    },
-    { passive: true },
-  );
+  window.addEventListener("wheel", onWheel, { passive: true });
   ipcRenderer.send(LIVE_ISLAND_READY);
 });
 window.addEventListener("pagehide", () => {
   if (ticker) clearInterval(ticker);
   ticker = undefined;
 });
+
+function onWheel(event: WheelEvent) {
+  if (event.ctrlKey || !state || state.items.length < 2) return;
+  const mode = event.deltaMode;
+  const delta =
+    mac && Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+  if (!delta) return;
+  if (event.timeStamp - lastWheel >= WHEEL_IDLE_MS) {
+    wheel = 0;
+    wheelFlipped = false;
+  }
+  lastWheel = event.timeStamp;
+  // On macOS the wheel stream continues through momentum after the fingers leave the trackpad.
+  if (mac && wheelFlipped) return;
+  if (wheel && Math.sign(wheel) !== Math.sign(delta)) wheel = 0;
+  const unit =
+    mode === WheelEvent.DOM_DELTA_LINE ? 16 : mode === WheelEvent.DOM_DELTA_PAGE ? WHEEL_STEP : 1;
+  wheel += delta * unit;
+  const now = performance.now();
+  if (
+    Math.abs(wheel) < (mac ? TRACKPAD_STEP : WHEEL_STEP) ||
+    (!mac && now - lastFlip < FLIP_GAP_MS)
+  )
+    return;
+  flip(wheel > 0 ? 1 : -1);
+  wheel = 0;
+  wheelFlipped = true;
+  lastFlip = now;
+}

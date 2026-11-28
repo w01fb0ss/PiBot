@@ -37,7 +37,6 @@ import {
   AppProfileMethods,
   ApprovalEvents,
   ApprovalMethods,
-  AttachmentInputSchema,
   AttachmentSchema,
   AuditMethods,
   AutoCheckEvents,
@@ -77,11 +76,10 @@ import {
   ExecutionCollectionMethods,
   ExecutionEvents,
   ExecutionMethods,
-  ExecutionModeSchema,
   ExternalImageMethods,
   FILE_LIMIT,
+  FileDialogFilterSchema,
   FileMethods,
-  FolderSelectionSchema,
   GrantMethods,
   GroupEvents,
   GroupExecutionEvents,
@@ -107,7 +105,6 @@ import {
   MemoryEvents,
   MemoryMethods,
   MessageActionMethods,
-  MessageQuoteSchema,
   MessageSchema,
   NetworkProxyConfigSchema,
   NetworkProxySetSchema,
@@ -171,9 +168,12 @@ import {
   BuiltinMethods,
   PiDispatchEvents,
   PiDispatchMethods,
+  PiHealthEvents,
+  PiHealthMethods,
   RoleCatalogMethods,
   TeamMethods,
 } from "@pibot/teams-contract";
+import { VideoEvents, VideoMethods } from "@pibot/videos-contract";
 import {
   ChangesEvents,
   ChangesMethods,
@@ -184,13 +184,13 @@ import { z } from "zod";
 import { InboxMethods } from "./inbox.ts";
 
 export * from "@pibot/protocol-base";
-export * from "@pibot/protocol-base";
 
 const name = z.string().min(1);
 const count = z.number().int().nonnegative().safe();
 
 export const Events = {
   ...KernelEvents,
+  ...VideoEvents,
   ...ImportEvents,
   ...ExternalAgentEvents,
   ...CapabilityEvents,
@@ -236,6 +236,7 @@ export const Events = {
   ...AutoCheckEvents,
   ...BotHooksEvents,
   ...PiDispatchEvents,
+  ...PiHealthEvents,
   "ui.navigate": UiNavigationSchema,
   "chat.delta": z.strictObject({
     ...ChatRouteFields,
@@ -276,6 +277,7 @@ export const EventEnvelopeSchema = z.discriminatedUnion("method", [
   eventSchema("capabilities.changed"),
   eventSchema("botHooks.changed"),
   eventSchema("teams.dispatch.changed"),
+  eventSchema("teams.health.changed"),
   eventSchema("devices.changed"),
   eventSchema("endpoints.changed"),
   eventSchema("remote.state"),
@@ -300,6 +302,7 @@ export const EventEnvelopeSchema = z.discriminatedUnion("method", [
   eventSchema("delivery.evidence.changed"),
   eventSchema("execution.budget.changed"),
   eventSchema("chat.message"),
+  eventSchema("videos.changed"),
   eventSchema("routines.changed"),
   eventSchema("routine.run"),
   eventSchema("power.state"),
@@ -332,6 +335,7 @@ export const EventEnvelopeSchema = z.discriminatedUnion("method", [
   eventSchema("providers.loginState"),
   eventSchema("providers.loginStep"),
   eventSchema("sidebar.changed"),
+  eventSchema("sidebar.topicsChanged"),
   eventSchema("runtime.health"),
   eventSchema("runtime.commands"),
   eventSchema("runtime.activeRuns"),
@@ -347,6 +351,7 @@ export const EventEnvelopeSchema = z.discriminatedUnion("method", [
   eventSchema("teach.progress"),
   eventSchema("changes.changed"),
   eventSchema("chat.notice"),
+  eventSchema("chat.dependencyNotice"),
   eventSchema("credentials.changed"),
   eventSchema("secrets.changed"),
   eventSchema("credentials.capture"),
@@ -369,6 +374,21 @@ const AppMethods = {
       platform: z.enum(["darwin", "win32", "linux"]),
       dataDir: name,
       piVersion: name,
+    }),
+  },
+  "app.openDataDir": { params: noParams, result: z.null() },
+  "app.storageInfo": {
+    params: noParams,
+    result: z.strictObject({
+      totalBytes: count,
+      categories: z.strictObject({
+        databaseBytes: count,
+        botsAndMediaBytes: count,
+        runtimesBytes: count,
+        logsAndCacheBytes: count,
+        otherBytes: count,
+      }),
+      truncated: z.boolean(),
     }),
   },
   "network.getConfig": { params: noParams, result: NetworkProxyConfigSchema },
@@ -414,56 +434,9 @@ const AppMethods = {
     result: z.array(MessageSchema),
   },
   "chat.send": {
-    params: z
-      .object({
-        botId: IdSchema.optional(),
-        topicId: IdSchema.optional(),
-        clientMessageId: IdSchema.optional(),
-        newTopic: z.literal(true).optional(),
-        initialMode: ExecutionModeSchema.optional(),
-        replyToMessageId: IdSchema.optional(),
-        groupId: IdSchema.optional(),
-        threadId: IdSchema.optional(),
-        text: z.string().max(100_000),
-        attachments: z.array(AttachmentInputSchema).max(MAX_ATTACHMENTS).optional(),
-        attachmentIds: z.array(IdSchema).max(MAX_ATTACHMENTS).optional(),
-        /** The folders a new topic starts with (chosen on the draft); only with `newTopic`. */
-        workplace: FolderSelectionSchema.optional(),
-        /**
-         * Group only: Bots the user picked from the @ list, in text order. The brain resolves each
-         * `@name` in the text to these IDs first, so a mention never depends on the name alone.
-         */
-        mentions: z.array(IdSchema).max(6).optional(),
-      })
-      .strict()
-      .refine(
-        (p) =>
-          ChatTargetSchema.safeParse(p).success &&
-          (!p.newTopic || (!!p.botId && !p.topicId && !p.groupId && !p.threadId)) &&
-          (!p.workplace || !!p.newTopic) &&
-          (!p.initialMode || !!p.newTopic) &&
-          (!p.mentions || (!!p.groupId && !p.threadId)),
-        "Invalid chat target",
-      )
-      .refine(
-        (p) =>
-          (p.attachments?.length ?? 0) + (p.attachmentIds?.length ?? 0) <= MAX_ATTACHMENTS &&
-          (!!p.text.trim() || !!p.attachments?.length || !!p.attachmentIds?.length),
-        "Empty message or too many attachments",
-      ),
-    result: z.strictObject({
-      runs: z
-        .array(z.strictObject({ botId: IdSchema, runId: IdSchema, assistantMessageId: IdSchema }))
-        .max(6)
-        .optional(),
-      quote: MessageQuoteSchema.optional(),
-      userMessageId: IdSchema,
-      assistantMessageId: IdSchema,
-      runId: IdSchema,
+    params: KernelMethods["chat.send"].params,
+    result: KernelMethods["chat.send"].result.extend({
       attachments: z.array(AttachmentSchema).max(MAX_ATTACHMENTS).optional(),
-      conversationId: IdSchema.optional(),
-      groupId: IdSchema.optional(),
-      threadId: IdSchema.optional(),
     }),
   },
   "chat.attachment": { params: z.strictObject({ id: IdSchema }), result: ImageContentSchema },
@@ -507,11 +480,13 @@ Omit<typeof KernelMethods, keyof typeof InboxMethods | keyof typeof AppMethods> 
   typeof ManagedWorktreeMethods &
   typeof FileCheckpointMethods &
   typeof ImageArtifactMethods &
+  typeof VideoMethods &
   typeof ExternalAgentMethods &
   typeof RoutineMethods &
   typeof ModelProviderMethods &
   typeof TeamMethods &
   typeof PiDispatchMethods &
+  typeof PiHealthMethods &
   typeof ComputerMethods &
   typeof BrowserMethods &
   typeof BrowserExtensionMethods &
@@ -555,6 +530,7 @@ Omit<typeof KernelMethods, keyof typeof InboxMethods | keyof typeof AppMethods> 
   ...FileCheckpointMethods,
   ...ExecutionMethods,
   ...ImageArtifactMethods,
+  ...VideoMethods,
   ...ExternalAgentMethods,
   ...ChatAdditionMethods,
   ...WorkplaceMethods,
@@ -586,6 +562,7 @@ Omit<typeof KernelMethods, keyof typeof InboxMethods | keyof typeof AppMethods> 
   ...ModelProviderMethods,
   ...TeamMethods,
   ...PiDispatchMethods,
+  ...PiHealthMethods,
   ...ComputerMethods,
   ...BrowserMethods,
   ...BrowserExtensionMethods,
@@ -658,7 +635,13 @@ export const HostMethods = {
   },
   /** Arbitrary workflow file input; the renderer receives only the selected path. */
   "host.pickFile": {
-    params: z.union([noParams, z.strictObject({ defaultPath: AbsolutePathSchema.optional() })]),
+    params: z.union([
+      noParams,
+      z.strictObject({
+        defaultPath: AbsolutePathSchema.optional(),
+        filters: z.array(FileDialogFilterSchema).max(10).optional(),
+      }),
+    ]),
     result: AbsolutePathSchema.nullable(),
   },
   // One SKILL.md (its folder's skill) or a .zip; brain reads and checks the file itself.

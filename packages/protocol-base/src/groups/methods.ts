@@ -18,6 +18,7 @@ import {
   TaskPageSchema,
   TaskSummarySchema,
 } from "../execution/tasks.ts";
+import { ModelOverrideSchema } from "../providers/providers.ts";
 import { GroupPlanCardSchema } from "./dynamic-plan.ts";
 import { GroupFolderSelectionSchema } from "./files.ts";
 import {
@@ -50,7 +51,7 @@ export const GroupMethods = {
         .refine((v) => new Set(v).size === v.length),
       coordinatorBotId: IdSchema.optional(),
       announcement: GroupSchema.shape.announcement.optional(),
-      autoRoundLimit: GroupSchema.shape.autoRoundLimit.optional(),
+      autoRoundLimit: GroupSchema.shape.autoRoundLimit.default(8),
       // Leave omissions intact through the phone gateway. Group creation applies the default.
       externalAgentStepContext: z.boolean().optional(),
       workplace: GroupWorkplaceSchema.optional(),
@@ -98,6 +99,14 @@ export const GroupMethods = {
   "groups.restore": { params: groupId, result: GroupSchema },
   "groups.delete": { params: groupId.extend({ confirmed: z.literal(true) }), result: ok },
   "groups.state": { params: groupId, result: GroupCycleSchema },
+  "groups.rounds.continue": {
+    params: groupId.extend({
+      roundLimitId: IdSchema,
+      expectedLimit: GroupSchema.shape.autoRoundLimit,
+      autoRoundLimit: GroupSchema.shape.autoRoundLimit.optional(),
+    }),
+    result: ok,
+  },
   "groups.tasks": {
     params: groupId.extend(page.shape).extend({
       status: GroupTaskSchema.shape.status.optional(),
@@ -182,6 +191,10 @@ export const GroupMethods = {
         )
         .max(200),
     }),
+  },
+  "groups.taskModel.set": {
+    params: z.strictObject({ taskId: IdSchema, override: ModelOverrideSchema.nullable() }),
+    result: GroupTaskSchema,
   },
   "groups.tasks.resolve": {
     params: groupId.extend({

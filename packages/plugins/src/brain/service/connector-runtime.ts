@@ -1,16 +1,27 @@
 // Runtime target construction: brain resolves credentials and the sandbox
 // profile, exec owns the process, and the agent factory owns the SDK client.
 // Nothing here is reachable from a plugin or the renderer.
-import type { ConnectorServerStream } from "@pibot/execution";
-import type {
-  Connector,
-  ConnectorConnection,
-  ConnectorConnectionFactory,
-  ConnectorFailureCode,
-  ConnectorOAuthStorage,
-  ConnectorServer,
-  ConnectorStartFailure,
+import {
+  type ConnectorNetworkAttempt,
+  type ConnectorServerStream,
+  connectorNetworkSite,
+} from "@pibot/execution";
+import {
+  type Connector,
+  type ConnectorBlockedSite,
+  ConnectorCallError,
+  type ConnectorConnection,
+  type ConnectorConnectionFactory,
+  type ConnectorFailureCode,
+  type ConnectorNetworkApproval,
+  ConnectorNetworkBlockedError,
+  type ConnectorOAuthStorage,
+  type ConnectorServer,
+  type ConnectorStartFailure,
+  connectorStartupSeconds,
 } from "@pibot/plugins-contract/full";
+import { connectorSandboxEn, connectorSandboxZh } from "@pibot/plugins-contract/i18n";
+import { importedCredentialParts } from "./connector-import.ts";
 import { observeStderr } from "./connector-stderr.ts";
 import { reportInitializeFailure, startStdioStream } from "./connector-stdio.ts";
 import { createPluginOAuthLoopback } from "./plugin-oauth-loopback.ts";
@@ -30,6 +41,40 @@ export class ConnectorOpenError extends Error {
 const _SECRET_REF = /^\$\{secret:([A-Z][A-Z0-9_]{0,63})\}$/;
 const SECRET_REF_GLOBAL = /\$\{secret:([A-Z][A-Z0-9_]{0,63})\}/g;
 const SECRET_MARKER = "${secret:";
+
+function privateValueMatcher(values: ReadonlySet<string>) {
+  const words = [...values]
+    .filter((value) => value.length < 8)
+    .map((value) => {
+      const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`, "u");
+    });
+  const literals = [...values];
+  return (value: unknown, inToolResult = false): boolean => {
+    const pending = [value];
+    while (pending.length) {
+      const item = pending.pop();
+      if (typeof item === "string") {
+        if (
+          literals.some(
+            (literal) => (inToolResult || literal.length >= 8) && item.includes(literal),
+          ) ||
+          (!inToolResult && words.some((word) => word.test(item)))
+        )
+          return true;
+      } else if (typeof item === "number" || typeof item === "boolean") {
+        if (values.has(String(item))) return true;
+      } else if (item && typeof item === "object") {
+        if (Array.isArray(item)) {
+          for (const child of item) pending.push(child);
+        } else {
+          for (const [key, child] of Object.entries(item)) pending.push(key, child);
+        }
+      }
+    }
+    return false;
+  };
+}
 
 async function resolveSecretRef(
   name: string,
@@ -116,6 +161,13 @@ function baseCommandEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return base;
 }
 
+export interface ConnectorNetworkCall {
+  approval?: ConnectorNetworkApproval;
+  asks: number;
+  blocked?: ConnectorBlockedSite;
+  waitingHost?: string;
+}
+
 export interface ConnectorTargetOptions {
   connector: Connector;
   logStderr?(connectorId: string, tail: string): void;
@@ -125,6 +177,8 @@ export interface ConnectorTargetOptions {
   resolveSecret: (name: string) => Promise<string | undefined>;
   /** Reduced base environment (PATH/HOME/...), already sanitized by the entrypoint. */
   commandEnv: NodeJS.ProcessEnv;
+  registerProxySecret?(value: string): void;
+  proxy?(): { url: string } | undefined;
   home: string;
   dataDir?: string;
   /** Exact roots derived by brain from a directory installation id, never from its manifest. */
@@ -132,6 +186,8 @@ export interface ConnectorTargetOptions {
   tempDir: string;
   platform?: NodeJS.Platform;
   oauth?: ConnectorOAuthStorage;
+  remoteBearer?: string;
+  startupTimeoutMs?: number;
   pluginSecretRequest?(input: unknown): Promise<unknown>;
   /** Opens a vetted https URL in the system browser for built-in OAuth flows. */
   openExternal?(url: string): Promise<void>;
@@ -150,6 +206,11 @@ export interface ConnectorTargetOptions {
   displayRedact?: (value: string) => string;
   /** One call per stdio start or handshake that failed; not for a stop by the person. */
   reportStartFailure?(failure: ConnectorStartFailure): void;
+  sandboxNetwork?(
+    attempt: ConnectorNetworkAttempt,
+    signal: AbortSignal,
+    call?: ConnectorNetworkCall,
+  ): Promise<boolean>;
 }
 
 /**
@@ -161,6 +222,8 @@ export async function openConnectorConnection(
   signal: AbortSignal,
 ): Promise<ConnectorConnection> {
   const { server } = options;
+  const privateValues = new Set<string>();
+  let containsPrivateValue: ReturnType<typeof privateValueMatcher> | undefined;
   // System authentication never reads credentials, even if a stale configuration names one.
   const resolveSecret =
     server.auth.kind === "system"
@@ -170,22 +233,59 @@ export async function openConnectorConnection(
             "System connection cannot reference secrets",
           );
         }
-      : options.resolveSecret;
+      : async (name: string) => {
+          const value = await options.resolveSecret(name);
+          if (value !== undefined && name.startsWith("IMPORT_"))
+            for (const part of [value, ...importedCredentialParts(value, true)]) {
+              for (const literal of [part, part.trim()]) {
+                if (!literal.trim()) continue;
+                privateValues.add(literal);
+                privateValues.add(JSON.stringify(literal).slice(1, -1));
+              }
+            }
+          return value;
+        };
   let stderr: ReturnType<typeof observeStderr> | undefined;
   let stdio: ConnectorServerStream | undefined;
+  const decide = options.sandboxNetwork;
+  let active:
+    | (ConnectorNetworkCall & {
+        signal: AbortSignal;
+        pending: Map<string, Promise<boolean>>;
+      })
+    | undefined;
+  const networkFilter =
+    decide &&
+    ((attempt: ConnectorNetworkAttempt, incoming: AbortSignal) => {
+      const call = active;
+      if (!call || call.signal.aborted) return decide(attempt, incoming);
+      const key = `${connectorNetworkSite(attempt.host, attempt.port)}:${attempt.refusal ?? ""}`;
+      const pending = call.pending.get(key);
+      if (pending) return pending;
+      const request = decide(attempt, AbortSignal.any([incoming, call.signal]), call).finally(() =>
+        call.pending.delete(key),
+      );
+      call.pending.set(key, request);
+      return request;
+    });
   const platform = options.platform ?? process.platform;
   const report = {
     platform,
     outsideSandbox: options.outsideSandbox === true,
-    redact: options.displayRedact ?? ((value: string) => value),
+    // Short imported values also need protection in renderer-facing startup diagnostics.
+    redact: (value: string) =>
+      containsPrivateValue?.(value, true)
+        ? "[REDACTED]"
+        : (options.displayRedact?.(value) ?? value),
     ...(options.reportStartFailure ? { reportStartFailure: options.reportStartFailure } : {}),
     signal,
   };
   let connectionOptions: Parameters<ConnectorConnectionFactory["connect"]>[0];
   if (server.transport === "stdio") {
-    const declaredEnv: NodeJS.ProcessEnv = {};
+    const declaredEnv: NodeJS.ProcessEnv = Object.create(null);
     for (const [name, value] of Object.entries(server.env))
       declaredEnv[name] = await resolveConfigValue(value, resolveSecret);
+    if (privateValues.size) containsPrivateValue = privateValueMatcher(privateValues);
     const stream = await startStdioStream({
       ...report,
       command: server.command,
@@ -194,7 +294,10 @@ export async function openConnectorConnection(
       declaredEnv,
       baseEnv: baseCommandEnv(options.commandEnv),
       commandEnv: options.commandEnv,
+      proxy: options.proxy?.(),
+      registerProxySecret: options.registerProxySecret,
       networkDomains: server.networkDomains,
+      networkFilter,
       home: options.home,
       ...(options.dataDir ? { dataDir: options.dataDir } : {}),
       tempDir: options.tempDir,
@@ -212,7 +315,7 @@ export async function openConnectorConnection(
     };
     connectionOptions = {
       transport: "stdio",
-      ...(server.startupTimeoutSec ? { startupTimeoutMs: server.startupTimeoutSec * 1000 } : {}),
+      startupTimeoutMs: options.startupTimeoutMs ?? connectorStartupSeconds(server) * 1000,
       stream: {
         write: stream.write.bind(stream),
         onMessage: options.pluginSecretRequest
@@ -247,14 +350,13 @@ export async function openConnectorConnection(
       signal,
     };
   } else if (server.transport === "http") {
-    if (!server.networkDomains.includes(new URL(server.url).hostname.toLowerCase()))
-      throw new ConnectorOpenError("invalid_source", "MCP endpoint is not in the allowed websites");
     const headers: Record<string, string> = {};
     for (const [name, value] of Object.entries(server.headers))
       headers[name] = await resolveConfigValue(value, resolveSecret);
+    if (options.remoteBearer) headers.Authorization = `Bearer ${options.remoteBearer}`;
     connectionOptions = {
       transport: "http",
-      ...(server.startupTimeoutSec ? { startupTimeoutMs: server.startupTimeoutSec * 1000 } : {}),
+      startupTimeoutMs: options.startupTimeoutMs ?? connectorStartupSeconds(server) * 1000,
       url: await resolveHttpUrl(server.url, resolveSecret),
       headers,
       ...(server.sseFallback === true ? { sseFallback: true } : {}),
@@ -266,7 +368,11 @@ export async function openConnectorConnection(
     throw new ConnectorOpenError("unsupported_format", "Builtin servers cannot be imported");
   }
   try {
-    const connection = await options.factory.connect(connectionOptions);
+    if (privateValues.size) containsPrivateValue ??= privateValueMatcher(privateValues);
+    const connection = await options.factory.connect({
+      ...connectionOptions,
+      ...(containsPrivateValue ? { containsPrivateValue } : {}),
+    });
     if (!stderr) return connection;
     // Startup is over: end the kernel-report watch in the background (it settles within ~1 s).
     void stdio?.diagnose().catch(() => undefined);
@@ -282,11 +388,47 @@ export async function openConnectorConnection(
         }
       },
       callTool: async (input) => {
+        const { networkApproval, ...callInput } = input;
+        const lifetime = new AbortController();
+        if (decide)
+          active = {
+            signal: AbortSignal.any([input.signal, lifetime.signal]),
+            approval: networkApproval,
+            asks: 0,
+            pending: new Map(),
+          };
         try {
-          return await connection.callTool(input);
+          const result = await connection.callTool(callInput);
+          // A late result can arrive after the call deadline while an approval is still settling.
+          if (decide) input.signal.throwIfAborted();
+          return result;
         } catch (error) {
           observation.failed();
+          // The SDK can reject on the call deadline before the waiting approval settles.
+          const blocked: ConnectorBlockedSite | undefined =
+            input.signal.aborted && active?.waitingHost
+              ? { host: active.waitingHost, reason: "timeout" }
+              : active?.blocked;
+          if (blocked) {
+            const message = (labels: typeof connectorSandboxEn) =>
+              [
+                labels["connectors.network.error"].replace("{host}", blocked.host),
+                labels[`connectors.network.reason.${blocked.reason}`],
+                ...(["denied", "unattended", "timeout"].includes(blocked.reason)
+                  ? [labels["connectors.network.errorAction"]]
+                  : []),
+              ].join(" ");
+            throw new ConnectorNetworkBlockedError(
+              !input.signal.aborted && error instanceof ConnectorCallError
+                ? error.outcome
+                : "unknown",
+              [message(connectorSandboxZh), message(connectorSandboxEn)].join(" / "),
+            );
+          }
           throw error;
+        } finally {
+          lifetime.abort();
+          active = undefined;
         }
       },
       onToolsChanged: connection.onToolsChanged.bind(connection),
@@ -294,7 +436,12 @@ export async function openConnectorConnection(
     };
   } catch (error) {
     stderr?.failed();
-    if (stdio) await reportInitializeFailure(stdio, report);
+    if (stdio && server.transport === "stdio")
+      await reportInitializeFailure(stdio, {
+        ...report,
+        command: server.command,
+        importedRoots: options.importedRoots,
+      });
     throw error;
   }
 }

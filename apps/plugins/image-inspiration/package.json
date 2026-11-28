@@ -1,0 +1,18 @@
+{
+  "name": "@pibot/plugin-image-inspiration",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "pibot": {
+    "layer": "L2"
+  },
+  "scripts": {
+    "fetch-data": "node scripts/fetch-inspirations.mjs && biome format --write data/inspirations.json",
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "build:refresh": "pnpm run fetch-data && pnpm run build"
+  },
+  "dependencies": {
+    "@pibot/plugin-sdk": "workspace:0.0.0"
+  }
+}

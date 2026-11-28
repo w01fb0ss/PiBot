@@ -1,23 +1,28 @@
 import {
   approvalCountdown,
+  approvalDeadline,
   approvalExplanation,
   approvalFactText,
   approvalText,
   connectorToolLabel,
+  isDirectRunApproval,
   isolationReasonText,
+  isWindowsDirectRunApproval,
+  systemServiceLabel,
 } from "@pibot/client-core";
 import { ComputerApprovalCard, ComputerApprovalResult } from "@pibot/computer-use/ui";
 import { LoginApprovalCard } from "@pibot/credentials/ui";
-import type { Approval, ToolCallRecord } from "@pibot/protocol";
+import { type Approval, isPiManagerCategory, type ToolCallRecord } from "@pibot/protocol";
 import {
   ApprovalExplanation,
   approvalStyles as styles,
+  useComboboxText,
   useNavigation,
   useRpc,
   useSettings,
   useT,
 } from "@pibot/renderer-kit";
-import { Button, Icon } from "@pibot/ui";
+import { Button, Combobox, Icon } from "@pibot/ui";
 import { useEffect, useRef, useState } from "react";
 import { ConnectorApprovalScope } from "./ConnectorApprovalScope.tsx";
 import { DraftCard } from "./DraftCard.tsx";
@@ -25,23 +30,42 @@ import lively from "./lively.module.css";
 import { ManagerApprovalCard } from "./ManagerApprovalCard.tsx";
 import { useApprovalFolder } from "./use-approval-folder.ts";
 
-const paidImageModel = (scope: { provider: string; model: string }) =>
-  `${scope.provider} / ${scope.model}`;
+// A custom provider's id is a UUID; the brain sends the name people gave it alongside.
+const paidImageModel = (scope: { provider: string; model: string }, providerName?: string) =>
+  `${providerName || scope.provider} / ${scope.model}`;
+
+const isServiceApproval = (approval: Pick<Approval, "explanation">) =>
+  approval.explanation?.some(
+    (step) => step.code === "local_service_once" || step.code === "system_service_once",
+  ) ?? false;
 
 type Result = NonNullable<ToolCallRecord["approval"]>;
 export function ApprovalResult({ result, botId }: { result: Result; botId?: string }) {
   const t = useT();
-  const { openBotPermissions } = useNavigation();
+  const { openBotPermissions, openSettings } = useNavigation();
+  const service = isServiceApproval(result);
+  const directRun = result.explanation?.some((step) => step.code === "outside_sandbox_once");
   return (
     <div className={result.status === "allowed" ? styles.success : styles.result} role="status">
-      {t(`approval.${result.status}`)}
+      {/* Out of date is not a failure: the conversation went on and this step no longer applies. */}
+      {result.superseded ? t("approval.superseded") : t(`approval.${result.status}`)}
       <ApprovalExplanation {...approvalExplanation(result, t)} />
-      {/* Remembered grants are listed per Bot in its profile panel; without a Bot there is no list. */}
-      {result.remembered && botId && (
-        <Button variant="ghost" onClick={() => openBotPermissions(botId)}>
-          {t("approval.revokeHint")}
-        </Button>
-      )}
+      {result.remembered &&
+        (directRun ? (
+          <Button variant="ghost" onClick={() => openSettings("permissions", "direct-runs")}>
+            {t("approval.manageDirectRun")}
+          </Button>
+        ) : service ? (
+          <Button variant="ghost" onClick={() => openSettings("permissions")}>
+            {t("approval.revokeServiceHint")}
+          </Button>
+        ) : (
+          botId && (
+            <Button variant="ghost" onClick={() => openBotPermissions(botId)}>
+              {t("approval.revokeHint")}
+            </Button>
+          )
+        ))}
     </div>
   );
 }
@@ -94,11 +118,8 @@ export function ApprovalCard(props: ApprovalCardProps) {
         inbox={props.inbox}
       />
     );
-  // The default Pi's management and dispatch cards list each change and remember as a level.
-  if (
-    props.approval.status === "pending" &&
-    (props.approval.category === "bot_management" || props.approval.category === "work_dispatch")
-  )
+  // The default Pi's management, dispatch and repair cards list each change and remember as a level.
+  if (props.approval.status === "pending" && isPiManagerCategory(props.approval.category))
     return (
       <ManagerApprovalCard
         approval={props.approval}
@@ -107,7 +128,7 @@ export function ApprovalCard(props: ApprovalCardProps) {
         inbox={props.inbox}
       />
     );
-  return <StandardApprovalCard {...props} />;
+  return <StandardApprovalCard key={props.approval.id} {...props} />;
 }
 function StandardApprovalCard({
   approval,
@@ -118,11 +139,14 @@ function StandardApprovalCard({
   conversationId,
 }: ApprovalCardProps) {
   const { t, language } = useSettings();
-  const text = approvalText(approval, language);
+  const originalText = approvalText(approval, language);
+  const comboboxText = useComboboxText();
   const { peer } = useRpc();
   const { openSettings } = useNavigation();
   const [resolving, setBusy] = useState(false);
   const [error, setError] = useState(false);
+  const [modelOptionId, setModelOptionId] = useState("");
+  const [quoteChanged, setQuoteChanged] = useState(false);
   const [secretChanged, setSecretChanged] = useState(false);
   const [connectorChoice, setConnectorChoice] = useState<"once" | "bot" | "all">("once");
   const choiceApproval = useRef(approval.id);
@@ -154,16 +178,26 @@ function StandardApprovalCard({
       active.current = false;
     };
   }, []);
-  const expires = Date.parse(approval.expiresAt);
-  const remaining = Math.max(0, Math.ceil((expires - now) / 1000));
-  const paused = remaining === 0 && !approval.routineRunId;
-  const expired = remaining === 0 && !paused;
+  const { remaining, pauses, paused, expired } = approvalDeadline(approval, now);
+  const modelOption = paused
+    ? undefined
+    : approval.modelOptions?.find((option) => option.id === modelOptionId);
+  const text = modelOption?.localized[language] ?? originalText;
+  const originalModel = originalText.facts.find((fact) => fact.labelKey === "videoModel");
+  const modelOptions =
+    originalModel && !paused && approval.modelOptions?.length
+      ? [
+          { value: "", label: originalModel.value, title: originalModel.value },
+          ...approval.modelOptions.map(({ id, label }) => ({ value: id, label, title: label })),
+        ]
+      : undefined;
   const canRemember =
     !paused &&
     approval.category !== "read_ai_config" &&
     approval.canRemember &&
     approval.rememberOnly !== "secrets" &&
     approval.risk !== "danger";
+  const directRunRemember = paused ? undefined : approval.directRunRemember;
   const secretNames = approval.secretUses?.map((secret) => secret.name) ?? [];
   const canRememberSecrets =
     !paused &&
@@ -199,12 +233,34 @@ function StandardApprovalCard({
     allowConversation = false,
     rememberSecrets = false,
   ) => {
-    if (!peer || locked.current || expired || (decision === "allow" && secretChanged)) return;
+    if (
+      !peer ||
+      locked.current ||
+      expired ||
+      (decision === "allow" && (secretChanged || quoteChanged))
+    )
+      return;
     locked.current = true;
     setBusy(true);
     setError(false);
     try {
-      if (allowConversation && decision === "allow") {
+      if (directRunRemember && decision === "allow" && always) {
+        await peer.call("approvals.resolve", {
+          id: approval.id,
+          decision,
+          remember: false,
+          rememberDirectRun: true,
+          conversationId: approval.conversationId ?? conversationId,
+        });
+      } else if (modelOption && decision === "allow") {
+        await peer.call("approvals.resolve", {
+          id: approval.id,
+          decision,
+          remember: false,
+          modelOptionId: modelOption.id,
+          conversationId: approval.conversationId ?? conversationId,
+        });
+      } else if (allowConversation && decision === "allow") {
         await peer.call("approvals.resolve", {
           id: approval.id,
           decision,
@@ -237,6 +293,12 @@ function StandardApprovalCard({
       if (active.current) {
         setError(true);
         if (
+          modelOption &&
+          cause instanceof Error &&
+          cause.message.includes("video_approval_changed")
+        )
+          setQuoteChanged(true);
+        if (
           typeof cause === "object" &&
           cause !== null &&
           "code" in cause &&
@@ -258,7 +320,47 @@ function StandardApprovalCard({
       if (active.current) setBusy(false);
     }
   };
+  if (approval.connectorNetworkSite)
+    return (
+      <section
+        tabIndex={-1}
+        id={`approval-${approval.id}`}
+        className={`${styles.approval} ${inbox ? styles.inbox : lively.card}`}
+        aria-label={t("approval.label")}
+      >
+        <header>
+          <span aria-hidden="true">
+            <Icon name="link" />
+          </span>
+          <strong>{text.title}</strong>
+        </header>
+        <div className={styles.url}>
+          <strong className={styles.networkHost}>{approval.connectorNetworkSite}</strong>
+          <small>{t("connectors.network.requestNote")}</small>
+        </div>
+        {error && <p role="alert">{t("approval.error")}</p>}
+        <footer>
+          <div className={styles.actions}>
+            <Button
+              variant="secondary"
+              disabled={!peer || busy || expired}
+              onClick={() => void resolve("deny")}
+            >
+              {t("approval.deny")}
+            </Button>
+            <Button
+              loading={busy}
+              disabled={!peer || expired}
+              onClick={() => void resolve("allow")}
+            >
+              {t("connectors.network.allowRemember")}
+            </Button>
+          </div>
+        </footer>
+      </section>
+    );
   const connector = approval.connectorConsent;
+  const directRun = isDirectRunApproval(approval);
   const outsideWrite = approval.facts.some(
     (fact) => fact.kind === "warning" && fact.value === "outside_workplace_write",
   );
@@ -288,24 +390,19 @@ function StandardApprovalCard({
       // Acceptance 2026-11-20: "cannot remember this approval" next to a working "Always allow"
       // for a routine's script; the pinned approval is exactly that script's content.
       !(canPreauthorize && fact.kind === "warning" && fact.value === "incomplete_analysis") &&
+      !(
+        directRun &&
+        fact.kind === "warning" &&
+        (fact.value === "outside_sandbox" || fact.value === t("facts.value.outside_sandbox"))
+      ) &&
       !(fact.kind === "program" && fact.value.startsWith("script-file:")),
   );
-  const sandboxService = (approval.explanation ?? []).some(
-    (step) => step.code === "local_service_once" || step.code === "system_service_once",
-  );
+  const sandboxService = isServiceApproval(approval);
   const serviceTarget = approval.facts.findLast((fact) => fact.kind === "network")?.value;
   const systemService = (approval.explanation ?? []).some(
     (step) => step.code === "system_service_once",
   );
-  const serviceLabel = !systemService
-    ? serviceTarget
-    : /^com\.apple\.trustd(?:\.|$)/.test(serviceTarget ?? "")
-      ? t("permissions.serviceTrust")
-      : serviceTarget === "com.apple.system.opendirectoryd.libinfo"
-        ? t("permissions.serviceDirectory")
-        : serviceTarget === "com.apple.system.notification_center"
-          ? t("permissions.serviceNotification")
-          : t("permissions.serviceOther", { service: serviceTarget ?? "" });
+  const serviceLabel = !systemService ? serviceTarget : systemServiceLabel(serviceTarget, t);
   // The subtitle names the program (127.0.0.1:5037 · adb); "Why am I asked?" keeps the full path.
   const serviceProgram = approval.facts
     .filter((fact) => fact.kind === "program")
@@ -331,7 +428,9 @@ function StandardApprovalCard({
         : approval.grantScope?.kind === "web_read"
           ? t("approval.rememberWebRead")
           : approval.grantScope?.kind === "paid_image"
-            ? t("approval.rememberPaidImage", { model: paidImageModel(approval.grantScope) })
+            ? t("approval.rememberPaidImage", {
+                model: paidImageModel(approval.grantScope, approval.grantScopeProviderName),
+              })
             : approval.category === "web"
               ? t("approval.rememberWeb", { scope: approval.domain ?? "" })
               : approval.category === "run_command"
@@ -360,8 +459,25 @@ function StandardApprovalCard({
             : scope?.kind === "web_read"
               ? t("permissions.webReadScope")
               : scope?.kind === "paid_image"
-                ? t("permissions.paidImageScope", { model: paidImageModel(scope) })
+                ? t("permissions.paidImageScope", {
+                    model: paidImageModel(scope, approval.grantScopeProviderName),
+                  })
                 : "";
+  const remoteTarget =
+    approval.editorSession === true ||
+    approval.isolation.reason === "acp_editor_terminal_unisolated" ||
+    (approval.isolation.reason === "windows_unisolated" && window.pibot.platform !== "win32") ||
+    (approval.grantScope !== undefined &&
+      "target" in approval.grantScope &&
+      !!approval.grantScope.target &&
+      approval.grantScope.target !== "local") ||
+    approval.facts.some(
+      (fact) => fact.kind === "warning" && /^(?:执行设备|Execution device):\s/.test(fact.value),
+    ) ||
+    (approval.localized?.en.facts.some(
+      (fact) => fact.kind === "warning" && /^Execution device:\s/.test(fact.value),
+    ) ??
+      false);
   return (
     <section
       tabIndex={-1}
@@ -375,11 +491,25 @@ function StandardApprovalCard({
           {t("group.approvalContext", { name: context.botName, group: context.groupName })}
         </p>
       )}
-      {!approval.isolation.available && (
-        <p className={styles.warning}>
-          {t("isolation.warning")} {isolationReasonText(approval.isolation.reason, t)}
-        </p>
-      )}
+      {!approval.isolation.available &&
+        (isWindowsDirectRunApproval(approval) ||
+          approval.isolation.reason !== "windows_unisolated" ||
+          approval.command) && (
+          <p className={styles.warning}>
+            {isWindowsDirectRunApproval(approval)
+              ? t("facts.value.windows_unisolated")
+              : [
+                  t(remoteTarget ? "isolation.warning.device" : "isolation.warning"),
+                  isolationReasonText(
+                    approval.isolation.reason,
+                    t,
+                    approval.isolation.windowsYoloConsent,
+                  ),
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+          </p>
+        )}
       {!inbox && (
         <header>
           <span aria-hidden="true">
@@ -429,7 +559,15 @@ function StandardApprovalCard({
           </strong>
         </header>
       )}
-      {approval.risk === "danger" && <p className={styles.risk}>{t("approval.danger")}</p>}
+      {originalModel && "lead" in text && text.lead && (
+        <p className={styles.context}>{text.lead}</p>
+      )}
+      {approval.risk === "danger" && (
+        <p className={styles.risk}>
+          {t(directRunRemember ? "approval.dangerReview" : "approval.danger")}
+        </p>
+      )}
+      {directRun && <p className={styles.risk}>{t("facts.value.outside_sandbox")}</p>}
       {approval.searchDisclosure && (
         <p>
           {t(
@@ -474,11 +612,7 @@ function StandardApprovalCard({
         <div className={styles.url}>
           {serviceLabel} · {serviceProgram}
           <small>
-            {t(
-              (approval.explanation ?? []).some((step) => step.code === "system_service_once")
-                ? "facts.value.system_service"
-                : "facts.value.local_service",
-            )}
+            {t(systemService ? "facts.value.system_service" : "facts.value.local_service")}
           </small>
         </div>
       ) : (
@@ -504,9 +638,37 @@ function StandardApprovalCard({
             key={JSON.stringify(fact)}
             className={fact.risk === "danger" ? styles.risk : undefined}
           >
-            <dt>{t(`facts.${fact.kind}`)}</dt>
+            <dt>{fact.label ?? t(`facts.${fact.labelKey ?? fact.kind}`)}</dt>
             <dd style={fact.kind === "write" ? { whiteSpace: "pre-wrap" } : undefined}>
-              {approvalFactText(fact, t)}
+              {fact.labelKey === "videoModel" && modelOptions ? (
+                <Combobox
+                  {...comboboxText}
+                  label={t("video.model")}
+                  placeholder={t("models.selectModel")}
+                  hideLabel
+                  variant="pill"
+                  options={modelOptions}
+                  value={modelOption?.id ?? ""}
+                  disabled={busy || expired}
+                  onValueChange={(id) => {
+                    setModelOptionId(id);
+                    setQuoteChanged(false);
+                    setError(false);
+                  }}
+                />
+              ) : systemService && fact.kind === "network" && fact.value === serviceTarget ? (
+                <details>
+                  <summary>{t("approval.systemServiceDetails")}</summary>
+                  {fact.value}
+                </details>
+              ) : fact.labelKey === "diff" && approvalFactText(fact, t).length > 320 ? (
+                <details>
+                  <summary>{t("approval.showDiff")}</summary>
+                  {approvalFactText(fact, t)}
+                </details>
+              ) : (
+                approvalFactText(fact, t)
+              )}
             </dd>
           </div>
         ))}
@@ -549,18 +711,23 @@ function StandardApprovalCard({
         <p>{t("approval.conversationWebsiteHint", { domain: approval.conversationWebDomain })}</p>
       )}
       <footer>
+        {directRunRemember && (
+          <small>{t("approval.directRunRememberHint", directRunRemember)}</small>
+        )}
         {!approval.connectorConsent && (canRemember || canPreauthorize) && (
           <small>
-            {t("approval.alwaysHint", {
-              scope: canPreauthorize
-                ? [t("routines.allowFuture"), scopeText].filter(Boolean).join(" · ")
-                : rememberText,
-            })}
+            {canPreauthorize
+              ? t("approval.routineRememberHint", {
+                  scope: [t("routines.allowFuture"), scopeText].filter(Boolean).join(" · "),
+                })
+              : t(sandboxService ? "approval.sandboxRememberHint" : "approval.alwaysHint", {
+                  scope: rememberText,
+                })}
           </small>
         )}
-        {!paused && (
+        {remaining > 0 && (
           <small role="timer">
-            {t(approval.routineRunId ? "approval.countdown" : "approval.chatCountdown", {
+            {t(pauses ? "approval.chatCountdown" : "approval.countdown", {
               time: approvalCountdown(remaining),
             })}
           </small>
@@ -570,7 +737,13 @@ function StandardApprovalCard({
         )}
         {error && (
           <p role="alert" className={styles.risk}>
-            {t(secretChanged ? "approval.secretChanged" : "approval.error")}
+            {t(
+              quoteChanged
+                ? "errors.video_approval_changed"
+                : secretChanged
+                  ? "approval.secretChanged"
+                  : "approval.error",
+            )}
           </p>
         )}
         <div className={styles.actions}>
@@ -588,7 +761,7 @@ function StandardApprovalCard({
                 : undefined
             }
             loading={busy}
-            disabled={!peer || expired || secretChanged}
+            disabled={!peer || expired || secretChanged || quoteChanged}
             onClick={() => void resolve("allow")}
           >
             {t(
@@ -615,9 +788,18 @@ function StandardApprovalCard({
                 )}
               </Button>
             )}
+          {directRunRemember && (
+            <Button
+              variant="secondary"
+              disabled={!peer || busy || expired}
+              onClick={() => void resolve("allow", true)}
+            >
+              {t("approval.directRunRemember")}
+            </Button>
+          )}
           {canRememberSecrets && (
             <Button
-              disabled={!peer || busy || expired || secretChanged}
+              disabled={!peer || busy || expired || secretChanged || quoteChanged}
               onClick={() => void resolve("allow", false, false, true)}
             >
               {t(

@@ -13,12 +13,13 @@ export function rememberTopicTitle(
   botId: string,
   topic: MethodResults["topics.switch"],
 ) {
-  const { title, routineId, readOnly, importSource } = topic;
+  const { title, routineId, readOnly, importSource, modelOverride } = topic;
   chatReadCache(peer).rememberPreview(previewKey(botId, topic.id), {
     title,
     routineId,
     readOnly: !!readOnly,
     importSource,
+    modelOverride,
   } satisfies Metadata);
 }
 
@@ -26,7 +27,7 @@ export function importedTopicLabel(t: ReturnType<typeof useT>, value: string | u
   const source = ImportSourceSchema.safeParse(value);
   return source.success && source.data !== "fixture"
     ? t("conversationImport.topicSource", { source: t(`conversationImport.source.${source.data}`) })
-    : t("conversationImport.topicReadOnly");
+    : t("conversationImport.importedTopic");
 }
 
 export function useTopicTitle(
@@ -72,9 +73,10 @@ export function useTopicTitle(
         ? routineTopicTitle(t, label.title ?? "")
         : (label.title ?? "")
       : undefined,
-    readOnly: !!label?.readOnly,
     importSource: label?.importSource,
-    locked: !!conversationId && !draft && current?.topic?.readOnly !== false,
+    modelOverride: label?.modelOverride,
+    readOnly: label?.readOnly,
+    locked: !!conversationId && !draft && !current?.topic,
     error: current?.topic === null,
     retry: () => setRevision((value) => value + 1),
   };

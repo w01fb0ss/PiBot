@@ -1,10 +1,10 @@
 // Shares the owner-scoped memory list between profile, project and About You views.
-import type { MemoryOwner } from "@pibot/protocol";
+import type { MemoryMaintenanceStatus, MemoryOwner } from "@pibot/protocol";
 import { SettingsSection, useSettings } from "@pibot/renderer-kit";
 import { Button, IconTile, SegmentedControl } from "@pibot/ui";
+import { MemoryFallbackNotice } from "../MemoryFallbackNotice.tsx";
 import { MemoryMaintenanceNotice } from "../MemoryMaintenanceNotice.tsx";
 import { MemoryProposalReview } from "../MemoryProposalReview.tsx";
-import { useMemoryMaintenance } from "../use-memory-maintenance.ts";
 import { MemoryEditor } from "./MemoryEditor.tsx";
 import { MemoryEntry } from "./MemoryEntry.tsx";
 import { MemoryPagination } from "./MemoryPagination.tsx";
@@ -13,9 +13,14 @@ import { MemoryUndo } from "./MemoryUndo.tsx";
 import styles from "./memory-settings.module.css";
 import { useMemoryScope } from "./use-memory-scope.ts";
 
-export function MemoryScopeView({ owner }: { owner: MemoryOwner }) {
+export function MemoryScopeView({
+  owner,
+  maintenance,
+}: {
+  owner: MemoryOwner;
+  maintenance?: MemoryMaintenanceStatus;
+}) {
   const { t, language } = useSettings();
-  const maintenance = useMemoryMaintenance(undefined, owner.scope === "user");
   const {
     peer,
     data,
@@ -63,7 +68,11 @@ export function MemoryScopeView({ owner }: { owner: MemoryOwner }) {
           {t("memorySettings.add")}
         </Button>
       </div>
+      {owner.scope === "user" && (
+        <p className={styles.meta}>{t("memorySettings.maintenance.modelOrder")}</p>
+      )}
       {maintenance?.issue && <MemoryMaintenanceNotice issue={maintenance.issue} />}
+      {maintenance?.fallback && <MemoryFallbackNotice fallback={maintenance.fallback} />}
       {adding && (
         <MemoryEditor
           busy={disabled}

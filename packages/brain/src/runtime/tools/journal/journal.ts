@@ -142,6 +142,7 @@ export class ToolJournal {
     prepared: PreparedTool,
     signal: AbortSignal,
     execute: () => Promise<LocalToolResult>,
+    originalInput = prepared.call.input,
   ): Promise<{ result: LocalToolResult; executed: boolean }> {
     const effectClass = this.effectClass(prepared);
     if (effectClass === "read") return { result: await execute(), executed: true };
@@ -150,7 +151,8 @@ export class ToolJournal {
     let decision: Decision;
     try {
       const scope = this.scope(context);
-      const digest = argsDigest(call.input);
+      // Replays use the Bot's arguments even when the approval chose a different model.
+      const digest = argsDigest(originalInput);
       const matches =
         effectClass === "idempotent" &&
         this.repo

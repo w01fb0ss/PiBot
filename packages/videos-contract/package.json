@@ -1,0 +1,20 @@
+{
+  "name": "@pibot/videos-contract",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "pibot": {
+    "layer": "cross"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./i18n": "./src/i18n/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@pibot/protocol-base": "workspace:0.0.0",
+    "zod": "4.6.5"
+  }
+}

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { AgentErrorCodeSchema } from "../core/errors.ts";
 import { IdSchema } from "../core/ids.ts";
+import { ModelOverrideSchema } from "../providers/providers.ts";
 import { GroupTaskHandoffSchema } from "./handoff.ts";
 
 export const GroupRunnerFolderSchema = z
@@ -15,6 +16,12 @@ export const GroupRunnerFolderSchema = z
 
 const label = z.string().trim().min(1).max(200);
 const time = z.iso.datetime();
+const MAX_AUTO_ROUNDS = 10;
+
+export function nextGroupRoundLimit(limit: number) {
+  return limit < MAX_AUTO_ROUNDS ? limit + 1 : undefined;
+}
+
 export const GroupQuickStartsSchema = z.array(z.string().trim().min(1).max(300)).min(1).max(6);
 export const GroupWorkplaceSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("coordinator") }),
@@ -64,7 +71,7 @@ export const GroupSchema = z.strictObject({
   archivedAt: time.nullable().optional(),
   coordinatorBotId: IdSchema,
   announcement: z.string().max(8000),
-  autoRoundLimit: z.number().int().min(1).max(10),
+  autoRoundLimit: z.number().int().min(1).max(MAX_AUTO_ROUNDS),
   externalAgentStepContext: z.boolean().default(true),
   paused: z.boolean(),
   workplace: GroupWorkplaceSchema,
@@ -74,6 +81,7 @@ export const GroupSchema = z.strictObject({
   memberWorkspaces: z.array(GroupMemberWorkspaceSchema).max(50).optional(),
   members: z.array(GroupMemberSchema).min(2).max(6),
   conversationId: IdSchema,
+  topicModelOverride: ModelOverrideSchema.optional(),
   topicTitle: z.string().optional(),
   topicArchivedAt: time.nullable().optional(),
   createdAt: time,
@@ -95,6 +103,7 @@ export const GroupPatchSchema = GroupSchema.pick({
   // full update (2026-11-20).
   .extend({ externalAgentStepContext: z.boolean().optional() });
 export const GroupTaskSchema = z.strictObject({
+  modelOverride: ModelOverrideSchema.optional(),
   executionMode: z.enum(["serial", "parallel"]).optional(),
   id: IdSchema,
   groupId: IdSchema,

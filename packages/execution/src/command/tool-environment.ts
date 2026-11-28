@@ -42,6 +42,7 @@ export async function prepareToolEnvironment(
     PNPM_HOME: join(state, "pnpm"),
     COREPACK_HOME: join(state, "corepack"),
     npm_config_cache: join(state, "npm-cache"),
+    npm_config_devdir: join(state, "node-gyp"),
     YARN_CACHE_FOLDER: join(state, "yarn-cache"),
     GOPATH: join(state, "go"),
     GOCACHE: join(state, "go-build"),

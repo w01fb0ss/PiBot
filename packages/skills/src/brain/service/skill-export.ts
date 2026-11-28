@@ -10,6 +10,7 @@ import {
 import {
   RpcError,
   type SkillDocument,
+  SkillImportSourceSchema,
   TEAM_ARCHIVE_MAX_BYTES,
   TEAM_ARCHIVE_MAX_FILES,
   type TeamSkillReimport,
@@ -58,6 +59,20 @@ export async function exportSkillPackages(
               ignoreJunk: !record.packageId,
             })
           ).digest;
+        const origin = document.linkOrigin;
+        const pinned =
+          origin?.owner && origin.repo && origin.commit
+            ? `https://codeload.github.com/${origin.owner}/${origin.repo}/zip/${origin.commit}`
+            : undefined;
+        const locator =
+          origin &&
+          SkillImportSourceSchema.safeParse({
+            host: pinned ? "codeload.github.com" : origin.host,
+            url: pinned ?? origin.url,
+            subpath: origin.subpath,
+          });
+        const source =
+          record.importSource ?? (locator && locator.success ? locator.data : undefined);
         skills.push({
           folder: record.path.slice("skills/".length),
           enabled: false,
@@ -65,8 +80,8 @@ export async function exportSkillPackages(
           files: [],
           reimport: {
             contentHash,
-            ...(record.importSource ? { source: record.importSource } : {}),
-            reason: record.importSource ? "source_required" : "local_too_large",
+            ...(source ? { source } : {}),
+            reason: source ? "source_required" : "local_too_large",
           },
         });
         continue;

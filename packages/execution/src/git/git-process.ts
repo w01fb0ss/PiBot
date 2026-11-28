@@ -125,6 +125,17 @@ function killWindowsGitTree(env: Readonly<NodeJS.ProcessEnv>, child: ChildProces
   });
 }
 
+/** Native spawn errors are the same whether delivered by throw or by the child. */
+export function gitSpawnError(platform: NodeJS.Platform, error: unknown): ExecError {
+  const code = error instanceof Error && "code" in error ? error.code : undefined;
+  return new ExecError(
+    code === "ENOENT" ||
+      (platform === "win32" && (code === "EACCES" || code === "EPERM" || code === "UNKNOWN"))
+      ? "git_unavailable"
+      : "command_failed",
+  );
+}
+
 /** Runs one fixed argv with bounded output; `signal` covers both cancellation and the timeout. */
 export async function spawnGit(
   options: GitProcessOptions,
@@ -144,14 +155,20 @@ export async function spawnGit(
   signal.throwIfAborted();
   input.assertAuthorized?.();
   signal.throwIfAborted();
-  const child = spawn(input.executable, input.args, {
-    cwd: input.cwd,
-    env: gitEnvironment(options, input.executable),
-    stdio: ["ignore", "pipe", "pipe"],
-    windowsHide: true,
-    shell: false,
-    detached: options.platform !== "win32",
-  });
+  const child = (() => {
+    try {
+      return spawn(input.executable, input.args, {
+        cwd: input.cwd,
+        env: gitEnvironment(options, input.executable),
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+        shell: false,
+        detached: options.platform !== "win32",
+      });
+    } catch (error) {
+      throw gitSpawnError(options.platform, error);
+    }
+  })();
   input.live?.add(child);
   const chunks: Buffer[] = [];
   let bytes = 0;
@@ -175,13 +192,13 @@ export async function spawnGit(
   signal.addEventListener("abort", abort, { once: true });
   try {
     const exitCode = await new Promise<number | null>((resolve, reject) => {
-      child.once("error", (error: NodeJS.ErrnoException) =>
+      child.once("error", (error) => {
         reject(
-          error.code === "ENOENT"
-            ? new ExecError("git_unavailable")
-            : new ExecError("command_failed"),
-        ),
-      );
+          signal.aborted
+            ? new ExecError("command_failed", input.cancelled() ? "cancelled" : "timeout")
+            : gitSpawnError(options.platform, error),
+        );
+      });
       child.once("close", (code) => resolve(code));
     });
     if (signal.aborted)

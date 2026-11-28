@@ -22,6 +22,7 @@ import {
 } from "@pibot/storage";
 import { abortable } from "../../core/abort.ts";
 import type { BrainRedactor } from "../../core/privacy.ts";
+import type { LocalService } from "../../local-service.ts";
 import type { RunQueue } from "../../runtime/queue/run-queue.ts";
 import type { AttachmentService, PreparedAttachments } from "../attachments/attachments.ts";
 
@@ -32,6 +33,7 @@ interface Dependencies {
   logger: Logger;
   redactor: BrainRedactor;
   queue: RunQueue;
+  local?: LocalService;
   attachments: AttachmentService;
   preparing: Map<string, AbortController>;
   preflights: Map<Promise<unknown>, string>;
@@ -224,6 +226,18 @@ export class ChatAdditionService {
           )
         : this.deps.queue.appendTarget(botId, topicId, runId);
     const { bot, run } = target();
+    // A live SDK session has a fixed registration set. Use the existing queue fallback so this
+    // message gets its own turn and its tools are registered against that turn's permissions.
+    if (
+      bot.kind !== "agent" &&
+      bot.category !== "image" &&
+      this.deps.local?.needsConnectionTurn(
+        { botId, groupId, conversationId: targetConversationId },
+        this.deps.redactor.redact(params.text.trim()),
+        run.signal,
+      )
+    )
+      throw new RpcError(-32011, "append_unavailable");
     const additions = new ChatAdditionsRepo(this.deps.db);
     if (additions.pending(runId) >= 16) throw new RpcError(-32011, "append_full");
     const controller = new AbortController();
@@ -237,9 +251,12 @@ export class ChatAdditionService {
     let prepared: PreparedAttachments | undefined;
     let committed = false;
     try {
+      const provider =
+        run.session?.model?.provider ?? run.selectedModel?.provider ?? bot.modelProvider;
+      const id = run.session?.model?.id ?? run.selectedModel?.id ?? bot.modelId;
       const model = (
         await abortable(this.deps.agent.listModels({ availableOnly: true }), signal)
-      ).find((value) => value.provider === bot.modelProvider && value.id === bot.modelId);
+      ).find((value) => value.provider === provider && value.id === id);
       if (!model) throw new RpcError(-32010, "no_model");
       prepared = await this.deps.attachments.prepare(
         botId,
@@ -294,7 +311,9 @@ export class ChatAdditionService {
       try {
         accepted = (await run.session?.append?.(requestId, mode, input, prepared.images)) ?? false;
       } catch {
-        this.deps.logger.warn(`Chat addition not admitted bot=${botId} run=${runId}`);
+        this.deps.logger.warn(
+          JSON.stringify({ module: "chat", event: "addition_not_admitted", botId, runId }),
+        );
       }
       if (!accepted) {
         const updated = additions.state(requestId, "interrupted");

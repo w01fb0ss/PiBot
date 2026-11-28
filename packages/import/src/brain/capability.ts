@@ -22,10 +22,27 @@ export function importCapability(): BrainCapability {
         desktop(request.source);
         return jobs.detect(source, request.signal);
       });
-      handle("import.preview", ({ source }: ImportParams<"import.preview">, request) => {
-        desktop(request.source);
-        return jobs.preview(source, request.signal);
-      });
+      handle(
+        "import.listConversations",
+        (params: ImportParams<"import.listConversations">, request) => {
+          desktop(request.source);
+          return jobs.listConversations(params, request.signal);
+        },
+      );
+      handle(
+        "import.preview",
+        ({ source, filterLabel }: ImportParams<"import.preview">, request) => {
+          desktop(request.source);
+          return jobs.preview(source, request.signal, filterLabel);
+        },
+      );
+      handle(
+        "import.previewSelection",
+        (params: ImportParams<"import.previewSelection">, request) => {
+          desktop(request.source);
+          return jobs.previewSelection(params, request.signal);
+        },
+      );
       handle("import.reviewMemories", (params: ImportParams<"import.reviewMemories">, request) => {
         desktop(request.source);
         return jobs.reviews.review(params, request.signal);
@@ -34,7 +51,7 @@ export function importCapability(): BrainCapability {
         "import.estimateDistillation",
         (params: ImportParams<"import.estimateDistillation">, request) => {
           desktop(request.source);
-          return jobs.reviews.estimateDistillation(params);
+          return jobs.reviews.estimateDistillation(params, request.signal);
         },
       );
       handle("import.history", (params: ImportParams<"import.history">, request) => {
@@ -53,7 +70,7 @@ export function importCapability(): BrainCapability {
         "import.start",
         ({ importId, botId, ...options }: ImportParams<"import.start">, request) => {
           desktop(request.source);
-          return jobs.start(importId, botId, options);
+          return jobs.start(importId, botId, options, request.signal);
         },
       );
       handle("import.status", ({ importId }: ImportParams<"import.status">, request) => {

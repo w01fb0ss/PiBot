@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  glob,
   lstat,
   mkdir,
   open,
@@ -9,16 +10,32 @@ import {
   rename,
   rm,
   stat,
+  writeFile,
 } from "node:fs/promises";
-import { isAbsolute, join, relative, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import {
   type CapabilityContext,
   detectRuntimeRequirements,
+  NODE_SCRIPT_GLOB,
   RUNTIME_MANIFEST_MAX_BYTES,
   type SkillRuntimeRequirement,
 } from "@pibot/brain/kit";
-import { directoryIdentity, ExecError, SKILL_PYTHON_DOMAINS } from "@pibot/execution";
-import { RpcError, RpcErrorCodes, type SkillRuntimeStatus } from "@pibot/skills-contract/full";
+import {
+  CHILD_NODE_VERSION,
+  childNodeRuntime,
+  directoryIdentity,
+  ExecError,
+  SKILL_NODE_DOMAINS,
+  skillPythonDomains,
+} from "@pibot/execution";
+import {
+  RpcError,
+  RpcErrorCodes,
+  type SkillManagedRuntime,
+  type SkillRuntimeStatus,
+} from "@pibot/skills-contract/full";
+import { z } from "zod";
+import { reviewNodeInputs } from "./skill-node-inputs.ts";
 import { pythonPreparationCommand } from "./skill-runtime-command.ts";
 import { runtimeOutputTail } from "./skill-runtime-log.ts";
 import { ensurePrivateDir, SkillUv, SkillUvError, UV_VERSION } from "./skill-runtime-uv.ts";
@@ -40,11 +57,14 @@ export interface SkillRuntimeTarget {
 
 export interface SkillRuntimeAudit {
   botId: string;
+  groupId?: string;
   skillId: string;
   skillName: string;
   runtime: "python" | "node";
   packages: number;
-  result: "ready" | "failed" | "removed";
+  result: "ready" | "failed" | "removed" | "approved";
+  planHash?: string;
+  mirror?: true;
   reasonCode?: string;
 }
 
@@ -66,13 +86,14 @@ interface EnvironmentState {
   botId: string;
   runtime: "python" | "node";
   envId: string;
-  status: "ready" | "failed";
+  status: "ready" | "failed" | "resolved";
   reason?: string;
   packages: number;
   interpreter: string;
   interpreterVersion: string;
   preparedAt: string;
   uvVersion?: string;
+  planHash?: string;
   groupId?: string;
 }
 
@@ -82,25 +103,39 @@ interface Plan {
   interpreterVersion: string;
   packages: string[];
   pythonSpecs?: string[];
+  pythonLock?: PythonLock;
+  resolvesPythonPackages?: true;
+  nodeManifest?: string;
+  nodeLock?: string;
   envId: string;
   hash: string;
-  steps: { phase: "create" | "dependencies" | "verify"; command: string }[];
+  steps: { phase: Phase; command: string; verifyLock?: true }[];
 }
 
 type Phase = "create" | "dependencies" | "verify";
 
 interface Active {
+  envId: string;
+  runtime: SkillManagedRuntime;
   abort: AbortController;
   done: Promise<void>;
   progress: { phase: Phase; done: number; total: number };
 }
 
 const STATE_FILE = "pibot-env.json";
+const PYTHON_LOCK_FILE = "windows-python-packages.json";
+const PYTHON_RESOLUTION_FILE = "resolved-requirements.txt";
+const pythonPin = z
+  .string()
+  .max(500)
+  .regex(/^[a-z0-9][a-z0-9._-]{0,213}==[a-z0-9.!+_-]+$/i);
+const pythonLockSchema = z.strictObject({
+  version: z.string().regex(/^\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?$/),
+  specs: z.array(pythonPin).max(1000),
+});
+type PythonLock = z.infer<typeof pythonLockSchema>;
 const LOG_FILE = "prepare.log";
 const MAX_LOG_BYTES = 4 * 1024 * 1024;
-/** What a package manager needs: a registry and its file host, and nothing else. */
-const NODE_DOMAINS = ["pypi.org", "files.pythonhosted.org", "registry.npmjs.org"];
-const VERSION_CACHE_MS = 5 * 60_000;
 
 function quote(value: string, platform: NodeJS.Platform): string {
   return platform === "win32"
@@ -176,15 +211,32 @@ function digest(value: unknown) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
+function installFailure(output: string): string {
+  if (
+    /no (?:compatible )?wheels?|no usable (?:wheels?|binary)|wheels? (?:are|is) not available|no binaries|disallow.*(?:source|sdist)|doesn't have a source distribution/i.test(
+      output,
+    )
+  )
+    return "install_wheel_missing";
+  if (
+    /not found in the (?:package )?registry|no matching distribution|could not find a version|no versions of|\bE404\b|\b404\s*\(?not found\b|\bHTTP(?:\/[\d.]+)?\s+404\b/i.test(
+      output,
+    )
+  )
+    return "install_package_missing";
+  if (
+    /certificate|\bTLS\b|network is unreachable|timed? ?out|connection (?:refused|reset)|could not resolve host|failed to (?:download|fetch)|ENOTFOUND|EAI_AGAIN/i.test(
+      output,
+    )
+  )
+    return "install_network_failed";
+  return "install_failed";
+}
+
 export class SkillRuntimeService {
   private readonly uv: SkillUv;
   private readonly active = new Map<string, Active>();
   private readonly removing = new Set<string>();
-  private readonly versions = new Map<
-    string,
-    { at: number; value?: { command: string; version: string } }
-  >();
-
   constructor(private readonly deps: SkillRuntimeDeps) {
     this.uv = new SkillUv(deps.dataDir, deps.platform, deps.arch ?? process.arch, deps.proxy);
   }
@@ -195,10 +247,6 @@ export class SkillRuntimeService {
 
   private envDir(envId: string): string {
     return join(this.root(), envId);
-  }
-
-  private binDir(envId: string): string {
-    return join(this.envDir(envId), this.deps.platform === "win32" ? "Scripts" : "bin");
   }
 
   private async readText(folder: string, name: string): Promise<string | undefined> {
@@ -235,84 +283,43 @@ export class SkillRuntimeService {
     requirements: SkillRuntimeRequirement[];
     native: string[];
     specs: string[];
+    nodeDependenciesUnreviewable?: true;
+    nodeManifest?: string;
   }> {
+    const cache = new Map<string, string | undefined>();
+    const read = async (path: string) => {
+      if (!cache.has(path)) cache.set(path, await this.readText(target.folder, path));
+      return cache.get(path);
+    };
     const present: string[] = [];
     for (const name of ["requirements.txt", "pyproject.toml", "package.json"])
-      if ((await this.readText(target.folder, name)) !== undefined) present.push(name);
+      if ((await read(name)) !== undefined) present.push(name);
     // The import preview also reads a requirements.txt one folder down (`scripts/requirements.txt`
     // is common); without the same look here the card promised Python packages that were never
     // planned, and the saved skill reported "no runtime needed".
     if (!present.includes("requirements.txt"))
       for (const folder of await this.subfolders(target.folder)) {
         const path = `${folder}/requirements.txt`;
-        if ((await this.readText(target.folder, path)) !== undefined) present.push(path);
+        if ((await read(path)) !== undefined) present.push(path);
       }
-    const cache = new Map<string, string | undefined>();
-    const detection = await detectRuntimeRequirements(present, async (path) => {
-      if (!cache.has(path)) cache.set(path, await this.readText(target.folder, path));
-      return cache.get(path);
-    });
+    const detection = await detectRuntimeRequirements(present, read);
+    if (!detection.requirements.some(({ runtime }) => runtime === "node"))
+      for await (const file of glob(NODE_SCRIPT_GLOB, {
+        cwd: target.folder,
+        exclude: ["**/{node_modules,.venv,venv,.git,site-packages}/**"],
+        withFileTypes: true,
+      })) {
+        if (!file.isFile()) continue;
+        detection.requirements.push({ runtime: "node" });
+        break;
+      }
     return {
       requirements: detection.requirements,
       native: detection.native,
       specs: detection.pythonSpecs,
+      nodeDependenciesUnreviewable: detection.nodeDependenciesUnreviewable,
+      nodeManifest: cache.get("package.json"),
     };
-  }
-
-  private async probe(
-    target: SkillRuntimeTarget,
-  ): Promise<{ command: string; version: string } | undefined> {
-    const key = target.botId;
-    const cached = this.versions.get(key);
-    if (cached && Date.now() - cached.at < VERSION_CACHE_MS) return cached.value;
-    const candidates = [{ command: "node", args: [] as string[] }];
-    let found: { command: string; version: string } | undefined;
-    for (const candidate of candidates) {
-      const dir = join(this.root(), `.probe-${randomUUID()}`);
-      const file = join(dir, "version.txt");
-      const command = [candidate.command, ...candidate.args]
-        .map((value) => quote(value, this.deps.platform))
-        .join(" ");
-      try {
-        await mkdir(dir, { recursive: true, mode: 0o700 });
-        const result = await this.deps.local.target.runCommand({
-          command: `${command} --version > ${quote(file, this.deps.platform)} 2>&1`,
-          cwd: dir,
-          dataDir: this.deps.dataDir,
-          botHome: join(this.deps.dataDir, "bots", target.botId, "home"),
-          skillGroupId: target.groupId,
-          writeRoots: [dir],
-          network: { allowAll: false, domains: [] },
-          runId: `skill-probe-${randomUUID()}`,
-          // A missing interpreter must fail fast; a probe that hangs would block the detail view.
-          signal: AbortSignal.timeout(30_000),
-        });
-        const version = /(\d+)\.(\d+)(?:\.(\d+))?/.exec(
-          await readFile(file, "utf8").catch(() => ""),
-        );
-        if (result.exitCode === 0 && version) {
-          found = {
-            command: [candidate.command, ...candidate.args].join(" "),
-            version: `${version[1]}.${version[2]}${version[3] ? `.${version[3]}` : ""}`,
-          };
-          break;
-        }
-      } catch (error) {
-        this.deps.logger.warn(
-          JSON.stringify({
-            module: "skills",
-            event: "runtime_probe_failed",
-            runtime: "node",
-            command: candidate.command,
-            error: error instanceof Error ? error.name : "unknown",
-          }),
-        );
-      } finally {
-        await rm(dir, { recursive: true, force: true }).catch(() => undefined);
-      }
-    }
-    this.versions.set(key, { at: Date.now(), value: found });
-    return found;
   }
 
   private async usablePython(envId: string): Promise<boolean> {
@@ -346,6 +353,32 @@ export class SkillRuntimeService {
     }
   }
 
+  private async currentState(plan: Plan, target: SkillRuntimeTarget) {
+    const state = await this.readState(plan.envId);
+    if (
+      state?.runtime !== plan.runtime ||
+      state.skillId !== target.skillId ||
+      state.botId !== target.botId
+    )
+      return undefined;
+    // Earlier Node records omitted the group. The freshly derived envId already binds
+    // the group, Bot, skill, interpreter and exact manifest bytes.
+    if (
+      state.groupId === target.groupId ||
+      (plan.runtime === "node" && state.groupId === undefined)
+    )
+      return state;
+  }
+
+  private ready(plan: Plan, state: EnvironmentState | undefined) {
+    return (
+      state?.status === "ready" &&
+      !plan.resolvesPythonPackages &&
+      (!plan.pythonLock || state.planHash === plan.hash) &&
+      (plan.runtime === "node" || (state.uvVersion === UV_VERSION && this.usablePython(plan.envId)))
+    );
+  }
+
   private async states(skillId: string): Promise<EnvironmentState[]> {
     let entries: string[];
     try {
@@ -364,6 +397,7 @@ export class SkillRuntimeService {
 
   private async plan(
     target: SkillRuntimeTarget,
+    requestedRuntime?: SkillManagedRuntime,
   ): Promise<{ plan: Plan | null; status: SkillRuntimeStatus }> {
     const detected = await this.detect(target);
     const base: SkillRuntimeStatus = {
@@ -380,32 +414,64 @@ export class SkillRuntimeService {
       logPath: null,
       progress: null,
     };
-    const requirement = detected.requirements[0];
+    const requirement = requestedRuntime
+      ? detected.requirements.find((item) => item.runtime === requestedRuntime)
+      : detected.requirements[0];
     if (!requirement) return { plan: null, status: base };
     const runtime = requirement.runtime;
+    base.runtime = runtime;
     if (runtime === "python") return this.planPython(target, base, requirement, detected.specs);
-    const found = await this.probe(target);
+    const lock = await this.readText(target.folder, "package-lock.json");
+    const manifest = detected.nodeManifest;
+    const windows = this.deps.platform === "win32";
+    const installs = !!requirement.packages?.length;
+    const reviewed =
+      windows && installs && manifest
+        ? reviewNodeInputs(manifest, lock, this.deps.arch ?? process.arch)
+        : undefined;
+    if (detected.nodeDependenciesUnreviewable || (windows && installs && !reviewed))
+      return {
+        plan: null,
+        status: { ...base, state: "failed", reason: "node_dependencies_unreviewable" },
+      };
+    let node: ReturnType<typeof childNodeRuntime> | undefined;
+    try {
+      node = childNodeRuntime();
+    } catch (error) {
+      if (!(error instanceof ExecError) || error.code !== "isolation_unavailable") throw error;
+    }
+    const version = node?.source === "bundled" ? CHILD_NODE_VERSION : process.versions.node;
+    // Keep platform packages such as Rollup's native binaries, even with lifecycle scripts off.
+    const installMode = windows
+      ? "--omit=dev --include=optional --ignore-scripts --no-audit --no-fund --allow-git=none"
+      : "--omit=dev --include=optional --ignore-scripts --no-audit --no-fund";
+    const packages = reviewed?.packages ?? requirement.packages ?? [];
+    const networkDomains = { primary: [...SKILL_NODE_DOMAINS] };
     const envId = createHash("sha256")
       .update(
         [
-          "v1",
+          "managed-node-v3",
+          target.botId,
+          target.groupId ?? "",
+          target.skillId,
           this.deps.platform,
-          runtime,
-          found?.version ?? "none",
+          node?.executable ?? "",
+          version,
+          manifest ?? "",
+          lock ?? "",
           requirement.version ?? "",
           JSON.stringify(requirement.packages ?? []),
-          JSON.stringify(detected.specs),
         ].join("\n"),
       )
       .digest("hex")
       .slice(0, 16);
-    if (!found)
+    if (!node)
       return {
         plan: null,
         status: { ...base, state: "failed", envId, reason: `${runtime}_not_found` },
       };
-    const interpreter = { command: found.command, version: found.version };
-    if (!satisfies(found.version, requirement.version))
+    const interpreter = { command: "Node.js", version };
+    if (!satisfies(version, requirement.version))
       return {
         plan: null,
         status: {
@@ -416,11 +482,38 @@ export class SkillRuntimeService {
           reason: `${runtime}_version_unsatisfied`,
         },
       };
-    const npm = this.deps.platform === "win32" ? "npm.cmd" : "npm";
+    const q = (value: string) =>
+      windows ? `'${value.replaceAll("'", "''")}'` : quote(value, this.deps.platform);
+    const invoke = windows ? "& " : "";
+    const nodeCommand = `${invoke}${q(node.executable)}`;
+    const npm =
+      node.source === "bundled"
+        ? `${nodeCommand} ${q(join(dirname(node.executable), "npm", "bin", "npm-cli.js"))}`
+        : windows
+          ? "npm.cmd"
+          : "npm";
     const steps: Plan["steps"] = [
-      { phase: "create", command: `${npm} ci --ignore-scripts` },
-      { phase: "dependencies", command: `${npm} install --ignore-scripts --no-audit --no-fund` },
-      { phase: "verify", command: `${npm} --version` },
+      ...(reviewed
+        ? [
+            {
+              phase: "dependencies" as const,
+              command: `${npm} ci ${installMode} --dry-run --offline`,
+              verifyLock: true as const,
+            },
+          ]
+        : []),
+      ...(installs
+        ? [
+            {
+              phase: "dependencies" as const,
+              command: `${npm} ${lock ? "ci" : "install"} ${installMode}`,
+            },
+          ]
+        : []),
+      ...(installs
+        ? [{ phase: "verify" as const, command: `${npm} ls --all --omit=dev --offline` }]
+        : []),
+      { phase: "verify", command: `${nodeCommand} --version` },
     ];
     const hash = createHash("sha256")
       .update(
@@ -428,16 +521,20 @@ export class SkillRuntimeService {
           envId,
           interpreter,
           steps: steps.map((step) => step.command),
-          domains: NODE_DOMAINS,
+          packages,
+          reviewedPackages: reviewed?.packages,
+          networkDomains,
         }),
       )
       .digest("hex");
     return {
       plan: {
         runtime,
-        interpreter: found.command,
-        interpreterVersion: found.version,
-        packages: requirement.packages ?? [],
+        interpreter: node.executable,
+        interpreterVersion: version,
+        packages,
+        nodeManifest: windows ? reviewed?.manifest : manifest,
+        nodeLock: windows ? reviewed?.lock : lock,
         envId,
         hash,
         steps,
@@ -448,17 +545,20 @@ export class SkillRuntimeService {
         envId,
         planHash: hash,
         interpreter,
-        packages: requirement.packages?.length ?? 0,
+        packages: packages.length,
+        ...(windows
+          ? { requiresUnisolatedConfirmation: true as const, reviewedPackages: packages }
+          : { networkDomains }),
       },
     };
   }
 
-  private planPython(
+  private async planPython(
     target: SkillRuntimeTarget,
     base: SkillRuntimeStatus,
     requirement: SkillRuntimeRequirement,
-    specs: string[],
-  ): { plan: Plan | null; status: SkillRuntimeStatus } {
+    declared: string[],
+  ): Promise<{ plan: Plan | null; status: SkillRuntimeStatus }> {
     const release = this.uv.release;
     if (!release)
       return {
@@ -466,51 +566,77 @@ export class SkillRuntimeService {
         status: { ...base, state: "failed", reason: "uv_unsupported_platform" },
       };
     const request = pythonRequest(requirement.version);
-    if (!request || !specs.every(indexRequirement))
+    if (!request || !declared.every(indexRequirement))
       return {
         plan: null,
         status: { ...base, state: "failed", reason: "python_requirement_unsupported" },
       };
+    const windows = this.deps.platform === "win32";
     const envId = digest([
-      "managed-python-v1",
+      windows ? "managed-python-windows-v2" : "managed-python-v1",
       target.botId,
       target.groupId,
       target.skillId,
       release.target,
       UV_VERSION,
       request,
-      specs,
+      declared,
     ]).slice(0, 16);
+    const lock = windows && declared.length ? await this.readPythonLock(envId) : undefined;
+    const resolve = windows && !!declared.length && !lock;
+    const specs = lock?.specs ?? declared;
+    const pythonVersion = lock?.version ?? request;
     const dir = this.venvDir(envId);
-    const windows = this.deps.platform === "win32";
     const q = (value: string) =>
       windows ? `'${value.replaceAll("'", "''")}'` : quote(value, this.deps.platform);
     const invoke = windows ? "& " : "";
     const uv = `${invoke}${q(this.uv.path)}`;
     const python = q(this.pythonPath(envId));
+    const requirements = q(join(dir, "requirements.txt"));
     const steps: Plan["steps"] = [
-      { phase: "create", command: `${uv} venv --no-project --python ${q(request)} ${q(dir)}` },
-      ...(specs.length
-        ? [
-            {
-              phase: "dependencies" as const,
-              // Wheels only: without this uv builds sdists (PyMuPDF on Intel Macs), which needs a compiler
-              // ordinary users don't have; uv instead picks the newest version that ships a wheel.
-              command: `${uv} pip install --no-cache --only-binary :all: --link-mode copy --python ${python} -r ${q(join(dir, "requirements.txt"))}`,
-            },
-          ]
-        : []),
-      { phase: "verify", command: `${invoke}${python} --version` },
+      {
+        phase: "create",
+        command: `${uv} venv --no-project --python ${q(pythonVersion)} ${q(dir)}`,
+      },
     ];
-    const packages = requirement.packages ?? [];
-    const managedPython = { uvVersion: UV_VERSION, uvBytes: release.bytes, pythonRequest: request };
-    const hash = digest({ envId, steps, packages, managedPython, domains: SKILL_PYTHON_DOMAINS });
+    const verify = { phase: "verify" as const, command: `${invoke}${python} --version` };
+    if (resolve) {
+      steps.push(verify, {
+        phase: "dependencies",
+        command: `${uv} pip compile --no-cache --no-build --only-binary :all: --python ${python} --no-header --no-annotate --output-file ${q(join(dir, PYTHON_RESOLUTION_FILE))} ${requirements}`,
+      });
+    } else {
+      if (lock) steps.push(verify);
+      if (specs.length)
+        steps.push({
+          phase: "dependencies",
+          // Wheels only. Windows also disables resolution during installation.
+          command: `${uv} pip install --no-cache --only-binary :all: --link-mode copy${lock ? " --no-deps" : ""} --python ${python} -r ${requirements}`,
+        });
+      if (!lock) steps.push(verify);
+    }
+    const packages = [
+      ...new Set(
+        (resolve ? [] : specs)
+          .map((spec) => /^[A-Za-z0-9_.-]+/.exec(spec)?.[0])
+          .filter((name): name is string => !!name),
+      ),
+    ];
+    const managedPython = {
+      uvVersion: UV_VERSION,
+      uvBytes: release.bytes,
+      pythonRequest: pythonVersion,
+    };
+    const networkDomains = { primary: skillPythonDomains(), withMirror: skillPythonDomains(true) };
+    const hash = digest({ envId, steps, packages, managedPython, networkDomains, lock });
     return {
       plan: {
         runtime: "python",
         interpreter: "Python",
-        interpreterVersion: request,
+        interpreterVersion: pythonVersion,
         pythonSpecs: specs,
+        pythonLock: lock,
+        ...(resolve ? { resolvesPythonPackages: true as const } : {}),
         packages,
         envId,
         hash,
@@ -523,8 +649,35 @@ export class SkillRuntimeService {
         planHash: hash,
         packages: packages.length,
         managedPython,
+        ...(windows
+          ? {
+              requiresUnisolatedConfirmation: true as const,
+              ...(resolve
+                ? { resolvesPythonPackages: true as const }
+                : { reviewedPackages: lock?.specs ?? [] }),
+            }
+          : { networkDomains }),
       },
     };
+  }
+
+  private async readPythonLock(envId: string) {
+    const text = await this.readText(this.envDir(envId), PYTHON_LOCK_FILE);
+    if (!text) return undefined;
+    try {
+      return pythonLockSchema.parse(JSON.parse(text));
+    } catch {
+      // A partial or malformed resolution requires a fresh review.
+      return undefined;
+    }
+  }
+
+  private async writePythonLock(envId: string, lock: PythonLock) {
+    const path = join(this.envDir(envId), PYTHON_LOCK_FILE);
+    const text = JSON.stringify(lock);
+    if (Buffer.byteLength(text) > RUNTIME_MANIFEST_MAX_BYTES)
+      throw new Error("python_dependencies_unreviewable");
+    await writeFile(path, text, { flag: "wx", mode: 0o600 });
   }
 
   private venvDir(envId: string): string {
@@ -559,32 +712,40 @@ export class SkillRuntimeService {
     }
   }
 
-  async status(target: SkillRuntimeTarget, signal?: AbortSignal): Promise<SkillRuntimeStatus> {
+  async status(
+    target: SkillRuntimeTarget,
+    signal?: AbortSignal,
+    runtime?: SkillManagedRuntime,
+  ): Promise<SkillRuntimeStatus> {
     signal?.throwIfAborted();
-    const { plan, status } = await this.plan(target);
+    const selected = await this.plan(target, runtime);
+    const { plan, status } =
+      runtime && !selected.status.runtime && selected.status.requirements.length
+        ? await this.plan(target)
+        : selected;
     signal?.throwIfAborted();
     if (!plan) return status;
     const running = this.active.get(target.skillId);
-    if (running)
+    if (running?.envId === plan.envId)
       return {
         ...status,
         state: "preparing",
         logPath: join(this.envDir(plan.envId), LOG_FILE),
         progress: { ...running.progress },
       };
-    const current = await this.readState(plan.envId);
-    if (
-      current?.status === "ready" &&
-      (plan.runtime === "node" ||
-        (current.uvVersion === UV_VERSION && (await this.usablePython(plan.envId))))
-    )
+    const current = await this.currentState(plan, target);
+    if (current && (await this.ready(plan, current)))
       return {
         ...status,
         state: "ready",
         bytes: await this.size(this.envDir(plan.envId), signal),
-        interpreter: { command: current.interpreter, version: current.interpreterVersion },
+        interpreter: {
+          command: current.runtime === "node" ? "Node.js" : "Python",
+          version: current.interpreterVersion,
+        },
       };
     if (current?.status === "ready") return { ...status, state: "needs_prepare" };
+    if (current?.status === "resolved") return status;
     if (current)
       return {
         ...status,
@@ -594,7 +755,9 @@ export class SkillRuntimeService {
       };
     // An environment built for another interpreter or manifest set cannot be reused; saying
     // "ready" would hide that it has to be prepared again.
-    const previous = (await this.states(target.skillId)).some((state) => state.status === "ready");
+    const previous = (await this.states(target.skillId)).some(
+      (state) => state.status === "ready" && state.runtime === plan.runtime,
+    );
     return previous ? { ...status, state: "needs_prepare" } : status;
   }
 
@@ -613,24 +776,30 @@ export class SkillRuntimeService {
     target: SkillRuntimeTarget,
     planHash: string,
     signal: AbortSignal,
+    confirmWithoutIsolation = false,
+    useMirror = false,
+    runtime?: SkillManagedRuntime,
   ): Promise<SkillRuntimeStatus> {
     if (this.active.has(target.skillId) || this.removing.has(target.skillId))
-      return this.status(target);
+      return this.status(target, signal, runtime);
     signal.throwIfAborted();
-    const { plan, status } = await this.plan(target);
+    const { plan, status } = await this.plan(target, runtime);
     if (!plan) return status;
+    if (status.requiresUnisolatedConfirmation && !confirmWithoutIsolation)
+      throw new RpcError(RpcErrorCodes.invalidParams, "skill_runtime_confirmation_required");
     if (plan.hash !== planHash)
       throw new RpcError(RpcErrorCodes.invalidParams, "skill_runtime_plan_changed");
-    if (
-      (await this.readState(plan.envId))?.status === "ready" &&
-      (plan.runtime === "node" || (await this.usablePython(plan.envId)))
-    )
-      return this.status(target);
+    if (useMirror && plan.runtime !== "python")
+      throw new RpcError(RpcErrorCodes.invalidParams, "skill_runtime_plan_changed");
+    if (await this.ready(plan, await this.currentState(plan, target)))
+      return this.status(target, signal, runtime);
     if (this.active.has(target.skillId) || this.removing.has(target.skillId))
-      return this.status(target);
+      return this.status(target, signal, runtime);
     signal.throwIfAborted();
     const abort = new AbortController();
     const active: Active = {
+      envId: plan.envId,
+      runtime: plan.runtime,
       abort,
       progress: { phase: "create", done: 0, total: plan.steps.length },
       done: Promise.resolve(),
@@ -642,11 +811,12 @@ export class SkillRuntimeService {
       status,
       active,
       AbortSignal.any([signal, abort.signal]),
+      useMirror,
     ).finally(() => {
       this.active.delete(target.skillId);
     });
     await active.done;
-    const final = await this.status(target);
+    const final = await this.status(target, undefined, runtime);
     this.deps.emit?.(target, final, active.progress);
     return final;
   }
@@ -657,6 +827,7 @@ export class SkillRuntimeService {
     status: SkillRuntimeStatus,
     active: Active,
     signal: AbortSignal,
+    useMirror: boolean,
   ): Promise<void> {
     const metadata = this.envDir(plan.envId);
     const log = join(metadata, LOG_FILE);
@@ -667,6 +838,18 @@ export class SkillRuntimeService {
     let reason: string | undefined;
     // Read in the catch below to name the phase that hit the workspace boundary.
     let currentPhase: Plan["steps"][number]["phase"] | undefined;
+    if (status.requiresUnisolatedConfirmation && !signal.aborted)
+      this.deps.audit({
+        botId: target.botId,
+        groupId: target.groupId,
+        skillId: target.skillId,
+        skillName: target.name,
+        runtime: plan.runtime,
+        packages: plan.packages.length,
+        result: "approved",
+        planHash: plan.hash,
+        ...(python && useMirror ? { mirror: true } : {}),
+      });
     try {
       signal.throwIfAborted();
       if (python) {
@@ -679,16 +862,23 @@ export class SkillRuntimeService {
         await ensurePrivateDir(metadata);
         await ensurePrivateDir(dir);
         created = true;
+        if (plan.pythonLock) await this.writePythonLock(plan.envId, plan.pythonLock);
         this.deps.emit?.(target, { ...status, state: "preparing" }, active.progress);
-        if (!(await this.deps.local.target.isolationStatus(signal)).available)
+        const isolation = await this.deps.local.target.isolationStatus(signal);
+        if (
+          !isolation.available &&
+          !(status.requiresUnisolatedConfirmation && isolation.reason === "windows_unisolated")
+        )
           throw new ExecError("isolation_unavailable");
-        await this.uv.ensure(signal);
+        await this.uv.ensure(signal, useMirror);
         await ensurePrivateDir(join(this.deps.dataDir, "runtimes", "python"));
         await ensurePrivateDir(join(this.deps.dataDir, "runtimes"));
         await ensurePrivateDir(join(this.deps.dataDir, "runtimes", "uv-cache"));
       } else {
-        await mkdir(dir, { recursive: true, mode: 0o700 });
-        await this.copyNodeManifest(target, dir);
+        await ensurePrivateDir(this.root());
+        await rm(dir, { recursive: true, force: true });
+        await ensurePrivateDir(dir);
+        await this.copyNodeManifest(plan, dir);
       }
       await this.append(
         log,
@@ -705,7 +895,13 @@ export class SkillRuntimeService {
           throw new Error("install_failed");
         let output = "";
         const preparation = python
-          ? { envId: plan.envId, uvVersion: UV_VERSION, phase: step.phase }
+          ? {
+              envId: plan.envId,
+              uvVersion: UV_VERSION,
+              ...(useMirror ? { useMirror: true as const } : {}),
+              phase: step.phase,
+              ...(status.requiresUnisolatedConfirmation ? { windowsConfirmed: true as const } : {}),
+            }
           : undefined;
         dispatched = true;
         const result = await this.deps.local.target
@@ -726,16 +922,22 @@ export class SkillRuntimeService {
                   botHome: join(dataDir, "bots", target.botId, "home"),
                   skillGroupId: target.groupId,
                   writeRoots: [dir],
-                  network: { allowAll: false, domains: NODE_DOMAINS },
-                  pathEntries: [this.binDir(plan.envId)],
-                  runId: `skill-env-${randomUUID()}`,
+                  network: status.requiresUnisolatedConfirmation
+                    ? { allowAll: true, domains: [] }
+                    : { allowAll: false, domains: [...SKILL_NODE_DOMAINS] },
+                  ...(status.requiresUnisolatedConfirmation ? { allowUnisolated: true } : {}),
+                  skillNodePreparation: {
+                    envId: plan.envId,
+                    windowsConfirmed: status.requiresUnisolatedConfirmation,
+                  },
+                  pathEntries: [dirname(plan.interpreter)],
+                  runId: randomUUID(),
+                  timeoutSec: 600,
                   signal,
                 }),
-            onOutput: python
-              ? (text) => {
-                  output = (output + text).slice(-32 * 1024);
-                }
-              : undefined,
+            onOutput: (text) => {
+              output = (output + text).slice(-32 * 1024);
+            },
           })
           .catch(async (error: unknown) => {
             if (python) {
@@ -785,14 +987,39 @@ export class SkillRuntimeService {
           await this.append(log, `$ ${step.command}\n${this.deps.redact?.(text) ?? text}\n`);
         }
         signal.throwIfAborted();
-        if (result.exitCode !== 0) throw new Error("install_failed");
+        if (result.exitCode !== 0) {
+          reason = step.verifyLock
+            ? "node_dependencies_unreviewable"
+            : installFailure(result.truncatedOutput || output);
+          throw new Error(reason);
+        }
         if (python && step.phase === "verify") {
           const version = /(?:^|\n)Python (\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?)\s*(?:$|\n)/.exec(
             output,
           )?.[1];
-          if (!version || !(await this.usablePython(plan.envId))) throw new Error("install_failed");
+          if (
+            !version ||
+            (plan.pythonLock && version !== plan.pythonLock.version) ||
+            !(await this.usablePython(plan.envId))
+          )
+            throw new Error("install_failed");
           plan.interpreterVersion = version;
         }
+      }
+      if (plan.resolvesPythonPackages) {
+        reason = "python_dependencies_unreviewable";
+        const text = await this.readText(dir, PYTHON_RESOLUTION_FILE);
+        if (text === undefined) throw new Error(reason);
+        const lock = pythonLockSchema.parse({
+          version: plan.interpreterVersion,
+          specs: text
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean),
+        });
+        await this.saveState(plan, target, { status: "resolved" });
+        await this.writePythonLock(plan.envId, lock);
+        return;
       }
       await this.saveState(plan, target, { status: "ready" });
     } catch (error) {
@@ -803,13 +1030,17 @@ export class SkillRuntimeService {
           ? "cancelled"
           : error instanceof SkillUvError
             ? error.reason
-            : error instanceof ExecError && error.code === "isolation_unavailable"
-              ? "uv_isolation_unavailable"
-              : error instanceof ExecError && error.code === "outside_workplace"
-                ? "python_workspace_boundary"
-                : python && !dispatched
-                  ? "uv_download_failed"
-                  : "install_failed";
+            : error instanceof ExecError && error.reason === "windows_proxy_credentials"
+              ? "windows_proxy_credentials"
+              : error instanceof ExecError && error.code === "isolation_unavailable"
+                ? python
+                  ? "uv_isolation_unavailable"
+                  : "node_isolation_unavailable"
+                : error instanceof ExecError && error.code === "outside_workplace"
+                  ? "python_workspace_boundary"
+                  : python && !dispatched
+                    ? "uv_download_failed"
+                    : (reason ?? "install_failed");
       // Execution may be retaining a tree whose teardown could not be confirmed. Do not remove
       // its working directory in that case; the failed state keeps it out of runtime selection.
       if (python && created && !cleanupUnconfirmed) {
@@ -830,12 +1061,15 @@ export class SkillRuntimeService {
     }
     this.deps.audit({
       botId: target.botId,
+      groupId: target.groupId,
       skillId: target.skillId,
       skillName: target.name,
       runtime: plan.runtime,
       packages: plan.packages.length,
       result: reason ? "failed" : "ready",
       reasonCode: reason,
+      planHash: plan.hash,
+      ...(python && useMirror ? { mirror: true } : {}),
     });
   }
 
@@ -848,9 +1082,11 @@ export class SkillRuntimeService {
     }
   }
 
-  private async copyNodeManifest(target: SkillRuntimeTarget, dir: string): Promise<void> {
-    for (const name of ["package.json", "package-lock.json"]) {
-      const text = await this.readText(target.folder, name);
+  private async copyNodeManifest(plan: Plan, dir: string): Promise<void> {
+    for (const [name, text] of [
+      ["package.json", plan.nodeManifest],
+      ["package-lock.json", plan.nodeLock],
+    ] as const) {
       if (text === undefined) continue;
       const handle = await open(join(dir, name), "w", 0o600);
       try {
@@ -864,7 +1100,7 @@ export class SkillRuntimeService {
   private async saveState(
     plan: Plan,
     target: SkillRuntimeTarget,
-    value: { status: "ready" | "failed"; reason?: string },
+    value: { status: EnvironmentState["status"]; reason?: string },
   ): Promise<void> {
     const state: EnvironmentState = {
       version: 1,
@@ -878,7 +1114,9 @@ export class SkillRuntimeService {
       interpreter: plan.interpreter,
       interpreterVersion: plan.interpreterVersion,
       preparedAt: new Date().toISOString(),
-      ...(plan.runtime === "python" ? { uvVersion: UV_VERSION, groupId: target.groupId } : {}),
+      groupId: target.groupId,
+      ...(plan.runtime === "python" ? { uvVersion: UV_VERSION } : {}),
+      ...(plan.pythonLock ? { planHash: plan.hash } : {}),
     };
     const dir = this.envDir(plan.envId);
     const temp = join(dir, `.${randomUUID()}.json`);
@@ -895,67 +1133,86 @@ export class SkillRuntimeService {
     }
   }
 
-  /**
-   * The environment a bot's commands inherit. A bot usually has one skill with a runtime,
-   * so the lowest env id wins and the injected variables stay identical across turns.
-   */
-  async environment(
-    botId: string,
-    effectiveTarget?: (skillId: string) => SkillRuntimeTarget | undefined,
-  ): Promise<{ id: string; dir: string; bin: string; python?: string; node?: string } | undefined> {
-    let entries: string[];
-    try {
-      entries = await readdir(this.root());
-    } catch {
-      return undefined;
-    }
-    for (const id of entries.filter((name) => /^[a-f0-9]{16}$/.test(name)).sort()) {
-      const state = await this.readState(id);
-      if (!state || state.botId !== botId || state.status !== "ready") continue;
-      if (state.runtime === "python") {
-        const target = effectiveTarget?.(state.skillId);
-        if (
-          !target ||
-          state.uvVersion !== UV_VERSION ||
-          target.groupId !== state.groupId ||
-          (await this.plan(target)).plan?.envId !== id ||
-          !(await this.usablePython(id))
-        )
-          continue;
+  /** The ready environment for the skill this command invokes. */
+  async commandRuntime(target: SkillRuntimeTarget, runtime?: SkillManagedRuntime) {
+    const { plan, status } = await this.plan(target, runtime);
+    if (!runtime && status.requirements.length > 1) return undefined;
+    if (status.state === "not_required") return undefined;
+    if (
+      plan &&
+      this.active.get(target.skillId)?.envId !== plan.envId &&
+      !this.removing.has(target.skillId)
+    ) {
+      if (await this.ready(plan, await this.currentState(plan, target))) {
+        const dir = this.envDir(plan.envId);
+        const environment =
+          plan.runtime === "node"
+            ? {
+                id: plan.envId,
+                dir,
+                sourceDir: target.folder,
+                bin: "node_modules/.bin",
+                node: plan.interpreter,
+              }
+            : {
+                id: plan.envId,
+                dir,
+                sourceDir: target.folder,
+                bin: this.deps.platform === "win32" ? "venv/Scripts" : "venv/bin",
+                python: this.pythonPath(plan.envId),
+              };
+        return { environment };
       }
-      const dir = this.envDir(id);
-      if (state.runtime === "node")
-        return { id, dir, bin: "node_modules/.bin", node: state.interpreter };
-      return {
-        id,
-        dir,
-        bin: this.deps.platform === "win32" ? "venv/Scripts" : "venv/bin",
-        python: this.pythonPath(id),
-      };
     }
-    return undefined;
+    return {
+      missing: {
+        skillId: target.skillId,
+        name: target.name,
+        groupId: target.groupId,
+        runtime: status.runtime,
+      },
+    };
   }
 
-  async cancel(target: SkillRuntimeTarget): Promise<SkillRuntimeStatus> {
+  async cancel(
+    target: SkillRuntimeTarget,
+    runtime?: SkillManagedRuntime,
+  ): Promise<SkillRuntimeStatus> {
     const active = this.active.get(target.skillId);
-    active?.abort.abort();
-    await active?.done;
-    return this.status(target);
+    if (active && (!runtime || active.runtime === runtime)) {
+      active.abort.abort();
+      await active.done;
+    }
+    return this.status(target, undefined, runtime);
   }
 
-  async remove(target: SkillRuntimeTarget): Promise<SkillRuntimeStatus> {
-    if (this.removing.has(target.skillId)) return this.status(target);
+  async remove(
+    target: SkillRuntimeTarget,
+    runtime?: SkillManagedRuntime,
+  ): Promise<SkillRuntimeStatus> {
+    if (this.removing.has(target.skillId)) return this.status(target, undefined, runtime);
     this.removing.add(target.skillId);
     try {
-      await this.cancel(target);
+      const current = await this.cancel(target, runtime);
       for (const state of await this.states(target.skillId)) {
-        if (state.botId !== target.botId || (state.uvVersion && state.groupId !== target.groupId))
+        // Only the current plan can establish group ownership of a scope-less Node record.
+        if (
+          (runtime && state.runtime !== runtime) ||
+          state.botId !== target.botId ||
+          (state.groupId !== target.groupId &&
+            !(
+              state.runtime === "node" &&
+              state.groupId === undefined &&
+              state.envId === current.envId
+            ))
+        )
           continue;
         if (state.reason === "uv_cleanup_unconfirmed")
           await this.deps.local.target.isolationStatus();
         await rm(this.envDir(state.envId), { recursive: true, force: true });
         this.deps.audit({
           botId: target.botId,
+          groupId: target.groupId,
           skillId: target.skillId,
           skillName: target.name,
           runtime: state.runtime,
@@ -966,11 +1223,14 @@ export class SkillRuntimeService {
     } finally {
       this.removing.delete(target.skillId);
     }
-    return this.status(target);
+    return this.status(target, undefined, runtime);
   }
 
-  async log(target: SkillRuntimeTarget): Promise<{ path: string | null; text: string }> {
-    const status = await this.status(target);
+  async log(
+    target: SkillRuntimeTarget,
+    runtime?: SkillManagedRuntime,
+  ): Promise<{ path: string | null; text: string }> {
+    const status = await this.status(target, undefined, runtime);
     if (!status.envId) return { path: null, text: "" };
     const path = join(this.envDir(status.envId), LOG_FILE);
     try {
@@ -987,39 +1247,5 @@ export class SkillRuntimeService {
     } catch {
       return { path, text: "" };
     }
-  }
-
-  /** Environments a Bot can use right now; `run_command` picks the one the command belongs to. */
-  async readyEnvironments(
-    botId: string,
-  ): Promise<{ envId: string; skillId: string; dir: string; python?: string; node?: string }[]> {
-    let entries: string[];
-    try {
-      entries = await readdir(this.root());
-    } catch {
-      return [];
-    }
-    const ready: { envId: string; skillId: string; dir: string; python?: string; node?: string }[] =
-      [];
-    for (const name of entries) {
-      if (!/^[a-f0-9]{16}$/.test(name)) continue;
-      const state = await this.readState(name);
-      if (state?.status !== "ready" || state.botId !== botId) continue;
-      if (
-        state.runtime === "python" &&
-        (state.uvVersion !== UV_VERSION || !(await this.usablePython(name)))
-      )
-        continue;
-      const bin = this.binDir(name);
-      ready.push({
-        envId: name,
-        skillId: state.skillId,
-        dir: this.envDir(name),
-        ...(state.runtime === "python"
-          ? { python: this.pythonPath(name) }
-          : { node: join(bin, this.deps.platform === "win32" ? "node.exe" : "node") }),
-      });
-    }
-    return ready;
   }
 }

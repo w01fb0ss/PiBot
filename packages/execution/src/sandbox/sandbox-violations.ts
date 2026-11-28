@@ -38,6 +38,7 @@ export interface ViolationContext {
   /** Literal read denies of this call (canonical). */
   denyRead: readonly string[];
   platform: NodeJS.Platform;
+  quietLoginKeychainMetadata?: boolean;
   /** Write classification shared with the output-candidate path. */
   classifyWrite(path: string): SandboxBlockItem | undefined;
   /** Loopback ports a local service answers on (loopback-probe.ts); absent = none known. */
@@ -93,6 +94,17 @@ function seatbelt(detail: string, context: ViolationContext): ViolationItem | un
   const target = (match[3] ?? "").trim();
   if (operation.startsWith("file-read")) {
     if (!isAbsolute(target)) return undefined;
+    // Security.framework probes this file's metadata on completed agy/Codex turns. Keep
+    // data denials, other Keychain paths, and startup/failure diagnostics visible.
+    if (
+      context.platform === "darwin" &&
+      context.quietLoginKeychainMetadata &&
+      operation === "file-read-metadata" &&
+      context.homes.some(
+        (home) => target === join(home, "Library", "Keychains", "login.keychain-db"),
+      )
+    )
+      return undefined;
     return { item: readItem(target, context), strong: true };
   }
   if (operation.startsWith("file-write")) {

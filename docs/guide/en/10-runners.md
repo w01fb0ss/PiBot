@@ -66,7 +66,7 @@ A runner won't hand its own data folder, system folders or a disk root to a Bot;
 Commands and file access on a runner go through the same permission checks and approvals on your computer as local work; approval cards name the runner.
 
 - **Linux / macOS runners**: commands run in the runner's isolated environment (Linux needs `bubblewrap` and `socat`; Pi Bot shows the install command when they're missing).
-- **Windows runners**: commands on Windows have no system isolation, so each command needs your approval (Approve each command).
+- **Windows runners** run commands without a sandbox. Supported read-only commands run when permissions allow. Ordinary commands ask unless YOLO and consent to unisolated execution are enabled. Dangerous commands and commands Pi can’t parse still ask.
 
 When a runner is offline, steps waiting for it fail with the reason; wait for it to reconnect, or switch to a local folder.
 

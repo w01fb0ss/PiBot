@@ -1,4 +1,5 @@
 import { StringDecoder } from "node:string_decoder";
+import { runnerText } from "./messages.ts";
 import type { RunnerRedactor } from "./redactor.ts";
 
 export function takeEnvironmentPassphrase(redactor: RunnerRedactor) {
@@ -9,14 +10,32 @@ export function takeEnvironmentPassphrase(redactor: RunnerRedactor) {
 }
 
 export async function readPassphrase(
-  environmentValue: string | undefined,
+  creating: boolean,
   signal: AbortSignal,
   redactor: RunnerRedactor,
 ) {
-  if (environmentValue) return environmentValue;
   if (!process.stdin.isTTY || !process.stderr.isTTY) throw new Error("passphrase_required");
+  if (creating)
+    process.stderr.write(
+      `${runnerText(
+        "请创建一个口令来保护这台电脑上的配对信息。以后启动时可能需要输入。若忘记口令，请用新的数据目录启动，并重新配对。",
+        "Create a passphrase to protect the pairing details on this computer. You may need it at startup. If you forget it, start with a fresh data folder and pair again.",
+      )}\n`,
+    );
+  const value = await prompt(runnerText("口令：", "Passphrase: "), signal, redactor);
+  if (creating) {
+    const confirmation = await prompt(
+      runnerText("再输一次口令：", "Repeat passphrase: "),
+      signal,
+      redactor,
+    );
+    if (value !== confirmation) throw new Error("passphrase_mismatch");
+  }
+  return value;
+}
+
+async function prompt(label: string, signal: AbortSignal, redactor: RunnerRedactor) {
   const input = process.stdin;
-  process.stderr.write("Pi Bot Runner passphrase: ");
   return new Promise<string>((resolve, reject) => {
     let value = "";
     let settled = false;
@@ -53,9 +72,13 @@ export async function readPassphrase(
     input.on("data", onData);
     signal.addEventListener("abort", onAbort, { once: true });
     if (signal.aborted) return finish(signal.reason);
-    input.setRawMode(true);
-    raw = true;
-    if (settled || signal.aborted) return finish(signal.reason);
-    input.resume();
+    try {
+      input.setRawMode(true);
+      raw = true;
+      process.stderr.write(label);
+      input.resume();
+    } catch (error) {
+      finish(error);
+    }
   });
 }

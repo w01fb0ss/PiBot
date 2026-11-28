@@ -36,7 +36,11 @@ export function toolSteps(
   const steps: ToolStep[] = [];
   for (const tool of tools.values()) {
     const request = requests.get(tool.toolCallId);
-    const approval = request ?? ("approval" in tool ? tool.approval : undefined);
+    const stored = "approval" in tool ? tool.approval : undefined;
+    const approval =
+      request?.directRunRemember && request.status === "allowed" && stored?.remembered
+        ? { ...request, remembered: true }
+        : (request ?? stored);
     const fact = request?.facts.find((item) =>
       tool.tool === "read_file" || tool.tool === "list_dir"
         ? item.kind === "read"
@@ -52,7 +56,7 @@ export function toolSteps(
             approval.explanation?.some(
               (entry) => entry.code === "approval_user_denied" && entry.effect === "deny",
             )
-          ? { ...tool, status: "blocked" }
+          ? { ...tool, status: "blocked", denialReason: "approval_user_denied" }
           : tool,
       number: steps.length + 1,
       target:

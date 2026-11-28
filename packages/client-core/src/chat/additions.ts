@@ -15,7 +15,7 @@ export async function append(
   text: string,
   attachments: AttachmentInput[],
   attachmentIds: string[],
-) {
+): Promise<boolean | "fallback_queue"> {
   const botId = this.state.bot?.id;
   const topicId = this.state.conversationId ?? this.target.topicId;
   if (!botId || !topicId) return false;
@@ -48,6 +48,13 @@ export async function append(
   } catch (error) {
     const code = error instanceof RpcError ? error.code : undefined;
     const message = error instanceof RpcError ? error.message : "";
+    // The live run cannot accept an in-run append in this phase (waiting on approval, between
+    // tool calls, preparing, or already ended) and nothing was persisted; fall back to queuing
+    // the message as the next turn of the same topic.
+    if (code === RpcErrorCodes.busy && message === "append_unavailable") {
+      for (const event of this.earlyEvents) this.applyEvent(event);
+      return "fallback_queue";
+    }
     const known: ChatRequestError | undefined =
       code === RpcErrorCodes.busy
         ? message === "append_full"

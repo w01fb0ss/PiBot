@@ -8,6 +8,13 @@ export const connectionDrawerZh = {
   "connections.drawer.chip.builtin": "Pi Bot 自带",
   "connections.drawer.chip.local": "在这台电脑上运行",
   "connections.drawer.chip.remote": "远程服务",
+  "connections.drawer.importTrust": "这个连接来自你提供的配置，Pi Bot 无法完全确认它是否安全。",
+  "connections.drawer.importTrust.trusted": "只连接你信任的来源。",
+  "connections.drawer.importTrust.sandboxed":
+    "只连接你信任的来源；它在沙箱里运行，用到新网站会先问你。",
+  "connections.drawer.importTrust.mixed":
+    "只连接你信任的来源。本机部分在沙箱里运行，用到新网站会先问你。",
+  "connections.drawer.importTrust.remote": "Pi Bot 会直接连接配置里的远程服务。",
   "connections.drawer.prep": "准备工作",
   "connections.drawer.prepLink": "{name} 的说明",
   "connections.drawer.prepLinkCjk": "{name}的说明",
@@ -30,9 +37,11 @@ export const connectionDrawerZh = {
   "connections.drawer.chipDirect": "直接做",
   "connections.drawer.chipOff": "已停用",
   "connections.drawer.accessDefault": "连接后谁能用：{access}；在「谁能用」里随时改。",
+  "connections.drawer.accessDefaultBringOver":
+    "带过来后默认暂不分配给任何 Bot；连接后可在「谁能用」里随时选择。",
   "connections.drawer.skills": "技能 · {count} 个",
   "connections.drawer.tech": "技术详情",
-  "connections.drawer.techSummary": "运行方式、能连的网站、来源",
+  "connections.drawer.techSummary": "运行方式、能连的网站、密钥和来源",
   "connections.drawer.run": "运行方式",
   "connections.drawer.run.node": "在这台电脑上的独立进程里运行（用 Pi Bot 自带的 Node）",
   "connections.drawer.run.command": "在这台电脑上的独立进程里运行（{command}）",
@@ -48,8 +57,7 @@ export const connectionDrawerZh = {
   "connections.drawer.secretsCount": "{count} 项：{names}",
   "connections.drawer.secretsNone": "不需要",
   "connections.drawer.source": "来源",
-  "connections.drawer.source.plugin": "插件包 · SHA-256 {digest}…",
-  "connections.drawer.source.json": "MCP 配置 · SHA-256 {digest}…",
+  "connections.drawer.source.digest": "SHA-256 {digest}…",
   "connections.drawer.skipped": "不会导入的部分",
   "connections.drawer.importOnly": "只导入，先不启用",
   "connections.drawer.connect": "连接",
@@ -92,16 +100,29 @@ export const connectionDrawerZh = {
   "connections.drawer.useNote": "关掉后 Bot 暂时用不了，设置都保留",
   "connections.drawer.settings": "设置",
   "connections.drawer.settingsNote": "其他设置写在插件包里；要改的话改好后「从来源更新」。",
+  "connections.drawer.settingsEditNote":
+    "改了设置会重新启动这个连接（和「测试连接」一样）。密钥不在这里显示，只能用「更换」换成新的。",
+  "connections.drawer.settingsUndo": "撤销",
+  "connections.drawer.settingsSaved": "已保存，正在重新启动。",
+  "connections.drawer.settingsRequired": "先填好必填的设置。",
   "connections.drawer.replace": "更换",
   "connections.drawer.fillKey": "补上",
   "connections.drawer.save": "保存",
   "connections.drawer.sitesEdit": "修改能连的网站",
-  "connections.drawer.sitesConfirm": "保存后这个连接只能连下面这些网站。确定吗？",
+  "connections.drawer.sitesConfirm": "保存后，下面这些网站和连接声明的网站均可访问。确定吗？",
   "connections.drawer.toolKinds": "按工具调整归类",
   "connections.drawer.toolKindsNote": "把工具归为查看（直接做）或修改（先问你），或停用",
   "connections.drawer.remove": "删除这个连接",
   "connections.drawer.removeNote": "连同它带来的技能一起删除",
   "connections.drawer.restartNote": "重新启动这个连接",
+  "connections.drawer.chooseFolder": "选择文件夹",
+  "connections.drawer.chooseFile": "选择文件",
+  "connections.drawer.changeFolder": "更换文件夹",
+  "connections.drawer.changeFile": "更换文件",
+  "connections.drawer.noFolderChosen": "尚未选择文件夹",
+  "connections.drawer.noFileChosen": "尚未选择文件",
+  "connections.drawer.clearPath": "清除",
+  "connections.drawer.pickerUnavailable": "当前环境无法打开系统选择器，请手动填写路径。",
 } as const;
 
 export const connectionDrawerEn: Record<keyof typeof connectionDrawerZh, string> = {
@@ -112,6 +133,15 @@ export const connectionDrawerEn: Record<keyof typeof connectionDrawerZh, string>
   "connections.drawer.chip.builtin": "Built into Pi Bot",
   "connections.drawer.chip.local": "Runs on this computer",
   "connections.drawer.chip.remote": "Remote service",
+  "connections.drawer.importTrust":
+    "This connection comes from a configuration you provided, so Pi Bot can't fully confirm it is safe.",
+  "connections.drawer.importTrust.trusted": "Only connect sources you trust.",
+  "connections.drawer.importTrust.sandboxed":
+    "Only connect sources you trust; it runs in the sandbox and asks you before reaching a new website.",
+  "connections.drawer.importTrust.mixed":
+    "Only connect sources you trust. The local part runs in the sandbox and asks you before reaching a new website.",
+  "connections.drawer.importTrust.remote":
+    "Pi Bot connects directly to the configured remote service.",
   "connections.drawer.prep": "Before you start",
   "connections.drawer.prepLink": "{name}'s guide",
   "connections.drawer.prepLinkCjk": "{name}'s guide",
@@ -136,9 +166,11 @@ export const connectionDrawerEn: Record<keyof typeof connectionDrawerZh, string>
   "connections.drawer.chipOff": "Off",
   "connections.drawer.accessDefault":
     "Who can use it once connected: {access}. Change it any time in Who can use.",
+  "connections.drawer.accessDefaultBringOver":
+    "Brought-over connections start unassigned. Choose who can use it in Who can use afterwards.",
   "connections.drawer.skills": "Skills · {count}",
   "connections.drawer.tech": "Technical details",
-  "connections.drawer.techSummary": "How it runs, sites it can reach, source",
+  "connections.drawer.techSummary": "How it runs, sites it can reach, keys, and source",
   "connections.drawer.run": "How it runs",
   "connections.drawer.run.node": "Its own process on this computer (Pi Bot's built-in Node)",
   "connections.drawer.run.command": "Its own process on this computer ({command})",
@@ -154,8 +186,7 @@ export const connectionDrawerEn: Record<keyof typeof connectionDrawerZh, string>
   "connections.drawer.secretsCount": "{count}: {names}",
   "connections.drawer.secretsNone": "None",
   "connections.drawer.source": "Source",
-  "connections.drawer.source.plugin": "Plugin · SHA-256 {digest}…",
-  "connections.drawer.source.json": "MCP configuration · SHA-256 {digest}…",
+  "connections.drawer.source.digest": "SHA-256 {digest}…",
   "connections.drawer.skipped": "Parts that are not imported",
   "connections.drawer.importOnly": "Import only, don't turn on yet",
   "connections.drawer.connect": "Connect",
@@ -200,16 +231,30 @@ export const connectionDrawerEn: Record<keyof typeof connectionDrawerZh, string>
   "connections.drawer.settings": "Settings",
   "connections.drawer.settingsNote":
     "Other settings live in the plugin; change them there, then Update from source.",
+  "connections.drawer.settingsEditNote":
+    "Changing a setting restarts this connection (the same as Test connection). Keys are never shown here; use Replace to change one.",
+  "connections.drawer.settingsUndo": "Undo",
+  "connections.drawer.settingsSaved": "Saved. Restarting the connection.",
+  "connections.drawer.settingsRequired": "Fill in the required settings first.",
   "connections.drawer.replace": "Replace",
   "connections.drawer.fillKey": "Add",
   "connections.drawer.save": "Save",
   "connections.drawer.sitesEdit": "Edit sites it can reach",
   "connections.drawer.sitesConfirm":
-    "After saving, this connection can reach only the sites below. Continue?",
+    "After saving, the sites below and any sites declared by the connection will be allowed. Continue?",
   "connections.drawer.toolKinds": "Adjust tool kinds",
   "connections.drawer.toolKindsNote":
     "Mark a tool as read (done directly) or change (asks you first), or turn it off",
   "connections.drawer.remove": "Delete this connection",
   "connections.drawer.removeNote": "Its skills are deleted with it",
   "connections.drawer.restartNote": "Start this connection again",
+  "connections.drawer.chooseFolder": "Choose folder",
+  "connections.drawer.chooseFile": "Choose file",
+  "connections.drawer.changeFolder": "Change folder",
+  "connections.drawer.changeFile": "Change file",
+  "connections.drawer.noFolderChosen": "No folder chosen",
+  "connections.drawer.noFileChosen": "No file chosen",
+  "connections.drawer.clearPath": "Clear",
+  "connections.drawer.pickerUnavailable":
+    "System picker isn't available here; enter the path manually.",
 };

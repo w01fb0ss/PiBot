@@ -113,6 +113,9 @@ export function createRunnerLogger(
       // User verbosity changes the terminal only; persistent audit/diagnostic evidence remains.
       const priority = { info: 0, warn: 1, error: 2 };
       if (priority[level] < priority[consoleMinimum]) return;
+      // The CLI presents the final error in the user's language. Keep its duplicate
+      // structured diagnostic in the log file and in machine-readable output.
+      if (event === "runner.failed" && process.stderr.isTTY) return;
       const output =
         level === "error" || consoleTarget === "stderr" ? process.stderr : process.stdout;
       output.write(`${line}\n`);

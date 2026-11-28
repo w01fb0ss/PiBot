@@ -9,7 +9,11 @@ import { ImportFailure } from "./failure.ts";
 export type ImportMemoryScope = "user" | "bot";
 export type MemoryCandidate = ImportMemoryReview["items"][number];
 export type ReviewedMemory = { item: MemoryCandidate; conflict: string };
-export type MemorySelection = { scope: ImportMemoryScope; selected: ReviewedMemory[] };
+export type MemorySelection = {
+  scope: ImportMemoryScope;
+  selected: ReviewedMemory[];
+  bestEffort?: boolean;
+};
 
 export const normalized = (text: string) =>
   text.normalize("NFKC").trim().replace(/\s+/gu, " ").toLowerCase();
@@ -66,7 +70,7 @@ export class ImportMemories {
   }
 
   add(importId: string, botId: string, selection: MemorySelection) {
-    const { scope, selected } = selection;
+    const { scope, selected, bestEffort } = selection;
     const repo = this.repo(botId, scope);
     const inspect = this.inspection(botId, scope);
     const active = repo.list(botId);
@@ -75,11 +79,17 @@ export class ImportMemories {
     for (const { item, conflict } of selected) {
       const text = this.redact(item.text);
       const current = inspect({ id: item.id, category: item.category, text });
-      if (text !== item.text || current.conflict !== conflict)
+      if (text !== item.text || current.conflict !== conflict) {
+        if (bestEffort) continue;
         throw new ImportFailure("memory_conflict");
+      }
       if (current.item.outcome === "duplicate" || repo.similar(botId, text)) continue;
-      chars += Array.from(text).length;
-      if (active.length + added >= 100 || chars > 8000) throw new ImportFailure("memory_quota");
+      const size = Array.from(text).length;
+      if (active.length + added >= 100 || chars + size > 8000) {
+        if (bestEffort) continue;
+        throw new ImportFailure("memory_quota");
+      }
+      chars += size;
       const memory = repo.add(botId, text, null, item.category);
       const saved = repo.get(botId, memory.id);
       if (!saved) throw new Error("import_memory_missing");
@@ -92,7 +102,7 @@ export class ImportMemories {
     this.db
       .prepare("UPDATE import_jobs SET added_memories=added_memories+? WHERE id=?")
       .run(added, importId);
-    return added ? { scope, botId } : undefined;
+    return added ? { scope, botId, added } : undefined;
   }
 
   /** `botId` is the batch Bot, the owner of rows recorded before per-item destinations. */
@@ -101,6 +111,7 @@ export class ImportMemories {
       .prepare("SELECT memory_id,scope,revision,owner_id FROM import_memories WHERE import_id=?")
       .all(importId);
     const changed = new Map<string, { scope: ImportMemoryScope; botId: string }>();
+    let removed = 0;
     for (const row of rows) {
       const scope = row.scope === "user" ? "user" : "bot";
       const owner = typeof row.owner_id === "string" ? row.owner_id : botId;
@@ -109,10 +120,10 @@ export class ImportMemories {
       if (!stored) continue;
       if (stored.id !== id || revision(stored) !== row.revision)
         throw new RpcError(-32011, "import_memory_conflict");
-      this.db.prepare("DELETE FROM scoped_memories WHERE id=?").run(id);
+      removed += Number(this.db.prepare("DELETE FROM scoped_memories WHERE id=?").run(id).changes);
       changed.set(scope === "user" ? "user" : owner, { scope, botId: owner });
     }
     this.db.prepare("DELETE FROM import_memories WHERE import_id=?").run(importId);
-    return [...changed.values()];
+    return { owners: [...changed.values()], removed };
   }
 }

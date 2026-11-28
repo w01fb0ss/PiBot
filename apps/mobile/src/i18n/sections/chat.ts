@@ -1,11 +1,45 @@
 // Conversation list and chat page (messages, composer, message actions).
 export const chatZh = {
+  dependencyComputer: "连接的电脑",
+  dependencySteps: "查看处理步骤",
+  dependencyDone: "完成",
+  "dependency.git": "「{computer}」无法启动 Git。",
+  "dependency.libreoffice_missing": "「{computer}」需要 LibreOffice 才能转换文件。",
+  "dependency.libreoffice_platform_unsupported": "「{computer}」不支持安全地执行这项转换。",
+  "dependency.libreoffice_isolation_unavailable": "「{computer}」无法启动转换所需的系统保护。",
+  "dependency.libreoffice_cleanup_unconfirmed": "「{computer}」上的 Pi Bot 正在等待转换程序退出。",
+  "dependency.libreoffice_timeout": "「{computer}」上的转换用时过长，已停止。",
+  "dependency.libreoffice_failed": "「{computer}」上的 LibreOffice 未能完成转换。",
+  "dependency.linux_bubblewrap_missing": "命令未运行。「{computer}」缺少限制文件访问的系统组件。",
+  "dependency.linux_socat_missing": "命令未运行。「{computer}」缺少控制命令联网的系统组件。",
+  "dependency.linux_userns_restricted": "命令未运行。「{computer}」未能启动系统保护。",
+  "dependency.steps.git": "在「{computer}」上打开这段聊天，按提示修复 Apple 开发者工具，然后重试。",
+  "dependency.steps.libreoffice_missing":
+    "在「{computer}」上打开这段聊天，按下载提示安装 LibreOffice，再让 Bot 重试。",
+  "dependency.steps.libreoffice_platform_unsupported":
+    "在「{computer}」上用原来的办公软件打开文件，再选「另存为」或「导出」，选取需要的格式。",
+  "dependency.steps.libreoffice_isolation_unavailable":
+    "在「{computer}」上打开 Pi Bot 的「设置 › 权限」，检查系统保护后再试。",
+  "dependency.steps.libreoffice_cleanup_unconfirmed":
+    "转换程序退出后，Pi Bot 会清理此次转换的私有临时文件。你可以先在「{computer}」上用原来的办公软件导出文件。",
+  "dependency.steps.libreoffice_timeout":
+    "请让 Bot 再试一次。如果还是失败，在「{computer}」上用原来的办公软件另存或导出文件。",
+  "dependency.steps.libreoffice_failed":
+    "在「{computer}」上用原来的办公软件打开源文件，再选「另存为」或「导出」，选取需要的格式。",
+  "dependency.steps.linux_bubblewrap_missing":
+    "在「{computer}」上打开 Pi Bot 的「设置 › 权限」，按提示安装 bubblewrap，重新检测后再试。",
+  "dependency.steps.linux_socat_missing":
+    "在「{computer}」上打开 Pi Bot 的「设置 › 权限」，按提示安装 socat，重新检测后再试。",
+  "dependency.steps.linux_userns_restricted":
+    "在「{computer}」上打开 Pi Bot 的「设置 › 权限」，请管理员按提示恢复系统保护。",
+
   search: "搜索 Bot 和群",
   listOffline: "电脑离线 · 显示上次同步的内容",
   listOfflinePhone: "电脑离线 · 显示上次同步的内容",
   previewRunning: "正在回复…",
   previewWaiting: "[等你审批]",
   previewFailed: "出错了",
+  imageModelsOnComputer: "在电脑的「{settings}」中检查图片模型和服务商配置。",
   failProviderOverloaded: "模型厂商当前过载或暂时不可用。稍后重试，或换一个模型。",
   failProviderRejected:
     "模型厂商拒绝了这次请求（模型名或参数不被支持）。请在电脑上换一个模型或检查设置。",
@@ -65,7 +99,7 @@ export const chatZh = {
   retryGroup: "群里的重试在电脑上进行",
   retryTitle: "从这条重新开始？",
   retryDiscard: "这条之后的回复会被丢弃，Bot 从这条消息重新回答。",
-  retryFiles: "还会把 {count} 个文件恢复到这条消息之前，恢复前用面容 ID 确认。",
+  retryFiles: "还会把 {count} 个文件恢复到这条消息之前，恢复前需验证指纹、面容或锁屏密码。",
   retryConfirm: "重新开始",
   retryStarted: "已从这条重新开始",
   unlockRetry: "验证后恢复文件并重试",
@@ -78,12 +112,53 @@ export const chatZh = {
   liveNow: "进行中",
 } as const;
 export const chatEn: Record<keyof typeof chatZh, string> = {
+  dependencyComputer: "your connected computer",
+  dependencySteps: "See steps",
+  dependencyDone: "Done",
+  "dependency.git": "Git couldn’t start on {computer}.",
+  "dependency.libreoffice_missing": "File conversion on {computer} needs LibreOffice.",
+  "dependency.libreoffice_platform_unsupported":
+    "Pi Bot can’t run this conversion safely on {computer}.",
+  "dependency.libreoffice_isolation_unavailable":
+    "The system protection needed for conversion couldn’t start on {computer}.",
+  "dependency.libreoffice_cleanup_unconfirmed":
+    "Pi Bot on {computer} is waiting for the converter to exit.",
+  "dependency.libreoffice_timeout": "The conversion on {computer} took too long and was stopped.",
+  "dependency.libreoffice_failed": "LibreOffice couldn’t finish the conversion on {computer}.",
+  "dependency.linux_bubblewrap_missing":
+    "The command didn’t run. {computer} needs a system component to limit file access.",
+  "dependency.linux_socat_missing":
+    "The command didn’t run. {computer} needs a system component to control command network access.",
+  "dependency.linux_userns_restricted":
+    "The command didn’t run because system protection couldn’t start on {computer}.",
+  "dependency.steps.git":
+    "Open this chat on {computer}, follow the steps to repair Apple’s developer tools, then retry.",
+  "dependency.steps.libreoffice_missing":
+    "Open this chat on {computer} for the download link. Install LibreOffice, then ask the Bot to try again.",
+  "dependency.steps.libreoffice_platform_unsupported":
+    "On {computer}, open the file in its original office app and choose Save As or Export to select the format you need.",
+  "dependency.steps.libreoffice_isolation_unavailable":
+    "On {computer}, open Pi Bot’s Settings → Permissions and check system protection, then retry.",
+  "dependency.steps.libreoffice_cleanup_unconfirmed":
+    "Pi Bot will delete its private temporary files once the converter exits. You can export the original file in its office app on {computer} in the meantime.",
+  "dependency.steps.libreoffice_timeout":
+    "Ask the Bot to try the conversion again. If it still fails, save or export the original file in its office app on {computer}.",
+  "dependency.steps.libreoffice_failed":
+    "On {computer}, open the original file in its office app and choose Save As or Export to select the format you need.",
+  "dependency.steps.linux_bubblewrap_missing":
+    "On {computer}, open Pi Bot’s Settings → Permissions and follow the steps to install bubblewrap. Check protection again before retrying.",
+  "dependency.steps.linux_socat_missing":
+    "On {computer}, open Pi Bot’s Settings → Permissions and follow the steps to install socat. Check protection again before retrying.",
+  "dependency.steps.linux_userns_restricted":
+    "On {computer}, open Pi Bot’s Settings → Permissions and ask your administrator to follow the repair instructions.",
+
   search: "Search Bots and groups",
   listOffline: "Computer offline · Showing the last synced content",
   listOfflinePhone: "Computer offline · Showing the last synced content",
   previewRunning: "Replying…",
   previewWaiting: "[Needs your approval]",
   previewFailed: "Something went wrong",
+  imageModelsOnComputer: "Check the image model and provider setup on the computer in {settings}.",
   failProviderOverloaded:
     "The model provider is overloaded or temporarily unavailable. Try again later or switch models.",
   failProviderRejected:
@@ -109,7 +184,7 @@ export const chatEn: Record<keyof typeof chatZh, string> = {
   chatOffline:
     "Computer offline. Keep writing: messages are queued and sent in order once it is back.",
   placeholder: "Message",
-  placeholderGroup: "Message, @ to pick a Bot",
+  placeholderGroup: "Message or @mention",
   mentionList: "Bots to mention",
   mentionPick: "Mention {name}",
   placeholderOffline: "Computer offline, messages are queued",
@@ -149,7 +224,7 @@ export const chatEn: Record<keyof typeof chatZh, string> = {
   retryTitle: "Start again from this message?",
   retryDiscard: "Replies after this message are discarded and the Bot answers it again.",
   retryFiles:
-    "{count} files are also restored to before this message. Confirm with Face ID before restoring.",
+    "{count} files are also restored to before this message. Verify with your fingerprint, face or screen lock before restoring.",
   retryConfirm: "Start again",
   retryStarted: "Started again from this message",
   unlockRetry: "Unlock to restore files and retry",

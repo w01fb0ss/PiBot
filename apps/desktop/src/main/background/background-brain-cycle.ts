@@ -218,7 +218,7 @@ export function createBackgroundBrainCycle(deps: {
               );
               resolveReady();
             })()
-              .catch(() => {
+              .catch((error: unknown) => {
                 if (
                   deps.signal.aborted ||
                   retiring ||
@@ -227,8 +227,13 @@ export function createBackgroundBrainCycle(deps: {
                   generation !== owner
                 )
                   return;
+                // The class only: a validation message could quote stored values.
                 deps.host.logger.error(
-                  "Brain interactive recovery failed; writer ownership retained",
+                  JSON.stringify({
+                    module: "startup",
+                    event: "interactive_recovery_failed",
+                    reason: error instanceof Error ? error.name : typeof error,
+                  }),
                 );
                 deps.host.onStatus?.("failed");
                 rejectReady(new Error("background_recovery_failed"));

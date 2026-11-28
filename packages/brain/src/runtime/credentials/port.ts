@@ -4,6 +4,7 @@ export type SecretUse = { name: string; revision: number };
 /** Only runtime needs: revision/assignment checks and transient values for an authorized command. */
 export interface UserSecretsPort {
   ready(signal: AbortSignal): Promise<void>;
+  choices?(botId: string): string[];
   metadata(name: string): UserSecretMeta | undefined;
   read(name: string, signal: AbortSignal): Promise<string | undefined>;
   command(command: string, botId: string): SecretUse[];

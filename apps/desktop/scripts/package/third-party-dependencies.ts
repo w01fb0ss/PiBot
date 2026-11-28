@@ -24,6 +24,7 @@ export function desktopMainInputs(root: string, includeLocalGmail = false) {
       root,
       "../../packages/brain/src/conversations/attachments/attachment-worker.ts",
     ),
+    "import-cleanup-worker": join(root, "../../packages/import/src/store/import-cleanup-worker.ts"),
     "office-worker": join(root, "../../packages/office/src/brain/worker-entry.ts"),
     "semantic-worker": join(root, "../../packages/execution/src/semantic/worker.ts"),
     "codemap-worker": join(root, "../../packages/execution/src/codemap/worker.ts"),
@@ -32,6 +33,7 @@ export function desktopMainInputs(root: string, includeLocalGmail = false) {
     "violation-log": join(root, "../../packages/execution/src/sandbox/violation-log.ts"),
     "plugin-calendar-server": join(root, "../plugins/calendar/server/index.ts"),
     "plugin-contacts-server": join(root, "../plugins/contacts/server/index.ts"),
+    "plugin-image-inspiration-server": join(root, "../plugins/image-inspiration/server/index.ts"),
     // The relay an external agent starts as its `pibot` MCP server (helper Node, sandboxed).
     "pibot-mcp-bridge": join(root, "../../packages/external-agents/src/bridge/pibot-mcp-bridge.ts"),
   } as Record<string, string>;

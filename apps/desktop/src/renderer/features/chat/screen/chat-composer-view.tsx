@@ -114,9 +114,9 @@ export function renderChatComposer(screen: ChatScreenModel) {
             disabled={busy || sendingBlocked}
             organize={() => {
               requestCompact(state.conversationId ?? undefined);
-              void controller.dismissContextHint();
+              void controller.dismissContextHint(screen.topic.modelOverride);
             }}
-            dismiss={() => void controller.dismissContextHint()}
+            dismiss={() => void controller.dismissContextHint(screen.topic.modelOverride)}
           />
         )}
       {canOrganize &&
@@ -255,11 +255,14 @@ export function renderChatComposer(screen: ChatScreenModel) {
       )}
       {!isDraft && <ExecutionPanel />}
       {skillCommands.popup}
-      {waiting && (
-        <p className={styles.band} data-tone="info" role="status">
-          {t("chat.additionWaiting")}
-        </p>
-      )}
+      {/* Only a message about to be sent waits for the approval; with nothing typed the band
+          only repeated the card above (acceptance 2026-11-25). */}
+      {waiting &&
+        (!!text.trim() || attachments.drafts.length > 0 || retryDraft.attachments.length > 0) && (
+          <p className={styles.band} data-tone="info" role="status">
+            {t("chat.additionWaiting")}
+          </p>
+        )}
       {/* Maintainers 2026-11-13: the mode switch and a draft's folder line share one row above the
           composer; stacked they took two rows of height. They wrap only on a narrow window. */}
       <div className={styles.composerControls}>

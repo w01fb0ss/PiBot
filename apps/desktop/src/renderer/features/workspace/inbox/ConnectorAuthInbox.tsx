@@ -1,6 +1,6 @@
 import { ConnectorDetails, useConnectorAction, useConnectorOperations } from "@pibot/plugins/ui";
 import type { InboxItem } from "@pibot/protocol";
-import { useRpcEvent, useT } from "@pibot/renderer-kit";
+import { useNavigation, useRpcEvent, useT } from "@pibot/renderer-kit";
 import { Button, Icon } from "@pibot/ui";
 import { useCallback, useState } from "react";
 import styles from "./inbox.module.css";
@@ -13,6 +13,7 @@ export function ConnectorAuthInbox({
   refresh(): Promise<void>;
 }) {
   const t = useT();
+  const navigation = useNavigation();
   const [selected, setSelected] = useState(false);
   const [snapshot, setSnapshot] = useState(0);
   const [authorization, setAuthorization] = useState<string>();
@@ -90,6 +91,14 @@ export function ConnectorAuthInbox({
           id={item.connectorId}
           snapshot={snapshot}
           operations={operations}
+          openTokens={(secretName) => {
+            setSelected(false);
+            navigation.navigate({
+              name: "connectors",
+              connection: { id: item.connectorId, connectorId: item.connectorId },
+              tokens: secretName ? { secretName } : {},
+            });
+          }}
           changed={changed}
           close={() => setSelected(false)}
         />

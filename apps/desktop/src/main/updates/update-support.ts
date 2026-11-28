@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { access } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { DesktopUpdateReason } from "@pibot/protocol";
+import { installedFromDeb } from "../linux/package-type.ts";
 
 /**
  * Why this build cannot replace itself, or undefined when it can. A blocked build still checks
@@ -12,11 +13,14 @@ export async function updateBlocker(options: {
   packaged: boolean;
   platform: NodeJS.Platform;
   execPath: string;
-  /** Set by the AppImage runtime; absent for the tar.gz build. */
+  /** Set by the AppImage runtime. */
   appImage: string | undefined;
 }): Promise<DesktopUpdateReason | undefined> {
   if (!options.packaged) return "dev";
-  if (options.platform === "linux") return options.appImage ? undefined : "linux_format";
+  if (options.platform === "linux") {
+    if (options.appImage) return undefined;
+    return (await installedFromDeb(options.execPath)) ? "linux_deb" : "linux_format";
+  }
   if (options.platform !== "darwin") return undefined;
   const end = options.execPath.indexOf(".app/");
   if (end < 0) return "mac_location";

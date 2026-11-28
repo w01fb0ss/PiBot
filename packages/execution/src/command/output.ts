@@ -30,10 +30,11 @@ export class CommandOutput {
       onFailure();
     });
   }
-  channel(redactor: ExecRedactor, stderr = false) {
+  channel(redactor: ExecRedactor, stderr = false, observe?: (text: string) => void) {
     const stream = redactor.stream();
     const append = (text: string) => {
       if (stderr) this.permissionErrors.push(text);
+      observe?.(text);
       this.denials.push(text);
       this.loginHints.push(text);
       return this.append(text);

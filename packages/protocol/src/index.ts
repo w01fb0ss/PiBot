@@ -12,6 +12,7 @@ export * from "@pibot/remote-contract";
 export * from "@pibot/routines-contract";
 export * from "@pibot/skills-contract";
 export * from "@pibot/teams-contract";
+export * from "@pibot/videos-contract";
 export * from "@pibot/workspaces-contract";
 export * from "./aggregate/api.ts";
 export * from "./aggregate/endpoints.ts";

@@ -1,5 +1,6 @@
+import { sandboxRuleText, sandboxTargetText, systemServiceLabel } from "@pibot/client-core";
 import type { Approval, ChatNotice } from "@pibot/protocol";
-import { useT } from "@pibot/renderer-kit";
+import { useNavigation, useT } from "@pibot/renderer-kit";
 import { createContext, type ReactNode, useContext, useMemo } from "react";
 import styles from "../chat.module.css";
 import { BlockedWebsite } from "./BlockedWebsite.tsx";
@@ -50,11 +51,11 @@ export function useSandboxNotices() {
 
 export function SandboxBlockLine({ notices }: { notices: readonly BlockWarning[] }) {
   const t = useT();
+  const { openSettings } = useNavigation();
   const approvals = useContext(SandboxApprovalsContext);
   return notices.map((notice) => {
     const block = notice.sandbox;
-    // Only a live, exact same-run card may be navigated to. This never calls resolve or creates
-    // a request; missing cards and resolved historical links simply have no button.
+    // A matching pending card is the only approval this notice can link to.
     const pending = block.approvalId ? approvals.get(block.approvalId) : undefined;
     const approval =
       pending?.toolCallId === block.approvalToolCallId &&
@@ -63,19 +64,41 @@ export function SandboxBlockLine({ notices }: { notices: readonly BlockWarning[]
       pending?.conversationId === notice.conversationId
         ? pending
         : undefined;
+    const ruleLabel = sandboxRuleText(block.rule, t, { websiteNotAllowed: Boolean(block.website) });
+    const targetText = sandboxTargetText(block, t);
+    const localService = block.kind === "local_service" || block.kind === "system_service";
+    const service =
+      block.kind === "system_service"
+        ? systemServiceLabel(block.target, t)
+        : /(?:^|\/)docker\.sock$/.test(block.target)
+          ? t("tool.sandboxLocalServiceDocker")
+          : t("tool.sandboxLocalService");
     return (
       <div key={notice.id} className={`${styles.systemLine} ${styles.sandboxLine}`} role="note">
-        {t(
-          block.rule === "domain_not_allowed"
-            ? "tool.networkSettingsBlocked"
-            : "tool.sandboxBlocked",
-          {
-            kind: t(`tool.sandboxKind.${block.kind}`),
-            target: block.target,
-            program: block.program ? ` (${block.program})` : "",
-            rule: block.rule,
-          },
-        )}
+        {block.rule === "domain_not_allowed"
+          ? t("tool.networkSettingsBlocked", { target: block.target })
+          : localService
+            ? t(
+                block.rule === "loopback_bind"
+                  ? "tool.sandboxLocalListeningBlocked"
+                  : "tool.sandboxLocalBlocked",
+                {
+                  program: block.program ? ` (${block.program})` : "",
+                  service,
+                },
+              )
+            : ruleLabel
+              ? t("tool.sandboxBlocked", {
+                  kind: t(`tool.sandboxKind.${block.kind}`),
+                  target: targetText,
+                  program: block.program ? ` (${block.program})` : "",
+                  rule: ruleLabel,
+                })
+              : t("tool.sandboxBlockedNoRule", {
+                  kind: t(`tool.sandboxKind.${block.kind}`),
+                  target: targetText,
+                  program: block.program ? ` (${block.program})` : "",
+                })}
         {block.website && (
           <>
             {" "}
@@ -100,6 +123,24 @@ export function SandboxBlockLine({ notices }: { notices: readonly BlockWarning[]
               {t("tool.sandboxSeeApproval")}
             </button>
           </>
+        )}
+        {!block.website && !approval && (
+          <>
+            {" · "}
+            <button
+              type="button"
+              className={styles.sandboxLink}
+              onClick={() => openSettings("permissions")}
+            >
+              {t("tool.sandboxSeePermissions")}
+            </button>
+          </>
+        )}
+        {localService && block.target && (
+          <details>
+            <summary>{t("tool.sandboxConnectionDetails")}</summary>
+            <code>{block.target}</code>
+          </details>
         )}
       </div>
     );

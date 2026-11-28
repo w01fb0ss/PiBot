@@ -78,10 +78,13 @@ export function makeMemoryRoom(
   }
 }
 
-/**
- * Extraction and organization draw on one daily budget, so the cap is checked
- * across all maintenance workers so every run contributes to the shared limits.
- */
+export function memoryBudgetDayStart(now = new Date()): string {
+  const start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+  return start.toISOString();
+}
+
+/** All maintenance workers share the same local-day budget. */
 export function memoryMaintenanceUsage(db: DatabaseSync, since: string) {
   const sum = (table: "memory_extractions" | "memory_organizations") =>
     db
@@ -92,9 +95,6 @@ export function memoryMaintenanceUsage(db: DatabaseSync, since: string) {
       .get(since);
   const extraction = sum("memory_extractions");
   const organization = sum("memory_organizations");
-  const imported = db
-    .prepare("SELECT COALESCE(SUM(tokens),0) AS tokens FROM import_memory_usage WHERE at>=?")
-    .get(since);
   const dream = db
     .prepare(`SELECT IFNULL(SUM(tokens),0) AS tokens, IFNULL(SUM(MAX(cost_usd,0)),0) AS costUsd
     FROM memory_dream_runs WHERE started_at>=?`)
@@ -103,7 +103,6 @@ export function memoryMaintenanceUsage(db: DatabaseSync, since: string) {
     tokens:
       Number(extraction?.tokens ?? 0) +
       Number(organization?.tokens ?? 0) +
-      Number(imported?.tokens ?? 0) +
       Number(dream?.tokens ?? 0),
     costUsd:
       Number(extraction?.costUsd ?? 0) +

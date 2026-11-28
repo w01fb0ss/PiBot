@@ -9,6 +9,16 @@ import {
   ProviderImportIntentSchema,
 } from "../providers/import-link.ts";
 
+import { SkillDropPathsSchema } from "../skills/skill-drop.ts";
+export const FileDialogFilterSchema = z.strictObject({
+  name: z.string().min(1).max(100),
+  extensions: z
+    .array(z.string().regex(/^[a-z0-9]{1,16}$/i))
+    .min(1)
+    .max(20),
+});
+export type FileDialogFilter = z.infer<typeof FileDialogFilterSchema>;
+
 export const GuiHostMethods = {
   "gui.updates.proxy": {
     params: z.strictObject({ url: ProxyAddressSchema.nullable().optional() }),
@@ -29,6 +39,7 @@ export const GuiHostMethods = {
         "plugin-file",
       ]),
       defaultPath: AbsolutePathSchema.optional(),
+      filters: z.array(FileDialogFilterSchema).max(10).optional(),
     }),
     result: AbsolutePathSchema.nullable(),
   },
@@ -46,6 +57,10 @@ export const GuiHostMethods = {
       cancelId: z.number().int().min(0).max(2),
     }),
     result: z.strictObject({ response: z.number().int().min(0).max(2) }),
+  },
+  "gui.skills.takeDrop": {
+    params: z.strictObject({ dropId: IdSchema }),
+    result: SkillDropPathsSchema.nullable(),
   },
   "gui.openPath": { params: z.strictObject({ path: AbsolutePathSchema }), result: z.null() },
   "gui.revealPath": { params: z.strictObject({ path: AbsolutePathSchema }), result: z.null() },
@@ -206,7 +221,8 @@ export const AcpChannelSchema = z.discriminatedUnion("type", [
 export type AcpChannel = z.infer<typeof AcpChannelSchema>;
 
 export const BackgroundControlSchema = z.discriminatedUnion("type", [
-  z.strictObject({ type: z.literal("attach") }),
+  /** `island` marks the desktop window; only it may show the Windows live island. */
+  z.strictObject({ type: z.literal("attach"), island: z.literal(true).optional() }),
   z.strictObject({ type: z.literal("acp-attach"), client: AcpClientSchema }),
   z.strictObject({ type: z.literal("acp-detach") }),
   z.strictObject({ type: z.literal("detach"), stop: z.boolean().optional() }),
@@ -216,6 +232,7 @@ export const BackgroundControlSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("diagnostics") }),
   z.strictObject({ type: z.literal("ui-ready") }),
   z.strictObject({ type: z.literal("navigate"), target: UiNavigationSchema }),
+  z.strictObject({ type: z.literal("island-open"), key: z.string().min(1).max(200) }),
   z.strictObject({ type: z.literal("provider-import"), intent: ProviderImportIntentSchema }),
   z.strictObject({
     type: z.literal("provider-import-decide"),
@@ -285,6 +302,8 @@ export const BackgroundWireSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("status"), state: z.unknown() }),
   z.strictObject({ kind: z.literal("settings"), settings: z.unknown() }),
   z.strictObject({ kind: z.literal("open") }),
+  // Desktop-only presentation, validated by the receiving GUI before it reaches the island.
+  z.strictObject({ kind: z.literal("island"), presentation: z.unknown() }),
   z.strictObject({ kind: z.literal("quit"), stop: z.boolean().optional() }),
   // Overlay frames (owner → GUI main) and their acknowledgements. Frames bypass the
   // business request queue; the GUI main validates `message` before it reaches the window.

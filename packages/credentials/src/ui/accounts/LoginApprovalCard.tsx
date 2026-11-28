@@ -1,4 +1,9 @@
-import { approvalCountdown, approvalExplanation, approvalText } from "@pibot/client-core";
+import {
+  approvalCountdown,
+  approvalDeadline,
+  approvalExplanation,
+  approvalText,
+} from "@pibot/client-core";
 import {
   type Approval,
   credentialSiteLabel,
@@ -62,9 +67,7 @@ export function LoginApprovalCard({
       active.current = false;
     };
   }, []);
-  const remaining = Math.max(0, Math.ceil((Date.parse(approval.expiresAt) - now) / 1000));
-  const paused = remaining === 0 && !approval.routineRunId;
-  const expired = remaining === 0 && !paused;
+  const { remaining, pauses, paused, expired } = approvalDeadline(approval, now);
   useEffect(() => {
     if (approval.status !== "pending") return;
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -160,9 +163,9 @@ export function LoginApprovalCard({
             : t("credentials.card.alwaysHint", { site }))}
       </p>
       <footer>
-        {!paused && (
+        {remaining > 0 && (
           <small role="timer">
-            {t(approval.routineRunId ? "approval.countdown" : "approval.chatCountdown", {
+            {t(pauses ? "approval.chatCountdown" : "approval.countdown", {
               time: approvalCountdown(remaining),
             })}
           </small>

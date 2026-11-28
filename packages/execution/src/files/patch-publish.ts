@@ -8,13 +8,12 @@ import {
   lstatSync,
   openSync,
   readSync,
-  realpathSync,
   renameSync,
   unlinkSync,
 } from "node:fs";
 import { dirname } from "node:path";
 import { fileIdentity, matchesFileIdentity, sameFile } from "../core/file-identity.ts";
-import { missing } from "../core/paths.ts";
+import { canonicalExistingPathSync, missing } from "../core/paths.ts";
 import { ExecError, type FileContext } from "../core/types.ts";
 import { MAX_WRITE_BYTES, sameFileVersion, type TextSnapshot } from "./text-snapshot.ts";
 
@@ -102,7 +101,7 @@ function parents(file: StagedFile, context: FileContext) {
     if (
       !stat.isDirectory() ||
       stat.isSymbolicLink() ||
-      realpathSync(root.canonicalPath) !== root.canonicalPath ||
+      canonicalExistingPathSync(root.canonicalPath) !== root.canonicalPath ||
       !matchesFileIdentity(stat, root)
     )
       throw new ExecError("outside_workplace");
@@ -112,7 +111,7 @@ function parents(file: StagedFile, context: FileContext) {
     !parent.isDirectory() ||
     parent.isSymbolicLink() ||
     !sameFile(parent, file.parent) ||
-    realpathSync(dirname(file.path)) !== dirname(file.path)
+    canonicalExistingPathSync(dirname(file.path)) !== dirname(file.path)
   )
     throw new ExecError("outside_workplace");
 }

@@ -1,6 +1,8 @@
 import {
+  DomainSchema,
   IdSchema,
   PageSchema,
+  SecretNameSchema,
   SKILL_IMPORT_FILE_MAX_BYTES,
   SKILL_IMPORT_MAX_BYTES,
   SKILL_IMPORT_MAX_FILES,
@@ -14,6 +16,7 @@ import {
   SkillImportDetailsSchema,
   type SkillLabels,
   SkillLabelsSchema,
+  SkillManagedRuntimeSchema,
   SkillNameSchema,
   SkillPackageFileSchema,
   SkillPackagePathSchema,
@@ -26,6 +29,8 @@ import {
 import { z } from "zod";
 
 export const SKILL_IMPORT_PREVIEW_TEXT_MAX_BYTES = 5 * 1024 * 1024;
+export const SKILL_ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024;
+export const SKILL_DROP_MAX_BYTES = SKILL_ATTACHMENT_MAX_BYTES;
 
 export type { SkillImportDetails };
 // The import payload lives in protocol-base so the plugins contract can describe the same
@@ -44,10 +49,20 @@ export const SkillRuntimeStatusSchema = z.strictObject({
   skillId: IdSchema,
   state: SkillRuntimeStateSchema,
   requirements: z.array(SkillRuntimeRequirementSchema).max(2),
+  runtime: SkillManagedRuntimeSchema.optional(),
+  reviewedPackages: z.array(z.string().min(1).max(500)).max(1000).optional(),
+  resolvesPythonPackages: z.literal(true).optional(),
+  networkDomains: z
+    .strictObject({
+      primary: z.array(DomainSchema).min(1).max(16),
+      withMirror: z.array(DomainSchema).min(1).max(16).optional(),
+    })
+    .optional(),
   nativeModules: z.array(z.string().max(200)).max(100),
   interpreter: z
     .strictObject({ command: z.string().max(300), version: z.string().max(100) })
     .nullable(),
+  requiresUnisolatedConfirmation: z.literal(true).optional(),
   managedPython: z
     .strictObject({
       uvVersion: z.string().max(32),
@@ -205,9 +220,23 @@ export function skillLabels(
 ): { name: string; description: string } {
   return skill.builtinLabels?.[language] ?? { name: skill.name, description: skill.description };
 }
+const skillSecretBinding = z.strictObject({
+  variable: SecretNameSchema,
+  secretName: SecretNameSchema.nullable(),
+});
+const skillSecretBindings = z
+  .array(skillSecretBinding)
+  .max(64)
+  .refine((bindings) => new Set(bindings.map(({ variable }) => variable)).size === bindings.length);
 const skillId = z.strictObject({ skillId: IdSchema, groupId: IdSchema.optional() });
 export const SKILL_PACKAGE_VERIFY_TIMEOUT_MS = 5 * 60_000;
 const SKILL_PACKAGE_READ_RPC_TIMEOUT_MS = 2 * SKILL_PACKAGE_VERIFY_TIMEOUT_MS;
+
+const runtimeTarget = z.strictObject({
+  groupId: IdSchema.optional(),
+  skillId: IdSchema,
+  runtime: SkillManagedRuntimeSchema.optional(),
+});
 
 export const SkillMethods = {
   "skills.list": {
@@ -275,11 +304,14 @@ export const SkillMethods = {
    * A folder keeps its own name as the top folder. null when the user cancels.
    */
   "skills.pickFiles": {
-    params: z.strictObject({
-      groupId: IdSchema.optional(),
-      botId: IdSchema,
-      from: z.enum(["file", "folder"]),
-    }),
+    params: z
+      .strictObject({
+        groupId: IdSchema.optional(),
+        botId: IdSchema,
+        from: z.enum(["file", "folder", "drop"]),
+        dropId: IdSchema.optional(),
+      })
+      .refine(({ from, dropId }) => (from === "drop") === (dropId !== undefined)),
     result: z
       .strictObject({
         uploadId: IdSchema,
@@ -316,6 +348,10 @@ export const SkillMethods = {
   "skills.delete": { params: skillId.extend({ confirmed: z.literal(true) }), result: ok },
   "skills.setEnabled": { params: skillId.extend({ enabled: z.boolean() }), result: SkillSchema },
   // Opens the file (SKILL.md / .zip) or folder picker; null when the user cancels.
+  "skills.secretChoices": {
+    params: z.strictObject({ botId: IdSchema }),
+    result: z.array(SecretNameSchema).max(200),
+  },
   "skills.preview": {
     timeoutMs: 135 * 60_000,
     params: z.strictObject({
@@ -354,9 +390,24 @@ export const SkillMethods = {
     params: z.strictObject({ batchId: IdSchema }),
     result: ok,
   },
+  "skills.secretBindings": {
+    params: skillId,
+    result: z.strictObject({
+      bindings: skillSecretBindings,
+      available: z.array(SecretNameSchema).max(200),
+    }),
+  },
+  "skills.setSecretBindings": {
+    params: skillId.extend({ bindings: skillSecretBindings }),
+    result: ok,
+  },
   "skills.import": {
     timeoutMs: 125 * 60_000,
-    params: z.strictObject({ groupId: IdSchema.optional(), previewId: IdSchema }),
+    params: z.strictObject({
+      groupId: IdSchema.optional(),
+      previewId: IdSchema,
+      bindings: skillSecretBindings.optional(),
+    }),
     result: SkillSchema,
   },
   /**
@@ -446,7 +497,7 @@ export const SkillMethods = {
    */
   "skills.runtime": {
     timeoutMs: SKILL_PACKAGE_READ_RPC_TIMEOUT_MS,
-    params: z.strictObject({ groupId: IdSchema.optional(), skillId: IdSchema }),
+    params: runtimeTarget,
     result: SkillRuntimeStatusSchema,
   },
   /**
@@ -455,25 +506,25 @@ export const SkillMethods = {
    */
   "skills.runtime.prepare": {
     timeoutMs: 30 * 60_000,
-    params: z.strictObject({
-      groupId: IdSchema.optional(),
-      skillId: IdSchema,
+    params: runtimeTarget.extend({
       requestId: IdSchema,
       planHash: z.string().min(1).max(64),
+      confirmWithoutIsolation: z.literal(true).optional(),
+      useMirror: z.literal(true).optional(),
     }),
     result: SkillRuntimeStatusSchema,
   },
   "skills.runtime.cancel": {
-    params: z.strictObject({ groupId: IdSchema.optional(), skillId: IdSchema }),
+    params: runtimeTarget,
     result: SkillRuntimeStatusSchema,
   },
   /** Deletes only the environment directory; the skill and its files stay. */
   "skills.runtime.remove": {
-    params: z.strictObject({ groupId: IdSchema.optional(), skillId: IdSchema }),
+    params: runtimeTarget,
     result: SkillRuntimeStatusSchema,
   },
   "skills.runtime.log": {
-    params: z.strictObject({ groupId: IdSchema.optional(), skillId: IdSchema }),
+    params: runtimeTarget,
     result: z.strictObject({
       path: z.string().max(4096).nullable(),
       text: z.string().max(200_000),
@@ -483,6 +534,7 @@ export const SkillMethods = {
 export const SkillEvents = {
   /** Install progress; the log file holds the full output. */
   "skills.runtimeProgress": z.strictObject({
+    runtime: SkillManagedRuntimeSchema.optional(),
     groupId: IdSchema.optional(),
     skillId: IdSchema,
     state: SkillRuntimeStateSchema,

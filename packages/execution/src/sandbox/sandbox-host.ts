@@ -16,7 +16,19 @@ import { writeSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
 import { fixedHostSshCommand } from "../ssh/ssh-command.ts";
+import {
+  ConnectorNetworkAnswerSchema,
+  type ConnectorNetworkFilter,
+  ConnectorNetworkRequestSchema,
+} from "./connector-network.ts";
+import { type IsolationProbeStage, isolationProbeStderr } from "./isolation-probe.ts";
 import { createSandboxNetwork } from "./network-proxy.ts";
+import {
+  sandboxEnvironmentSetup,
+  sandboxInput,
+  sandboxLauncherPath,
+  writeSandboxInput,
+} from "./sandbox-environment.ts";
 import { parseSandboxPayload, SANDBOX_PAYLOAD_BYTES } from "./sandbox-host-payload.ts";
 import { sandboxProxySetup, validProxyPort } from "./sandbox-proxy-setup.ts";
 import { waitForSessionChildren } from "./sandbox-session-drain.ts";
@@ -24,7 +36,17 @@ import { violationsLine } from "./violation-report.ts";
 
 const STOP_GRACE_MS = 3000;
 /** Synchronous: a quick command may end the host right after `ready`, before an async flush. */
-function report(line: "prepared" | "ready" | "failed" | `violations ${string}`) {
+function report(
+  line:
+    | "prepared"
+    | "ready"
+    | "failed"
+    | `exited ${number | "null"}`
+    | `violations ${string}`
+    | `probe ${IsolationProbeStage}`
+    | `network ${string}`
+    | `network-cancel ${number}`,
+) {
   try {
     writeSync(3, `${line}\n`);
   } catch {
@@ -110,7 +132,7 @@ async function main() {
   for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(signal, () => {});
   const input = createInterface({ input: process.stdin, crlfDelay: Number.POSITIVE_INFINITY });
   let inputBytes = 0;
-  process.stdin.on("data", (chunk: Buffer) => {
+  const countPayload = (chunk: Buffer) => {
     inputBytes += chunk.length;
     if (inputBytes > SANDBOX_PAYLOAD_BYTES + 16) {
       report("failed");
@@ -118,11 +140,13 @@ async function main() {
       process.stdin.destroy();
       stopGroup();
     }
-  });
+  };
+  process.stdin.on("data", countPayload);
   const first = await new Promise<string | undefined>((resolve) => {
     input.once("line", resolve);
     input.once("close", () => resolve(undefined));
   });
+  process.stdin.off("data", countPayload);
   if (first === undefined) return exit(1);
   // Later EOF means exec closed the channel or died: never leave an unowned sandbox running.
   process.stdin.once("end", stopGroup);
@@ -130,13 +154,58 @@ async function main() {
   let child: ReturnType<typeof spawn>;
   let foreground = false;
   let stdioServer = false;
+  let probing = false;
+  const probe = (stage: IsolationProbeStage) => {
+    if (probing) report(`probe ${stage}`);
+  };
   try {
     const payload = parseSandboxPayload(first);
+    probing = payload.isolationProbe === true;
     foreground = payload.foreground === true;
     stdioServer = payload.stdioServer === true;
     const allowAll = payload.allowAll;
-    network = await createSandboxNetwork(payload.config, payload.privateNetworkHosts);
+    probe("setup_network");
+    let connectorFilter: ConnectorNetworkFilter | undefined;
+    if (payload.stdioServer && payload.connectorNetwork) {
+      let next = 0;
+      const waiting = new Map<number, (allow: boolean) => void>();
+      input.on("line", (line) => {
+        if (line.length > 128) return;
+        try {
+          const { id, allow } = ConnectorNetworkAnswerSchema.parse(JSON.parse(line));
+          waiting.get(id)?.(allow);
+        } catch {
+          // Ignore malformed answers and let the pending request fail closed on timeout.
+        }
+      });
+      connectorFilter = (attempt, signal) => {
+        if (signal.aborted || waiting.size >= 32) return Promise.resolve(false);
+        const parsed = ConnectorNetworkRequestSchema.safeParse({ ...attempt, id: ++next });
+        if (!parsed.success) return Promise.resolve(false);
+        const { id } = parsed.data;
+        return new Promise((resolve) => {
+          const abort = () => {
+            report(`network-cancel ${id}`);
+            finish(false);
+          };
+          const finish = (allow: boolean) => {
+            waiting.delete(id);
+            signal.removeEventListener("abort", abort);
+            resolve(allow);
+          };
+          waiting.set(id, finish);
+          signal.addEventListener("abort", abort, { once: true });
+          report(`network ${JSON.stringify(parsed.data)}`);
+        });
+      };
+    }
+    network = await createSandboxNetwork(
+      payload.config,
+      payload.privateNetworkHosts,
+      connectorFilter,
+    );
     payload.config = network.config;
+    probe("initialize_runtime");
     await SandboxManager.initialize(payload.config, network.authorize(allowAll), false);
     const http = SandboxManager.getProxyPort();
     const socks = SandboxManager.getSocksProxyPort();
@@ -156,10 +225,11 @@ async function main() {
     const command = payload.hostSsh
       ? fixedHostSshCommand(payload.hostSsh, http as number)
       : payload.command;
-    const prepared =
-      process.platform === "darwin"
-        ? `${sandboxProxySetup(http as number, socks as number)}\n${command}`
-        : command;
+    const guestInput = sandboxInput(payload.env, payload.config.credentials);
+    const proxySetup =
+      process.platform === "darwin" ? sandboxProxySetup(http as number, socks as number) : "";
+    const prepared = `${sandboxEnvironmentSetup}\n${proxySetup}\n${command}`;
+    probe("wrap_command");
     const wrapped = await SandboxManager.wrapWithSandbox(
       prepared,
       "/bin/bash",
@@ -167,6 +237,7 @@ async function main() {
       undefined,
       { commandId: payload.commandId, commandText: payload.commandText ?? payload.command },
     );
+    if (wrapped === prepared) throw new Error("sandbox_not_applied");
     if (payload.foreground || payload.waitForDispatch) {
       // Revalidate workspace/Git ownership in exec after SRT startup, immediately before spawn.
       // The command cannot run merely because a host with an old payload became ready.
@@ -178,17 +249,22 @@ async function main() {
       if (go !== "go" || stopping) return exit(125);
     }
     if (stopping) return exit(125);
-    child = spawn(payload.shell, ["--noprofile", "--norc", "-c", wrapped], {
+    probe("spawn_command");
+    const forwardsStdin = payload.stdioServer === true || payload.stdinPipe === true;
+    child = spawn("/bin/bash", ["--noprofile", "--norc", "-c", wrapped], {
       cwd: payload.cwd,
-      env: payload.env,
-      // stdioServer: exec owns two extra pipes; the command reads requests on fd 4
-      // and writes responses on fd 5 (both inherited numerically, like the report fd).
-      stdio: payload.stdioServer
-        ? [4, 5, "inherit"]
-        : [payload.stdinPipe ? 4 : "ignore", "inherit", "inherit"],
+      env: { PATH: sandboxLauncherPath(process.platform) },
+      // Prepend the guest environment to stdin, then forward any input from fd 4.
+      // Stdio server responses still go straight to the caller on fd 5.
+      stdio: ["pipe", stdioServer ? 5 : "inherit", "inherit"],
     });
-  } catch {
-    // Details may contain paths of the Bot's folders; exec reports isolation_unavailable.
+    if (child.stdin) writeSandboxInput(child.stdin, guestInput, forwardsStdin);
+  } catch (error) {
+    if (probing && error instanceof Error) {
+      // The runtime may include paths and credentials in initialization errors.
+      const stderr = isolationProbeStderr(error.message);
+      if (stderr) writeSync(2, `${stderr}\n`);
+    }
     report("failed");
     return exit(125);
   }
@@ -203,6 +279,7 @@ async function main() {
     reportViolations = foreground || stdioServer;
   });
   child.once("exit", (code, signal) => {
+    if (foreground) report(`exited ${code}`);
     // Keep this session's proxy and denial attribution alive while short-lived children finish.
     // The grace is diagnostic only: afterwards the original group-kill/drain contract still owns
     // any server left behind; it must never be reported as a cleanly completed command.

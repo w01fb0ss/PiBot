@@ -345,6 +345,10 @@ export function createGitReader(options: GitReaderOptions) {
         maxBytes,
         live,
       });
+    } catch (error) {
+      // A missing or blocked executable may have been replaced during installation.
+      if (error instanceof ExecError && error.code === "git_unavailable") program = undefined;
+      throw error;
     } finally {
       release();
     }

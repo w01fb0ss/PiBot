@@ -1,5 +1,11 @@
 import type { AgentRuntime } from "@pibot/agent";
-import { type Bot, type ImageMode, type ModelInfo, RpcError } from "@pibot/protocol-base";
+import {
+  type Bot,
+  type ImageGenerationOptions,
+  type ImageMode,
+  type ModelInfo,
+  RpcError,
+} from "@pibot/protocol-base";
 import type { PreparedAttachments } from "../../conversations/attachments/attachments.ts";
 import { abortable } from "../../core/abort.ts";
 
@@ -53,10 +59,13 @@ export async function validateImageInputs(
   prepared: Pick<PreparedAttachments, "items" | "images">,
   signal: AbortSignal,
   imagePort?: ImagesPort,
+  generation?: ImageGenerationOptions,
 ) {
   if (bot.category !== "image") return;
   if (prepared.items.some((item) => item.metadata.kind !== "image"))
     throw new RpcError(-32602, "image_mode_mismatch");
+  // Structured runs select and validate every requested model together before approval.
+  if (generation) return;
   await requireImageModel(
     imagePort,
     bot.modelProvider && bot.modelId ? { provider: bot.modelProvider, id: bot.modelId } : undefined,

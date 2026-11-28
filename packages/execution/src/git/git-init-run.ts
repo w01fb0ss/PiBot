@@ -1,5 +1,4 @@
-import type { executeProcess } from "../command/process.ts";
-import type { RunCommandOptions } from "../core/types.ts";
+import type { CommandResult, RunCommandOptions } from "../core/types.ts";
 import { verifyWorkspace } from "../sandbox/workspace.ts";
 import type { prepareGitInitialization } from "./git-init.ts";
 
@@ -10,12 +9,18 @@ export async function runGitInitialization(
   ports: {
     execute(
       command: string,
-      phase: "directories" | "initialize",
+      phase: "directories" | "initialize" | "reinitialize",
       roots: string[],
-    ): ReturnType<typeof executeProcess>;
+    ): Promise<
+      Pick<CommandResult, "exitCode" | "truncatedOutput" | "sandboxBlock" | "pinnedFilters">
+    >;
   },
 ) {
-  async function phase(command: string, roots: string[], kind: "directories" | "initialize") {
+  async function phase(
+    command: string,
+    roots: string[],
+    kind: "directories" | "initialize" | "reinitialize",
+  ) {
     await plan.check();
     await verifyWorkspace(input.rootIdentities, signal);
     return ports.execute(command, kind, roots);
@@ -25,15 +30,10 @@ export async function runGitInitialization(
     if (created.exitCode !== 0 || signal.aborted)
       return {
         ...created,
+        exitCode: created.exitCode === 0 ? null : created.exitCode,
         truncatedOutput: `Git目录准备失败，Git未运行 / Git directory preparation failed; Git was not run.\n${created.truncatedOutput}`,
       };
     await plan.complete();
   }
-  const result = await phase(plan.command, [plan.gitDir], "initialize");
-  return {
-    ...result,
-    truncatedOutput: plan.emptyTemplate
-      ? `Git初始化使用可信空模板（不安装sample hooks）/ Git init uses an empty template (no sample hooks).\n${result.truncatedOutput}`
-      : result.truncatedOutput,
-  };
+  return phase(plan.command, [plan.gitDir], plan.existingConfig ? "reinitialize" : "initialize");
 }

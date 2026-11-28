@@ -1,17 +1,21 @@
 // A single job owner keeps preview authorizations, progress, and cancellation consistent.
 import { randomUUID } from "node:crypto";
-import { realpath, rm } from "node:fs/promises";
-import { join } from "node:path";
-import { type CapabilityContext, storedAttachmentFile } from "@pibot/brain/kit";
+import { lstat, realpath, rm, unlink } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { setImmediate as yieldToLoop } from "node:timers/promises";
+import type { CapabilityContext } from "@pibot/brain/kit";
 import type { ImportPreview, ImportSource, ImportStatus } from "@pibot/import-contract";
 import type { ImportParams } from "@pibot/import-contract/full";
 import { RpcError, RpcErrorCodes } from "@pibot/protocol-base";
+import { isStoredAttachmentPath, TopicsRepo } from "@pibot/storage";
+import type { CleanupWork } from "../store/cleanup-work.ts";
 import type { ImportStore } from "../store/index.ts";
 import type { ImportMemoryScope } from "../store/memories.ts";
-import { adapters } from "./adapter.ts";
+import { adapters, batchAdapter } from "./adapter.ts";
 import { ImportCleanup } from "./cleanup.ts";
 import { exportAdapter } from "./exports/index.ts";
 import { fixtureAdapter } from "./fixture.ts";
+import { listLocalConversations, prepareLocalSelection } from "./local/agent-list.ts";
 import {
   configRootFor,
   isLocalSource,
@@ -27,6 +31,7 @@ import { selectedInput } from "./source.ts";
 import { startPlan } from "./start.ts";
 
 const PREVIEW_MS = 90_000;
+const PREVIEW_SELECTION_MS = 180_000;
 
 type Running = { importId: string; controller: AbortController; done: Promise<ImportStatus> };
 
@@ -59,25 +64,109 @@ export class ImportJobs {
     this.cleanup = new ImportCleanup(
       store,
       this.closing.signal,
-      (status) => this.publish(status),
+      (status, bots) => {
+        if (bots) this.changedTopics(status.importId, bots);
+        this.publish(status);
+      },
       () => this.ctx.logger.error("import_cleanup_failed"),
-      async (id, signal) => {
+      async (id, work, signal) => {
         const botId = this.store.target(id);
         if (typeof botId !== "string") throw new Error("import_job_missing");
         await this.project.restore(id, botId, signal);
-        await this.removeAttachmentFiles(id);
+        await this.removeAttachmentFiles(id, work, signal);
+        await this.removeSessionFiles(id, work, signal);
       },
     );
   }
 
   /** Long-message files go with their messages; a startup sweep would also catch leftovers. */
-  private async removeAttachmentFiles(importId: string) {
-    const files = this.store.attachmentFiles(importId);
-    if (!files.length) return;
-    const dataDir = await realpath(this.ctx.local.deps.dataDir);
-    await Promise.all(
-      files.map(({ path }) => rm(storedAttachmentFile(dataDir, path), { force: true })),
-    );
+  private async removeAttachmentFiles(importId: string, work: CleanupWork, signal: AbortSignal) {
+    let after = 0;
+    let dataDir: string | undefined;
+    while (!signal.aborted) {
+      const { cursor, files } = await work.run(
+        { kind: "attachments", id: importId, after },
+        signal,
+      );
+      if (cursor === undefined) return;
+      if (files.length) {
+        dataDir ??= await realpath(this.ctx.local.deps.dataDir);
+        for (const { path, botId } of files) {
+          signal.throwIfAborted();
+          await this.removeAttachmentFile(dataDir, botId, path, signal);
+        }
+      }
+      after = cursor;
+      await yieldToLoop(undefined, { signal });
+    }
+  }
+
+  private async removeAttachmentFile(
+    dataDir: string,
+    botId: string,
+    stored: string,
+    signal: AbortSignal,
+  ) {
+    const name = basename(stored);
+    const relative = `bots/${botId}/attachments/${name}`;
+    const dir = join(dataDir, "bots", botId, "attachments");
+    const owned = isAbsolute(stored)
+      ? resolve(stored) ===
+          resolve(this.ctx.local.deps.dataDir, "bots", botId, "attachments", name) ||
+        resolve(stored) === join(dir, name)
+      : stored === relative;
+    if (!owned || !isStoredAttachmentPath(relative, botId))
+      throw new Error("import_attachment_path");
+    const file = join(dir, name);
+    try {
+      if (!(await lstat(file)).isFile() || (await realpath(dir)) !== dir)
+        throw new Error("import_attachment_path");
+      signal.throwIfAborted();
+      await unlink(file);
+    } catch (error) {
+      // A completed unlink (or a missing directory) can be retried after interruption.
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+
+  private async removeSessionFiles(importId: string, work: CleanupWork, signal: AbortSignal) {
+    let after = 0;
+    let dataDir: string | undefined;
+    while (!signal.aborted) {
+      const { cursor, ids, files } = await work.run(
+        { kind: "sessions", id: importId, after },
+        signal,
+      );
+      if (cursor === undefined) return;
+      if (files.length) {
+        dataDir ??= await realpath(this.ctx.dataDir);
+        for (const { botId, file } of files) {
+          signal.throwIfAborted();
+          await this.removeSessionFile(dataDir, botId, file);
+        }
+        await work.run({ kind: "clearSessions", ids }, signal);
+      }
+      after = cursor;
+      await yieldToLoop(undefined, { signal });
+    }
+  }
+
+  private async removeSessionFile(dataDir: string, botId: string, file: string) {
+    const relativeDir = `bots/${botId}/sessions`;
+    const dir = join(dataDir, "bots", botId, "sessions");
+    const name = basename(file);
+    // Older absolute rows must match the same Bot directory before they can be removed.
+    const owned = isAbsolute(file)
+      ? resolve(dirname(file)) === resolve(this.ctx.dataDir, "bots", botId, "sessions")
+      : file === `${relativeDir}/${name}`;
+    if (!owned || !name.endsWith(".jsonl")) throw new Error("import_session_path");
+    const actual = await realpath(dir).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (actual === undefined) return;
+    if (actual !== dir) throw new Error("import_session_path");
+    await rm(join(dir, name), { force: true });
   }
 
   /** The import history, each batch with the same status (and cleanup state) as `status`. */
@@ -118,11 +207,31 @@ export class ImportJobs {
     return { available: false };
   }
 
-  async preview(source: ImportSource, caller: AbortSignal) {
+  async listConversations(params: ImportParams<"import.listConversations">, caller: AbortSignal) {
+    this.closing.signal.throwIfAborted();
+    const deadline = AbortSignal.timeout(PREVIEW_MS);
+    const signal = AbortSignal.any([caller, this.closing.signal, deadline]);
+    const workFolderPaths = this.store.workFolders().map(({ path }) => path);
+    try {
+      return await listLocalConversations(this.ctx, workFolderPaths, params, signal);
+    } catch (error) {
+      if (error instanceof RpcError) throw error;
+      if (deadline.aborted)
+        throw new RpcError(RpcErrorCodes.invalidParams, "import_preview_timeout");
+      signal.throwIfAborted();
+      const reason = failureReason(error);
+      if (reason === "internal") throw error;
+      if (reason === "unsupported")
+        throw new RpcError(RpcErrorCodes.unsupported, "import_source_unsupported");
+      throw new RpcError(RpcErrorCodes.invalidParams, `import_${reason}`);
+    }
+  }
+
+  async preview(source: ImportSource, caller: AbortSignal, filterLabel?: string) {
     this.closing.signal.throwIfAborted();
     if (this.previewing || this.reviews.busy())
       throw new RpcError(RpcErrorCodes.invalidParams, "import_preview_busy");
-    const work = this.openPreview(source, caller);
+    const work = this.openPreview(source, caller, filterLabel);
     this.previewing = work;
     try {
       return await work;
@@ -131,25 +240,83 @@ export class ImportJobs {
     }
   }
 
-  private async openPreview(source: ImportSource, caller: AbortSignal) {
+  async previewSelection(
+    params: ImportParams<"import.previewSelection">,
+    caller: AbortSignal,
+  ): Promise<ImportPreview> {
+    this.closing.signal.throwIfAborted();
+    if (this.previewing || this.reviews.busy())
+      throw new RpcError(RpcErrorCodes.invalidParams, "import_preview_busy");
+    const work = this.openSelectionPreview(params, caller);
+    this.previewing = work;
+    try {
+      return await work;
+    } finally {
+      this.previewing = undefined;
+    }
+  }
+
+  private async openSelectionPreview(
+    params: ImportParams<"import.previewSelection">,
+    caller: AbortSignal,
+  ): Promise<ImportPreview> {
+    this.reviews.clear();
+    const deadline = AbortSignal.timeout(PREVIEW_SELECTION_MS);
+    const signal = AbortSignal.any([caller, this.closing.signal, deadline]);
+    const { source } = params;
+    try {
+      if (!(await this.detect(source, signal)).available)
+        throw new RpcError(RpcErrorCodes.unsupported, "import_source_unsupported");
+      const workFolderPaths = this.store.workFolders().map(({ path }) => path);
+      const input = await prepareLocalSelection(this.ctx, workFolderPaths, params, signal);
+      const { summary, paths, distillationSources } = await summarize(
+        batchAdapter,
+        input,
+        signal,
+        this.ctx.redactor,
+      );
+      const preview: ImportPreview = { importId: randomUUID(), source, ...summary };
+      signal.throwIfAborted();
+      this.reviews.set(preview, input, paths, distillationSources);
+      return preview;
+    } catch (error) {
+      if (error instanceof RpcError) throw error;
+      if (deadline.aborted)
+        throw new RpcError(RpcErrorCodes.invalidParams, "import_preview_timeout");
+      signal.throwIfAborted();
+      const reason = failureReason(error);
+      if (reason === "internal") throw error;
+      if (reason === "unsupported")
+        throw new RpcError(RpcErrorCodes.unsupported, "import_source_unsupported");
+      if (reason === "format")
+        throw new RpcError(
+          RpcErrorCodes.invalidParams,
+          `import_format_${source.replace("-", "_")}`,
+        );
+      throw new RpcError(RpcErrorCodes.invalidParams, `import_${reason}`);
+    }
+  }
+
+  private async openPreview(source: ImportSource, caller: AbortSignal, filterLabel?: string) {
     this.reviews.clear();
     const deadline = AbortSignal.timeout(PREVIEW_MS);
     const signal = AbortSignal.any([caller, this.closing.signal, deadline]);
     try {
       if (!(await this.detect(source, signal)).available)
         throw new RpcError(RpcErrorCodes.unsupported, "import_source_unsupported");
-      const path = await this.ctx.host.pickFile?.(signal, this.pickerOptions(source));
+      const path = await this.ctx.host.pickFile?.(signal, this.pickerOptions(source, filterLabel));
       signal.throwIfAborted();
       if (!path) return null;
       const input = await selectedInput(this.ctx.local.deps, path, signal, source);
-      const { summary, paths } = input.projectNote
-        ? await readProjectNote(input, signal).then(() =>
-            noteSummary(this.ctx.local.deps.platform, path),
-          )
-        : await summarize(this.adapters[source], input, signal);
+      const { summary, paths, distillationSources } = input.projectNote
+        ? await readProjectNote(input, signal).then(() => ({
+            ...noteSummary(this.ctx.local.deps.platform, path),
+            distillationSources: [],
+          }))
+        : await summarize(this.adapters[source], input, signal, this.ctx.redactor);
       const preview = { importId: randomUUID(), source, ...summary };
       signal.throwIfAborted();
-      this.reviews.set(preview, input, paths);
+      this.reviews.set(preview, input, paths, distillationSources);
       return preview;
     } catch (error) {
       if (error instanceof RpcError) throw error;
@@ -169,17 +336,25 @@ export class ImportJobs {
     }
   }
 
-  private pickerOptions(source: ImportSource) {
-    const { platform, userHome } = this.ctx.local.deps;
+  private pickerOptions(source: ImportSource, filterLabel = "ZIP / JSON") {
+    if (source === "chatgpt" || source === "claude" || source === "gemini") {
+      return { filters: [{ name: filterLabel, extensions: ["zip", "json"] }] };
+    }
+    const { platform, userHome, env } = this.ctx.local.deps;
     if (!isLocalSource(source) || !supportsLocalSources(platform)) return undefined;
-    const subdirectory = source === "codex" ? "sessions" : "projects";
-    return { defaultPath: join(configRootFor(source, platform, userHome), subdirectory) };
+    const root = configRootFor(source, platform, userHome, env);
+    if (source === "codex") return { defaultPath: join(root, "sessions") };
+    if (source === "claude-code" || source === "cursor")
+      return { defaultPath: join(root, "projects") };
+    if (source === "opencode") return { defaultPath: root };
+    return { defaultPath: userHome };
   }
 
-  start(
+  async start(
     importId: string,
     botId: string,
-    options: Omit<ImportParams<"import.start">, "importId" | "botId"> = {},
+    options: Omit<ImportParams<"import.start">, "importId" | "botId">,
+    caller: AbortSignal,
   ) {
     this.closing.signal.throwIfAborted();
     const existing = this.store.get(importId);
@@ -195,7 +370,21 @@ export class ImportJobs {
       store: this.store,
       port: this.ctx.local.memoryImportDistillation,
     });
-    this.store.create(importId, selection.preview.source, botId);
+    if (plan.projects.some(({ review }) => review)) {
+      await this.reviews.assertProjectsCurrent(plan.projects, caller);
+      this.reviews.requireSelection(importId);
+      this.closing.signal.throwIfAborted();
+      caller.throwIfAborted();
+      if (this.active || this.undoReservation || this.store.unfinished())
+        throw new RpcError(RpcErrorCodes.invalidParams, "import_busy");
+    }
+    this.store.create(
+      importId,
+      selection.preview.source,
+      botId,
+      plan.distillation?.quote,
+      selection.preview.skippedTooLong ?? 0,
+    );
     this.reviews.clear();
     const controller = new AbortController();
     const done = runImport({
@@ -207,7 +396,7 @@ export class ImportJobs {
       projectService: this.project,
       cancel: controller.signal,
       closing: this.closing.signal,
-      adapter: this.adapters[selection.preview.source],
+      adapter: selection.input.batch ? batchAdapter : this.adapters[selection.preview.source],
       redactor: this.ctx.redactor,
       logger: this.ctx.logger,
       cleanup: this.cleanup,
@@ -248,34 +437,57 @@ export class ImportJobs {
 
   async undo(importId: string) {
     this.closing.signal.throwIfAborted();
-    if (this.undoReservation) throw new RpcError(RpcErrorCodes.invalidParams, "import_busy");
+    if (this.undoReservation || this.reviews.busy())
+      throw new RpcError(RpcErrorCodes.invalidParams, "import_busy");
     let release = () => {};
     this.undoReservation = new Promise<void>((resolve) => {
       release = resolve;
     });
     try {
-      const status = this.status(importId);
-      if (status.state === "undone") return status;
-      if (status.cleanup) {
+      const job = this.store.jobState(importId);
+      if (!job) throw new RpcError(RpcErrorCodes.invalidParams, "import_unknown");
+      if (job.state === "undone") return this.status(importId);
+      if (job.cleanup_phase) {
+        if (job.cleanup_phase === "undoing") {
+          await this.project.confirmUndo(importId, this.closing.signal);
+        }
         void this.cleanup.wake(importId);
         return this.status(importId);
       }
       if (this.active) throw new RpcError(RpcErrorCodes.invalidParams, "import_busy");
-      if (status.state !== "completed")
+      if (job.state !== "completed")
         throw new RpcError(RpcErrorCodes.invalidParams, "import_not_completed");
       // Hand-edited project files no longer block undo: cleanup keeps and counts them.
       this.project.assertUndoable(importId);
+      await this.project.confirmUndo(importId, this.closing.signal);
       this.closing.signal.throwIfAborted();
       // No yield between these checks and the transaction; start and other undos hold the same reservation.
-      if (this.active || this.store.unfinished() || this.status(importId).state !== "completed")
-        throw new RpcError(RpcErrorCodes.invalidParams, "import_busy");
-      const { status: pending, change, persona } = this.store.beginUndo(importId);
-      this.changedTopics(importId);
-      for (const owner of change) this.changedMemories(owner, "removed");
-      if (persona) this.changedPersona(persona);
-      this.publish(pending);
-      void this.cleanup.wake(importId);
-      return pending;
+      try {
+        const current = this.store.jobState(importId);
+        if (
+          this.active ||
+          this.store.unfinished() ||
+          current?.state !== "completed" ||
+          current.cleanup_phase
+        )
+          throw new RpcError(RpcErrorCodes.invalidParams, "import_busy");
+        const topics = new TopicsRepo(this.ctx.db);
+        if (
+          topics.busyInImport(importId) ||
+          this.ctx.chat.hasBusyTopic((topicId) => this.store.ownsTopic(importId, topicId))
+        )
+          throw new RpcError(RpcErrorCodes.invalidParams, "import_topic_busy");
+        const { status: pending, change, persona } = this.store.beginUndo(importId);
+        this.changedTopics(importId);
+        for (const owner of change) this.changedMemories(owner, "removed");
+        if (persona) this.changedPersona(persona);
+        this.publish(pending);
+        void this.cleanup.wake(importId);
+        return pending;
+      } catch (error) {
+        this.project.clearUndo(importId);
+        throw error;
+      }
     } finally {
       this.undoReservation = undefined;
       release();
@@ -315,13 +527,19 @@ export class ImportJobs {
       this.ctx.logger.warn("import_persona_event_not_delivered");
     }
   }
-  private changedTopics(importId: string) {
+  private changedTopics(importId: string, resetBots?: string[]) {
     const target = this.store.target(importId);
-    const bots = new Set(this.store.topicBots(importId));
+    const bots = new Set(resetBots ?? this.store.topicBots(importId));
     if (typeof target === "string") bots.add(target);
     try {
-      for (const botId of bots)
-        this.ctx.peer.emit("sidebar.changed", { conversationKey: `dm:${botId}` });
+      for (const botId of bots) {
+        const conversationKey = `dm:${botId}`;
+        if (!resetBots) this.ctx.peer.emit("sidebar.topicsChanged", { conversationKey });
+        this.ctx.peer.emit("sidebar.changed", {
+          conversationKey,
+          ...(resetBots ? { resetHistory: true } : {}),
+        });
+      }
     } catch {
       // The committed state is authoritative even if the peer disconnected.
       this.ctx.logger.warn("import_topics_not_delivered");

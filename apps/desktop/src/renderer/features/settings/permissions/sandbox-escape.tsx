@@ -1,3 +1,4 @@
+import { directRunPermissionStatusKey } from "@pibot/i18n";
 import { OutsideCommandPatternSchema } from "@pibot/protocol";
 import { layoutStyles, SettingsRow, useSettings } from "@pibot/renderer-kit";
 import { Button, Switch } from "@pibot/ui";
@@ -40,12 +41,18 @@ function parseCommands(text: string) {
 }
 
 /** One shape per line, saved on blur like the PATH list; each run is still confirmed. */
-export function SandboxOutsideCommandsRow({ disabled }: { disabled: boolean }) {
-  const { t, settings, update } = useSettings();
+export function SandboxOutsideCommandsRow({
+  disabled,
+  initiallyOpen = false,
+}: {
+  disabled: boolean;
+  initiallyOpen?: boolean;
+}) {
+  const { t, language, settings, update } = useSettings();
   const key = settings?.sandboxOutsideCommands?.join("\n") ?? "";
   const [text, setText] = useState(key);
   const [invalid, setInvalid] = useState(false);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(initiallyOpen);
   const editorId = useId();
   useEffect(() => setText(key), [key]);
   if (!sandboxed() || !settings) return null;
@@ -66,12 +73,18 @@ export function SandboxOutsideCommandsRow({ disabled }: { disabled: boolean }) {
     void update({ sandboxOutsideCommands: entries });
   };
   // One row with the count; 编辑 opens the list under it.
+  const preview = [
+    ...(settings.sandboxOutsideCommands ?? []),
+    ...(settings.sandboxAutoOutsideCommands?.map((entry) => entry.pattern) ?? []),
+  ]
+    .slice(0, 2)
+    .join(" · ");
   const summary = count
-    ? t("permissions.sandboxOutsideCount", {
-        list: settings.sandboxOutsideCommands?.slice(0, 2).join(" · ") ?? "",
-        count,
-      })
+    ? preview
+      ? t("permissions.sandboxOutsideCount", { list: preview, count })
+      : t("permissions.sandboxOutsideCountOnly", { count })
     : t("permissions.sandboxOutsideNone");
+  const locale = language === "zh" ? "zh-CN" : "en";
   return (
     <>
       <SettingsRow
@@ -100,7 +113,7 @@ export function SandboxOutsideCommandsRow({ disabled }: { disabled: boolean }) {
           <textarea
             className={layoutStyles.textarea}
             aria-label={t("permissions.sandboxOutsideCommands")}
-            placeholder="docker compose *"
+            placeholder={t("permissions.sandboxOutsidePlaceholder")}
             value={text}
             disabled={disabled}
             rows={3}
@@ -112,7 +125,7 @@ export function SandboxOutsideCommandsRow({ disabled }: { disabled: boolean }) {
               key={`${entry.folder}\0${entry.pattern}`}
               icon="terminal"
               label={entry.pattern}
-              note={`${t("permissions.sandboxAutoOutside")} · ${entry.folder} · ${new Date(entry.createdAt).toLocaleString()}`}
+              note={`${t(directRunPermissionStatusKey(entry.source, settings.strictSandbox))} · ${entry.folder} · ${new Date(entry.createdAt).toLocaleString(locale)}`}
             >
               <Button
                 variant="ghost"

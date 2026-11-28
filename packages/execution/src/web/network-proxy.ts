@@ -56,7 +56,10 @@ export function isProxyUnavailable(error: unknown): boolean {
   }
   return false;
 }
-export function proxyAgent(proxy: NetworkProxy) {
+export function proxyAgent(
+  proxy: NetworkProxy,
+  timeouts?: { headersTimeout?: number; bodyTimeout?: number },
+) {
   // Network implementation is unused during brain registration and first-screen reads.
   const { buildConnector, Client, ProxyAgent } = createRequire(import.meta.url)(
     "undici",
@@ -72,6 +75,7 @@ export function proxyAgent(proxy: NetworkProxy) {
   // Fail proxy socket establishment before the web/search outer deadline can misclassify it.
   const connector = buildConnector({ timeout: 5000 });
   return new ProxyAgent({
+    ...timeouts,
     uri: url.href,
     token,
     proxyTunnel: true,

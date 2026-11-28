@@ -486,12 +486,13 @@ export class GroupDynamicPlans {
       )
         throw new RpcError(-32602, "group_plan_stale");
       if (this.repo.forVerification(group.conversationId, card.cycleId, source.id)) return;
-      if (this.service.cycles.consume(group.id, card.cycleId) !== "ok")
-        throw new RpcError(-32602, "group_plan_round_limit");
+      if (!this.service.auto(group.id, card.cycleId, () => true).value)
+        return "round_limit" as const;
       const message = this.repo.create(group.conversationId, current.coordinatorBotId, card);
       this.audit(card, "proposed", "automatic");
       return message;
     });
+    if (saved === "round_limit") throw new RpcError(-32602, "group_plan_round_limit");
     if (!saved) return;
     this.changed(saved.id, card);
     await this.start(saved.id, signal);

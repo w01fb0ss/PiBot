@@ -21,6 +21,7 @@ export const BotMethods = {
       category: BotCategorySchema.default("chat"),
       imageMode: ImageModeSchema.optional(),
       model: ModelPreferenceSchema.optional(),
+      defaultVideoModel: ModelPreferenceSchema.optional(),
       thinkingLevel: ThinkingLevelSchema.optional(),
     }),
     result: BotSchema,

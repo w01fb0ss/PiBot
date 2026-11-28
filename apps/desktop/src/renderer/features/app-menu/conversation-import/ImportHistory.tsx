@@ -1,11 +1,29 @@
 import type { ImportHistoryItem } from "@pibot/protocol";
-import { SettingsRow, SettingsSection, useRpc, useRpcEvent, useT } from "@pibot/renderer-kit";
+import {
+  SettingsRow,
+  SettingsSection,
+  useRpc,
+  useRpcEvent,
+  useSettings,
+} from "@pibot/renderer-kit";
 import { Button } from "@pibot/ui";
 import { useCallback, useEffect, useState } from "react";
 import styles from "./conversation-import.module.css";
-import type { Status } from "./import-state.ts";
+import {
+  advanceStatus,
+  importErrorForSource,
+  importedTopicAction,
+  type Status,
+} from "./import-state.ts";
 
 const PAGE = 8;
+
+function formatHistoryDate(iso: string | null | undefined, language: string) {
+  if (!iso) return undefined;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso.slice(0, 10);
+  return date.toLocaleDateString(language === "zh" ? "zh-CN" : "en");
+}
 
 /** Past batches, newest first, refreshed by the batches' own progress events. */
 function useImportHistory() {
@@ -44,7 +62,7 @@ function useImportHistory() {
       setItems((current) =>
         current.map((item) =>
           item.importId === status.importId
-            ? { ...item, ...status, createdAt: item.createdAt }
+            ? { ...advanceStatus(item, status), createdAt: item.createdAt }
             : item,
         ),
       );
@@ -56,12 +74,14 @@ function useImportHistory() {
 /** 导入记录: each finished batch can still be undone, with the same rules as right after it. */
 export function ImportHistory({
   undo,
+  openTopics,
   disabled,
 }: {
   undo(status: ImportHistoryItem): void;
+  openTopics(status: Status): void;
   disabled: boolean;
 }) {
-  const t = useT();
+  const { t, language } = useSettings();
   const history = useImportHistory();
   if (!history.items.length) return null;
   return (
@@ -70,7 +90,7 @@ export function ImportHistory({
       action={<span className={styles.hint}>{t("conversationImport.history.hint")}</span>}
     >
       {history.items.map((item) => {
-        const date = item.createdAt?.slice(0, 10);
+        const date = formatHistoryDate(item.createdAt, language);
         const counts = [
           t("conversationImport.allChats", { count: item.topics }),
           ...(item.memories
@@ -85,9 +105,22 @@ export function ImportHistory({
           ...(item.keptFolders
             ? [t("conversationImport.foldersKept", { count: item.keptFolders })]
             : []),
+          ...(item.state === "completed" && item.skippedTooLong
+            ? [t("conversationImport.skippedTooLong", { count: item.skippedTooLong })]
+            : []),
         ];
         const cleaning = !!item.cleanup || item.state === "undoing";
         const undoable = item.state === "completed" || cleaning;
+        const topicAction = importedTopicAction(item);
+        const statusText = cleaning
+          ? t(
+              item.cleanupBlocked
+                ? "conversationImport.cleanupBlocked"
+                : "conversationImport.state.undoing",
+            )
+          : item.state === "failed" && item.reason
+            ? `${t(`conversationImport.state.${item.state}`)} · ${t(importErrorForSource(`conversationImport.error.${item.reason}`, item.source))}`
+            : t(`conversationImport.state.${item.state}`);
         return (
           <div key={item.importId} className={styles.item}>
             <SettingsRow
@@ -101,13 +134,7 @@ export function ImportHistory({
                     })
                   : t(`conversationImport.source.${item.source}`)
               }
-              note={`${counts.join(" · ")} · ${t(
-                cleaning
-                  ? item.cleanupBlocked
-                    ? "conversationImport.cleanupBlocked"
-                    : "conversationImport.state.undoing"
-                  : `conversationImport.state.${item.state}`,
-              )}`}
+              note={`${counts.join(" · ")} · ${statusText}`}
             >
               {undoable && (
                 <Button variant="secondary" disabled={disabled} onClick={() => undo(item)}>
@@ -116,6 +143,11 @@ export function ImportHistory({
                       ? "conversationImport.retryCleanup"
                       : "conversationImport.history.undo",
                   )}
+                </Button>
+              )}
+              {topicAction && (
+                <Button variant="secondary" disabled={disabled} onClick={() => openTopics(item)}>
+                  {t(topicAction)}
                 </Button>
               )}
             </SettingsRow>

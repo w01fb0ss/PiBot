@@ -11,6 +11,7 @@ import {
   FILE_LIMIT,
   MAX_REPLY_ATTACHMENTS,
   type Message,
+  mediaMime,
   RpcError,
   RpcErrorCodes,
 } from "@pibot/protocol-base";
@@ -90,7 +91,11 @@ function deliveryText(items: Attachment[]): string {
     lines.push(
       "SVG files are attached. Desktop chat shows them inline when the preview loads. Phones and failed previews show file cards. Describe them as attached. / SVG 已附上。桌面端预览成功后会内联显示，手机端和预览失败时显示文件卡片。请说明 SVG 已附上。",
     );
-  if (items.some((item) => item.kind === "file" && !canPreviewSvg(item)))
+  if (items.some((item) => mediaMime(item.name)))
+    lines.push(
+      "Audio and video files are attached for playback in chat. / 音视频文件已附上，可以在对话中播放。",
+    );
+  if (items.some((item) => item.kind === "file" && !canPreviewSvg(item) && !mediaMime(item.name)))
     lines.push(
       "Other files are attached as file cards the user can click to open or preview. Do not say those files are embedded. / 其他文件以文件卡片附上，可点击打开或预览。不要说这些文件已内联显示。",
     );

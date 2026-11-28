@@ -140,10 +140,12 @@ export async function openRunnerRelay(options: {
         // Runner: a slow or lossy uplink can need 6–16 s for TCP+TLS (Windows field report
         // 2026-11-11); five seconds then failed every attempt, so the runner waits longer.
         connectTimeoutMs: options.role === "runner" ? 20_000 : 5000,
-        // Retain room for the measured slow TLS uplink, but retire stalled early stages promptly.
-        connectStepTimeoutMs: options.peerTimeoutMs
-          ? { dns: 3000, tcp: 5000, tls: 16_000, ws_upgrade: 3000 }
-          : undefined,
+        // Pairing and reconnect use the same dial budget on the runner. The peer wait begins
+        // after upgrade and cannot shorten DNS, proxy CONNECT, TLS or the upgrade itself.
+        connectStepTimeoutMs:
+          options.role === "desktop" && options.peerTimeoutMs
+            ? { dns: 3000, tcp: 5000, tls: 16_000, ws_upgrade: 3000 }
+            : undefined,
         url: () =>
           `${options.relay}/room/${ticket.roomId}?credential=${ticket.credential}&period=${ticket.period}&role=${options.role}&kind=runner&peer=${options.slot}`,
         signal,
@@ -167,7 +169,6 @@ export async function openRunnerRelay(options: {
             ...(wasClean === undefined ? {} : { wasClean }),
           };
         },
-        onError: abort,
         onState(state) {
           // A runner room is one generation, including failures before WebSocket open.
           if (state === "offline") abort();

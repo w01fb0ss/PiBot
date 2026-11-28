@@ -1,0 +1,590 @@
+{
+  "schemaVersion": 1,
+  "sources": [
+    {
+      "name": "freestylefly/awesome-gpt-image-2",
+      "url": "https://github.com/freestylefly/awesome-gpt-image-2",
+      "commit": "0999cbfa1f860086db384602ee5ee5485671cb58",
+      "license": "MIT"
+    }
+  ],
+  "items": [
+    {
+      "id": "ff-tpl-ui-screenshot-system",
+      "kind": "template",
+      "title": "UI Screenshot System",
+      "titleZh": "UI 截图系统",
+      "styles": ["UI"],
+      "layouts": ["ui-screen"],
+      "themes": ["UI & Interfaces", "Tech", "Social"],
+      "tags": ["UI", "Dashboard", "Screenshot", "Tech", "Social"],
+      "summary": "High-fidelity app, web, dashboard, and social interface prompts. / 生成 App、网页、仪表盘、社媒截图等高保真界面。",
+      "prompt": "Style Template: UI Screenshot System\n\nUse when: Use for app screens, dashboards, social screenshots, and live interface mockups.\n\nPrompt recipe:\n- Lock platform, aspect ratio, layout hierarchy, and exact visible text.\n- Specify UI chrome such as status bars, tabs, action rows, or comment layers.\n\nAvoid:\n- Avoid vague platform names and generic app mockups.\n- Constrain text readability and platform-specific details.",
+      "guidance": [
+        "Lock platform, aspect ratio, layout hierarchy, and exact visible text.",
+        "Specify UI chrome such as status bars, tabs, action rows, or comment layers."
+      ],
+      "guidanceZh": [
+        "锁定平台、比例、层级和画面文字。",
+        "明确状态栏、Tab、操作区、评论层等 UI 元素。"
+      ],
+      "pitfalls": [
+        "Avoid vague platform names and generic app mockups.",
+        "Constrain text readability and platform-specific details."
+      ],
+      "sourceRepo": "https://github.com/freestylefly/awesome-gpt-image-2",
+      "commit": "0999cbfa1f860086db384602ee5ee5485671cb58",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/freestylefly/awesome-gpt-image-2/blob/0999cbfa1f860086db384602ee5ee5485671cb58/data/style-library.json"
+    },
+    {
+      "id": "ff-tpl-infographic-engine",
+      "kind": "template",
+      "title": "Infographic Engine",
+      "titleZh": "信息图引擎",
+      "styles": ["Infographic", "Charts"],
+      "layouts": ["infographic"],
+      "themes": ["Charts & Infographics", "Education", "Tech"],
+      "tags": ["Infographic", "Chart", "Education", "Charts", "Tech"],
+      "summary": "Structured diagrams, timelines, knowledge maps, and explainers. / 生成结构化图解、时间线、知识图谱和技术解释图。",
+      "prompt": "Style Template: Infographic Engine\n\nUse when: Use for explainer graphics, technical diagrams, timelines, and knowledge cards.\n\nPrompt recipe:\n- Define 3-5 modules, information flow, visual hierarchy, and short labels.\n- Use color groups, arrows, icons, and clean spacing to reduce clutter.\n\nAvoid:\n- Avoid long paragraphs inside the image.\n- Limit module count before adding visual detail.",
+      "guidance": [
+        "Define 3-5 modules, information flow, visual hierarchy, and short labels.",
+        "Use color groups, arrows, icons, and clean spacing to reduce clutter."
+      ],
+      "guidanceZh": [
+        "定义 3-5 个模块、信息流、层级和短标签。",
+        "用色块、箭头、图标和留白控制复杂度。"
+      ],
+      "pitfalls": [
+        "Avoid long paragraphs inside the image.",
+        "Limit module count before adding visual detail."
+      ],
+      "sourceRepo": "https://github.com/freestylefly/awesome-gpt-image-2",
+      "commit": "0999cbfa1f860086db384602ee5ee5485671cb58",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/freestylefly/awesome-gpt-image-2/blob/0999cbfa1f860086db384602ee5ee5485671cb58/data/style-library.json"
+    },
+    {
+      "id": "ff-tpl-scientific-scale-diagram",
+      "kind": "template",
+      "title": "Scientific Scale Diagram",
+      "titleZh": "科学尺度缩放图",
+      "styles": ["Infographic", "Charts", "Realistic"],
+      "layouts": ["split-screen", "storyboard", "infographic"],
+      "themes": ["Charts & Infographics", "Education", "Tech"],
+      "tags": ["Infographic", "Chart", "Education", "Charts", "Realistic", "Tech"],
+      "summary": "Multi-scale science visuals with readable labels and hierarchy. / 生成多尺度科学信息图，强调层级、标签和可读性。",
+      "prompt": "Style Template: Scientific Scale Diagram\n\nUse when: Use when the topic needs micro-to-macro scale comparison and labeled detail windows.\n\nPrompt recipe:\n- Use 6-8 scale frames and keep each label short.\n- Show units, magnification, and distinct scale detail.\n\nAvoid:\n- Avoid making every scale frame visually identical.\n- Avoid generic magnifying glass icon layouts.",
+      "guidance": [
+        "Use 6-8 scale frames and keep each label short.",
+        "Show units, magnification, and distinct scale detail."
+      ],
+      "guidanceZh": ["使用 6-8 个尺度框，每个标签保持短句。", "展示单位、倍率和不同尺度的细节。"],
+      "pitfalls": [
+        "Avoid making every scale frame visually identical.",
+        "Avoid generic magnifying glass icon layouts."
+      ],
+      "sourceRepo": "https://github.com/freestylefly/awesome-gpt-image-2",
+      "commit": "0999cbfa1f860086db384602ee5ee5485671cb58",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/freestylefly/awesome-gpt-image-2/blob/0999cbfa1f860086db384602ee5ee5485671cb58/data/style-library.json"
+    },
+    {
+      "id": "ff-tpl-poster-layout-system",
+      "kind": "template",
+      "title": "Poster Layout System",
+      "titleZh": "海报排版系统",
+      "styles": ["Poster", "Typography"],
+      "layouts": ["poster"],
+      "themes": ["Posters & Typography", "Commerce", "Social"],
+      "tags": ["Poster", "Typography", "Campaign", "Commerce", "Social"],
+      "summary": "Event, product, movie, and social poster compositions. / 生成活动、产品、电影和社媒传播海报。",
+      "prompt": "Style Template: Poster Layout System\n\nUse when: Use for event posters, movie posters, covers, and social campaign visuals.\n\nPrompt recipe:\n- Lock subject, headline, layout, palette, and aspect ratio.\n- Make the title hierarchy and primary visual clear.\n\nAvoid:\n- Avoid mixed moodboards or process sheets when asking for one finished poster.\n- Constrain extra text and decorative symbols.",
+      "guidance": [
+        "Lock subject, headline, layout, palette, and aspect ratio.",
+        "Make the title hierarchy and primary visual clear."
+      ],
+      "guidanceZh": ["锁定主体、标题、版式、配色和比例。", "突出标题层级和主视觉。"],
+      "pitfalls": [
+        "Avoid mixed moodboards or process sheets when asking for one finished poster.",
+        "Constrain extra text and decorative symbols."
+      ],
+      "sourceRepo": "https://github.com/freestylefly/awesome-gpt-image-2",
+      "commit": "0999cbfa1f860086db384602ee5ee5485671cb58",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/freestylefly/awesome-gpt-image-2/blob/0999cbfa1f860086db384602ee5ee5485671cb58/data/style-library.json"
+    },
+    {
+      "id": "ff-tpl-sports-campaign-poster",
+      "kind": "template",
+      "title": "Sports Campaign Poster",
+      "titleZh": "运动商业 Campaign",
+      "styles": ["Poster", "Realistic", "Typography"],
+      "layouts": ["poster", "collage"],
+      "themes": ["Posters & Typography", "Commerce", "Fashion"],
+      "tags": ["Poster", "Campaign", "Typography", "Realistic", "Commerce", "Fashion"],
+      "summary": "Commercial sports visuals with athletes, props, and brand color. / 生成运动员、道具、品牌色统一的商业运动海报。",
+      "prompt": "Style Template: Sports Campaign Poster\n\nUse when: Use for sports brand campaigns, athlete posters, and product-led sport visuals.\n\nPrompt recipe:\n- Define sport, athlete pose, hero prop, title, and brand palette.\n- Use dramatic light, clean composition, and readable data overlays.\n\nAvoid:\n- Avoid wrong equipment and noisy collage.\n- Keep the athlete and hero prop visually dominant.",
+      "guidance": [
+        "Define sport, athlete pose, hero prop, title, and brand palette.",
+        "Use dramatic light, clean composition, and readable data overlays."
+      ],
+      "guidanceZh": [
+        "定义运动项目、姿态、核心道具、标题和品牌色。",
+        "使用强光影、干净构图和可读数据层。"
+      ],
+      "pitfalls": [
+        "Avoid wrong equipment and noisy collage.",
+        "Keep the athlete and hero prop visually dominant."
+      ],
+      "sourceRepo": "https://github.com/freestylefly/awesome-gpt-image-2",
+      "commit": "0999cbfa1f860086db384602ee5ee5485671cb58",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/freestylefly/awesome-gpt-image-2/blob/0999cbfa1f860086db384602ee5ee5485671cb58/data/style-library.json"
+    },
+    {
+      "id": "ff-tpl-conceptual-typography-poster",
+      "kind": "template",
+      "title": "Conceptual Typography Poster",
+      "titleZh": "概念字体海报",
+      "styles": ["Poster", "Typography"],
+      "layouts": ["poster"],
+      "themes": ["Posters & Typography", "Creative", "Social"],
+      "tags": ["Typography", "Poster", "Style", "Creative", "Social"],
+      "summary": "Premium title-led posters with strong typographic systems. / 生成以标题文字为主视觉的高级字体海报。",
+      "prompt": "Style Template: Conceptual Typography Poster\n\nUse when: Use when the exact title must become the main visual structure.\n\nPrompt recipe:\n- Make typography the hero and spell the title exactly.\n- Tie human figures, objects, or landscapes to the title meaning.\n\nAvoid:\n- Avoid default word art, unrelated icons, and misspelled title text.\n- Limit the color system to a restrained palette.",
+      "guidance": [
+        "Make typography the hero and spell the title exactly.",
+        "Tie human figures, objects, or landscapes to the title meaning."
+      ],
+      "guidanceZh": [
+        "让字体成为画面主角，并保证标题拼写准确。",
+        "人物、物体或风景需要服务标题含义。"
+      ],
+      "pitfalls": [
+        "Avoid default word art, unrelated icons, and misspelled title text.",
+        "Limit the color system to a restrained palette."
+      ],
+      "sourceRepo": "https://github.com/freestylefly/awesome-gpt-image-2",
+      "commit": "0999cbfa1f860086db384602ee5ee5485671cb58",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/freestylefly/awesome-gpt-image-2/blob/0999cbfa1f860086db384602ee5ee5485671cb58/data/style-library.json"
+    },
+    {
+      "id": "ff-tpl-ink-double-exposure-poster",
+      "kind": "template",
+      "title": "Ink Double Exposure Poster",
+      "titleZh": "水墨双重曝光海报",
+      "styles": ["Poster", "Illustration", "Classical", "Watercolor", "Typography"],
+      "layouts": ["poster", "cover", "portrait", "collage"],
+      "themes": ["Posters & Typography", "Story", "History"],
+      "tags": ["Poster", "Classical", "Style", "Illustration", "Story", "History"],
+      "summary": "Chinese ink, portrait, and layered atmosphere composition. / 生成水墨、人像与层叠氛围结合的视觉海报。",
+      "prompt": "Style Template: Ink Double Exposure Poster\n\nUse when: Use for poetic portrait posters, ink atmospheres, and layered cultural visuals.\n\nPrompt recipe:\n- Blend portrait silhouette, ink texture, atmosphere, and negative space.\n- Keep composition quiet, premium, and readable.\n\nAvoid:\n- Avoid cheap fantasy collage and overloaded scenery.\n- Use subtle text or no text unless required.",
+      "guidance": [
+        "Blend portrait silhouette, ink texture, atmosphere, and negative space.",
+        "Keep composition quiet, premium, and readable."
+      ],
+      "guidanceZh": ["融合人像剪影、水墨质感、氛围和留白。", "保持构图克制、高级、可读。"],
+      "pitfalls": [
+        "Avoid cheap fantasy collage and overloaded scenery.",
+        "Use subtle text or no text unless required."
+      ],
+      "sourceRepo": "https://github.com/freestylefly/awesome-gpt-image-2",
+      "commit": "0999cbfa1f860086db384602ee5ee5485671cb58",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/freestylefly/awesome-gpt-image-2/blob/0999cbfa1f860086db384602ee5ee5485671cb58/data/style-library.json"
+    },
+    {
+      "id": "ff-tpl-nature-science-poster",
+      "kind": "template",
+      "title": "Nature Science Poster",
+      "titleZh": "自然科普海报",
+      "styles": ["Poster", "Infographic", "Typography"],
+      "layouts": ["poster"],
+      "themes": ["Posters & Typography", "Education"],
+      "tags": ["Poster", "Education", "Style", "Infographic"],
+      "summary": "Minimal product-style science posters for natural subjects. / 生成极简产品感自然科普海报。",
+      "prompt": "Style Template: Nature Science Poster\n\nUse when: Use for natural subjects that need a premium, clean science poster feel.\n\nPrompt recipe:\n- Use a clear subject, minimal copy, soft shadows, and disciplined whitespace.\n- Keep the scientific label short and visible.\n\nAvoid:\n- Avoid heavy advertising language.\n- Avoid dense encyclopedia blocks.",
+      "guidance": [
+        "Use a clear subject, minimal copy, soft shadows, and disciplined whitespace.",
+        "Keep the scientific label short and visible."
+      ],
+      "guidanceZh": ["使用清晰主体、少量文案、柔和阴影和充足留白。", "让科普标签短而清楚。"],
+      "pitfalls": ["Avoid heavy advertising language.", "Avoid dense encyclopedia blocks."],
+      "sourceRepo": "https://github.com/freestylefly/awesome-gpt-image-2",
+      "commit": "0999cbfa1f860086db384602ee5ee5485671cb58",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/freestylefly/awesome-gpt-image-2/blob/0999cbfa1f860086db384602ee5ee5485671cb58/data/style-library.json"
+    },
+    {
+      "id": "ff-tpl-product-commerce-visual",
+      "kind": "template",
+      "title": "Product Commerce Visual",
+      "titleZh": "商品商业视觉",
+      "styles": ["Product", "Realistic"],
+      "layouts": ["product-showcase"],
+      "themes": ["Products & E-commerce", "Commerce", "Food"],
+      "tags": ["Product", "Commerce", "Packaging", "Realistic", "Food"],
+      "summary": "Product shots, packaging, detail pages, and selling-point layouts. / 生成商品图、包装、详情页和卖点排版。",
+      "prompt": "Style Template: Product Commerce Visual\n\nUse when: Use for product hero shots, packaging visuals, detail pages, and sales layouts.\n\nPrompt recipe:\n- Define product, selling points, material, scene, lighting, and layout blocks.\n- Separate hero product, benefit labels, and supporting props.\n\nAvoid:\n- Avoid random props that weaken product recognition.\n- Constrain packaging text and claim wording.",
+      "guidance": [
+        "Define product, selling points, material, scene, lighting, and layout blocks.",
+        "Separate hero product, benefit labels, and supporting props."
+      ],
+      "guidanceZh": [
+        "定义商品、卖点、材质、场景、光线和版块。",
+        "区分主商品、卖点标签和辅助道具。"
+      ],
+      "pitfalls": [
+        "Avoid random props that weaken product recognition.",
+        "Constrain packaging text and claim wording."
+      ],
+      "sourceRepo": "https://github.com/freestylefly/awesome-gpt-image-2",
+      "commit": "0999cbfa1f860086db384602ee5ee5485671cb58",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/freestylefly/awesome-gpt-image-2/blob/0999cbfa1f860086db384602ee5ee5485671cb58/data/style-library.json"
+    },
+    {
+      "id": "ff-tpl-personalized-beauty-report",
+      "kind": "template",
+      "title": "Personalized Beauty Report",
+      "titleZh": "个性化美妆报告",
+      "styles": ["Product", "UI"],
+      "layouts": ["product-showcase"],
+      "themes": ["Products & E-commerce", "Commerce", "Fashion"],
+      "tags": ["Product", "Layout", "Style", "UI", "Commerce", "Fashion"],
+      "summary": "Recommendation-report layouts for beauty and lifestyle products. / 生成美妆与生活方式产品的推荐报告版式。",
+      "prompt": "Style Template: Personalized Beauty Report\n\nUse when: Use for beauty recommendations, skin reports, shopping assistants, and lifestyle product cards.\n\nPrompt recipe:\n- Use a report-like hierarchy with diagnosis, recommendation, and product cards.\n- Keep product images, labels, and ratings aligned.\n\nAvoid:\n- Avoid medical claims and unreadable dense notes.\n- Keep recommendation logic simple.",
+      "guidance": [
+        "Use a report-like hierarchy with diagnosis, recommendation, and product cards.",
+        "Keep product images, labels, and ratings aligned."
+      ],
+      "guidanceZh": ["使用诊断、推荐和商品卡片的报告层级。", "对齐商品图、标签和评分。"],
+      "pitfalls": [
+        "Avoid medical claims and unreadable dense notes.",
+        "Keep recommendation logic simple."
+      ],
+      "sourceRepo": "https://github.com/freestylefly/awesome-gpt-image-2",
+      "commit": "0999cbfa1f860086db384602ee5ee5485671cb58",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/freestylefly/awesome-gpt-image-2/blob/0999cbfa1f860086db384602ee5ee5485671cb58/data/style-library.json"
+    },
+    {
+      "id": "ff-tpl-brand-identity-package",
+      "kind": "template",
+      "title": "Brand Identity Package",
+      "titleZh": "品牌身份包",
+      "styles": ["Brand", "Typography"],
+      "layouts": ["editorial"],
+      "themes": ["Brand & Logos", "Commerce"],
+      "tags": ["Brand", "Logo", "Identity", "Commerce"],
+      "summary": "Logo, palette, typography, applications, and brand touchpoints. / 生成 Logo、配色、字体、应用触点与品牌系统。",
+      "prompt": "Style Template: Brand Identity Package\n\nUse when: Use for logo systems, brand boards, visual identity kits, and application mockups.\n\nPrompt recipe:\n- Define brand name, positioning, palette, typography, logo usage, and touchpoints.\n- Ask for a coherent board with aligned applications.\n\nAvoid:\n- Avoid unrelated logo variants and inconsistent palettes.\n- Keep brand text accurate.",
+      "guidance": [
+        "Define brand name, positioning, palette, typography, logo usage, and touchpoints.",
+        "Ask for a coherent board with aligned applications."
+      ],
+      "guidanceZh": [
+        "定义品牌名、定位、配色、字体、Logo 用法和触点。",
+        "要求视觉板中的应用统一对齐。"
+      ],
+      "pitfalls": [
+        "Avoid unrelated logo variants and inconsistent palettes.",
+        "Keep brand text accurate."
+      ],
+      "sourceRepo": "https://github.com/freestylefly/awesome-gpt-image-2",
+      "commit": "0999cbfa1f860086db384602ee5ee5485671cb58",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/freestylefly/awesome-gpt-image-2/blob/0999cbfa1f860086db384602ee5ee5485671cb58/data/style-library.json"
+    },
+    {
+      "id": "ff-tpl-brand-touchpoint-board",
+      "kind": "template",
+      "title": "Brand Touchpoint Board",
+      "titleZh": "品牌触点视觉板",
+      "styles": ["Brand", "Product", "Typography"],
+      "layouts": ["storyboard", "product-showcase"],
+      "themes": ["Brand & Logos", "Commerce", "Social"],
+      "tags": ["Brand", "Identity", "Campaign", "Product", "Commerce", "Social"],
+      "summary": "Campaign boards across packaging, social, web, and display contexts. / 生成包装、社媒、网页和展示场景里的品牌触点板。",
+      "prompt": "Style Template: Brand Touchpoint Board\n\nUse when: Use for multi-touchpoint campaign boards and brand rollout previews.\n\nPrompt recipe:\n- Specify touchpoint list, shared visual rules, and mockup arrangement.\n- Use one palette and one typography logic across all panels.\n\nAvoid:\n- Avoid mixing many unrelated campaign styles.\n- Limit touchpoints if readability drops.",
+      "guidance": [
+        "Specify touchpoint list, shared visual rules, and mockup arrangement.",
+        "Use one palette and one typography logic across all panels."
+      ],
+      "guidanceZh": ["指定触点清单、统一视觉规则和样机排列。", "让所有面板共享配色和字体逻辑。"],
+      "pitfalls": [
+        "Avoid mixing many unrelated campaign styles.",
+        "Limit touchpoints if readability drops."
+      ],
+      "sourceRepo": "https://github.com/freestylefly/awesome-gpt-image-2",
+      "commit": "0999cbfa1f860086db384602ee5ee5485671cb58",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/freestylefly/awesome-gpt-image-2/blob/0999cbfa1f860086db384602ee5ee5485671cb58/data/style-library.json"
+    },
+    {
+      "id": "ff-tpl-architecture-space",
+      "kind": "template",
+      "title": "Architecture & Space",
+      "titleZh": "建筑与空间",
+      "styles": ["Architecture"],
+      "layouts": ["infographic"],
+      "themes": ["Architecture & Spaces", "Travel", "Commerce"],
+      "tags": ["Architecture", "Interior", "Map", "Travel", "Commerce"],
+      "summary": "Interior, exterior, city, map, and spatial concept visuals. / 生成室内、建筑、城市地图和空间概念视觉。",
+      "prompt": "Style Template: Architecture & Space\n\nUse when: Use for interiors, architecture renders, city maps, spatial plans, and environment concepts.\n\nPrompt recipe:\n- Define viewpoint, scale, material, lighting, and spatial function.\n- For maps, specify landmarks, labels, border decoration, and visual accuracy level.\n\nAvoid:\n- Avoid impossible perspectives unless the output is conceptual.\n- Lock map label language and relative placement.",
+      "guidance": [
+        "Define viewpoint, scale, material, lighting, and spatial function.",
+        "For maps, specify landmarks, labels, border decoration, and visual accuracy level."
+      ],
+      "guidanceZh": [
+        "定义视角、尺度、材质、光线和空间功能。",
+        "地图需要指定地标、标签、边框装饰和准确度。"
+      ],
+      "pitfalls": [
+        "Avoid impossible perspectives unless the output is conceptual.",
+        "Lock map label language and relative placement."
+      ],
+      "sourceRepo": "https://github.com/freestylefly/awesome-gpt-image-2",
+      "commit": "0999cbfa1f860086db384602ee5ee5485671cb58",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/freestylefly/awesome-gpt-image-2/blob/0999cbfa1f860086db384602ee5ee5485671cb58/data/style-library.json"
+    },
+    {
+      "id": "ff-tpl-realistic-photography",
+      "kind": "template",
+      "title": "Realistic Photography",
+      "titleZh": "写实摄影",
+      "styles": ["Photography", "Realistic", "Cinematic"],
+      "layouts": ["infographic", "product-showcase"],
+      "themes": ["Photography & Realism", "Fashion", "Commerce"],
+      "tags": ["Photography", "Realistic", "Lens", "Fashion", "Commerce"],
+      "summary": "Lens, lighting, film texture, and documentary-style photo prompts. / 控制镜头、光线、胶片质感和纪实摄影效果。",
+      "prompt": "Style Template: Realistic Photography\n\nUse when: Use for portraits, street photos, product photography, and cinematic realism.\n\nPrompt recipe:\n- Specify camera distance, lens, light source, texture, background, and motion.\n- Use believable imperfections for documentary realism.\n\nAvoid:\n- Avoid over-polished plastic skin unless commercial beauty is required.\n- Add negative constraints for hands, text, and anatomy when needed.",
+      "guidance": [
+        "Specify camera distance, lens, light source, texture, background, and motion.",
+        "Use believable imperfections for documentary realism."
+      ],
+      "guidanceZh": ["指定机位、镜头、光源、质感、背景和动作。", "加入可信的小瑕疵增强纪实感。"],
+      "pitfalls": [
+        "Avoid over-polished plastic skin unless commercial beauty is required.",
+        "Add negative constraints for hands, text, and anatomy when needed."
+      ],
+      "sourceRepo": "https://github.com/freestylefly/awesome-gpt-image-2",
+      "commit": "0999cbfa1f860086db384602ee5ee5485671cb58",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/freestylefly/awesome-gpt-image-2/blob/0999cbfa1f860086db384602ee5ee5485671cb58/data/style-library.json"
+    },
+    {
+      "id": "ff-tpl-street-accident-moment",
+      "kind": "template",
+      "title": "Street Accident Moment",
+      "titleZh": "街头意外瞬间摄影",
+      "styles": ["Photography", "Realistic"],
+      "layouts": ["editorial"],
+      "themes": ["Photography & Realism", "Travel", "Social"],
+      "tags": ["Photography", "Realistic", "Scene", "Travel", "Social"],
+      "summary": "Realistic phone-photo scenes with negative constraints. / 生成手机纪实风街头瞬间，并加入负面约束。",
+      "prompt": "Style Template: Street Accident Moment\n\nUse when: Use for candid street moments, accidental spills, documentary phone shots, and fast action.\n\nPrompt recipe:\n- Describe the exact moment, camera height, motion blur, and street context.\n- Add negative constraints for staged poses and fake ad lighting.\n\nAvoid:\n- Avoid too-clean compositions.\n- Keep the event plausible and grounded.",
+      "guidance": [
+        "Describe the exact moment, camera height, motion blur, and street context.",
+        "Add negative constraints for staged poses and fake ad lighting."
+      ],
+      "guidanceZh": [
+        "描述具体瞬间、机位高度、运动模糊和街景。",
+        "加入避免摆拍和广告棚拍感的限制。"
+      ],
+      "pitfalls": ["Avoid too-clean compositions.", "Keep the event plausible and grounded."],
+      "sourceRepo": "https://github.com/freestylefly/awesome-gpt-image-2",
+      "commit": "0999cbfa1f860086db384602ee5ee5485671cb58",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/freestylefly/awesome-gpt-image-2/blob/0999cbfa1f860086db384602ee5ee5485671cb58/data/style-library.json"
+    },
+    {
+      "id": "ff-tpl-illustration-art-style",
+      "kind": "template",
+      "title": "Illustration & Art Style",
+      "titleZh": "插画与艺术风格",
+      "styles": ["Illustration", "Editorial", "Anime", "Watercolor"],
+      "layouts": ["editorial"],
+      "themes": ["Illustration & Art", "Story", "Creative"],
+      "tags": ["Illustration", "Art", "Style", "Story", "Creative"],
+      "summary": "Anime, watercolor, ink, material experiments, and art direction. / 生成动漫、水彩、水墨、材质实验和艺术风格图。",
+      "prompt": "Style Template: Illustration & Art Style\n\nUse when: Use for anime, watercolor, ink, decorative art, and style experiments.\n\nPrompt recipe:\n- Define composition, subject, palette, brush material, mood, and rendering depth.\n- For reference images, state what must be preserved.\n\nAvoid:\n- Avoid style-only prompts without composition.\n- Lock character identity when using references.",
+      "guidance": [
+        "Define composition, subject, palette, brush material, mood, and rendering depth.",
+        "For reference images, state what must be preserved."
+      ],
+      "guidanceZh": [
+        "定义构图、主体、配色、笔触材质、情绪和完成度。",
+        "参考图任务需要说明保留哪些特征。"
+      ],
+      "pitfalls": [
+        "Avoid style-only prompts without composition.",
+        "Lock character identity when using references."
+      ],
+      "sourceRepo": "https://github.com/freestylefly/awesome-gpt-image-2",
+      "commit": "0999cbfa1f860086db384602ee5ee5485671cb58",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/freestylefly/awesome-gpt-image-2/blob/0999cbfa1f860086db384602ee5ee5485671cb58/data/style-library.json"
+    },
+    {
+      "id": "ff-tpl-character-design-sheet",
+      "kind": "template",
+      "title": "Character Design Sheet",
+      "titleZh": "角色设定表",
+      "styles": ["Character", "Illustration"],
+      "layouts": ["editorial"],
+      "themes": ["Characters & People", "Story"],
+      "tags": ["Character", "Pose", "Style", "Illustration", "Story"],
+      "summary": "Characters, pose sheets, action grids, and identity consistency. / 生成角色设定、动作分解和一致性参考。",
+      "prompt": "Style Template: Character Design Sheet\n\nUse when: Use for character sheets, pose grids, action breakdowns, and identity references.\n\nPrompt recipe:\n- Define identity anchors, outfit, proportions, pose count, and sheet layout.\n- Keep face, hairstyle, and costume details consistent.\n\nAvoid:\n- Avoid changing costume details between poses.\n- Limit pose count if the sheet becomes crowded.",
+      "guidance": [
+        "Define identity anchors, outfit, proportions, pose count, and sheet layout.",
+        "Keep face, hairstyle, and costume details consistent."
+      ],
+      "guidanceZh": ["定义身份锚点、服装、比例、动作数量和版式。", "保持脸、发型和服装细节一致。"],
+      "pitfalls": [
+        "Avoid changing costume details between poses.",
+        "Limit pose count if the sheet becomes crowded."
+      ],
+      "sourceRepo": "https://github.com/freestylefly/awesome-gpt-image-2",
+      "commit": "0999cbfa1f860086db384602ee5ee5485671cb58",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/freestylefly/awesome-gpt-image-2/blob/0999cbfa1f860086db384602ee5ee5485671cb58/data/style-library.json"
+    },
+    {
+      "id": "ff-tpl-3d-collectible-toy",
+      "kind": "template",
+      "title": "3D Collectible Toy",
+      "titleZh": "3D 收藏玩具",
+      "styles": ["3D", "Character"],
+      "layouts": ["product-showcase"],
+      "themes": ["Characters & People", "Commerce", "Creative"],
+      "tags": ["Character", "3D", "Style", "Commerce", "Creative"],
+      "summary": "Reference photo to premium 3D collectible figure prompts. / 把参考图转换成高级 3D 收藏玩具效果。",
+      "prompt": "Style Template: 3D Collectible Toy\n\nUse when: Use for premium collectible figures, avatar toys, blind-box characters, and 3D display renders.\n\nPrompt recipe:\n- Preserve face and outfit anchors from the reference.\n- Specify material, packaging, base, lighting, and collectible scale.\n\nAvoid:\n- Avoid generic toy bodies without identity details.\n- Keep packaging text minimal and accurate.",
+      "guidance": [
+        "Preserve face and outfit anchors from the reference.",
+        "Specify material, packaging, base, lighting, and collectible scale."
+      ],
+      "guidanceZh": ["保留参考图中的脸和服装锚点。", "指定材质、包装、底座、光线和收藏比例。"],
+      "pitfalls": [
+        "Avoid generic toy bodies without identity details.",
+        "Keep packaging text minimal and accurate."
+      ],
+      "sourceRepo": "https://github.com/freestylefly/awesome-gpt-image-2",
+      "commit": "0999cbfa1f860086db384602ee5ee5485671cb58",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/freestylefly/awesome-gpt-image-2/blob/0999cbfa1f860086db384602ee5ee5485671cb58/data/style-library.json"
+    },
+    {
+      "id": "ff-tpl-scene-storytelling",
+      "kind": "template",
+      "title": "Scene Storytelling",
+      "titleZh": "场景叙事",
+      "styles": ["Scenes", "Illustration"],
+      "layouts": ["storyboard"],
+      "themes": ["Scenes & Storytelling", "Story", "Social"],
+      "tags": ["Scene", "Story", "Storyboard", "Scenes", "Illustration", "Social"],
+      "summary": "Storyboards, worldbuilding, narrative scenes, and emotional pacing. / 生成分镜、世界观、故事场景和情绪节奏。",
+      "prompt": "Style Template: Scene Storytelling\n\nUse when: Use for storyboards, worldbuilding, live scenes, and emotional narrative frames.\n\nPrompt recipe:\n- Define who, where, when, conflict, emotion, and camera framing.\n- Use scene details to support narrative rather than decoration.\n\nAvoid:\n- Avoid generic fantasy backgrounds.\n- Keep narrative cues visible in the frame.",
+      "guidance": [
+        "Define who, where, when, conflict, emotion, and camera framing.",
+        "Use scene details to support narrative rather than decoration."
+      ],
+      "guidanceZh": ["定义人物、地点、时间、冲突、情绪和机位。", "让场景细节服务故事。"],
+      "pitfalls": [
+        "Avoid generic fantasy backgrounds.",
+        "Keep narrative cues visible in the frame."
+      ],
+      "sourceRepo": "https://github.com/freestylefly/awesome-gpt-image-2",
+      "commit": "0999cbfa1f860086db384602ee5ee5485671cb58",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/freestylefly/awesome-gpt-image-2/blob/0999cbfa1f860086db384602ee5ee5485671cb58/data/style-library.json"
+    },
+    {
+      "id": "ff-tpl-history-classical-themes",
+      "kind": "template",
+      "title": "History & Classical Themes",
+      "titleZh": "历史与古风题材",
+      "styles": ["History", "Classical", "Illustration"],
+      "layouts": ["poster"],
+      "themes": ["History & Classical Themes", "History", "Story"],
+      "tags": ["History", "Classical", "Scroll", "Illustration", "Story"],
+      "summary": "Dynasty clothing, scroll narrative, poetry, and traditional motifs. / 生成朝代服饰、长卷叙事、诗词和传统题材。",
+      "prompt": "Style Template: History & Classical Themes\n\nUse when: Use for ancient Chinese themes, scrolls, dynasty clothing, poetry visuals, and historical scenes.\n\nPrompt recipe:\n- Specify dynasty, clothing system, object references, layout format, and cultural mood.\n- Use scroll, album page, or poster format deliberately.\n\nAvoid:\n- Avoid mixing dynasties when historical accuracy matters.\n- Constrain random modern props.",
+      "guidance": [
+        "Specify dynasty, clothing system, object references, layout format, and cultural mood.",
+        "Use scroll, album page, or poster format deliberately."
+      ],
+      "guidanceZh": [
+        "指定朝代、服饰制度、器物参考、版式和文化气质。",
+        "明确长卷、册页或海报形式。"
+      ],
+      "pitfalls": [
+        "Avoid mixing dynasties when historical accuracy matters.",
+        "Constrain random modern props."
+      ],
+      "sourceRepo": "https://github.com/freestylefly/awesome-gpt-image-2",
+      "commit": "0999cbfa1f860086db384602ee5ee5485671cb58",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/freestylefly/awesome-gpt-image-2/blob/0999cbfa1f860086db384602ee5ee5485671cb58/data/style-library.json"
+    },
+    {
+      "id": "ff-tpl-document-publishing",
+      "kind": "template",
+      "title": "Document & Publishing",
+      "titleZh": "文档与出版物",
+      "styles": ["Documents", "Infographic", "Typography"],
+      "layouts": ["grid"],
+      "themes": ["Documents & Publishing", "Education", "Tech"],
+      "tags": ["Document", "Publishing", "Layout", "Documents", "Infographic", "Education", "Tech"],
+      "summary": "White papers, manuals, encyclopedic plates, and page systems. / 生成白皮书、手册、百科图鉴和页面系统。",
+      "prompt": "Style Template: Document & Publishing\n\nUse when: Use for white papers, manuals, encyclopedic plates, report pages, and publication systems.\n\nPrompt recipe:\n- Define page size, columns, table of contents, figure system, and typography hierarchy.\n- Use readable headings, tables, labels, and page rhythm.\n\nAvoid:\n- Avoid tiny dense text.\n- Keep charts and captions aligned to the page grid.",
+      "guidance": [
+        "Define page size, columns, table of contents, figure system, and typography hierarchy.",
+        "Use readable headings, tables, labels, and page rhythm."
+      ],
+      "guidanceZh": [
+        "定义页面尺寸、分栏、目录、图表系统和字体层级。",
+        "使用可读标题、表格、标签和页面节奏。"
+      ],
+      "pitfalls": ["Avoid tiny dense text.", "Keep charts and captions aligned to the page grid."],
+      "sourceRepo": "https://github.com/freestylefly/awesome-gpt-image-2",
+      "commit": "0999cbfa1f860086db384602ee5ee5485671cb58",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/freestylefly/awesome-gpt-image-2/blob/0999cbfa1f860086db384602ee5ee5485671cb58/data/style-library.json"
+    },
+    {
+      "id": "ff-tpl-concept-product-breakdown",
+      "kind": "template",
+      "title": "Concept Product Breakdown",
+      "titleZh": "概念产品研发拆解",
+      "styles": ["Other Use Cases", "Product"],
+      "layouts": ["product-showcase"],
+      "themes": ["Other Use Cases", "Creative", "Tech"],
+      "tags": ["Creative", "R&D", "Special", "Other Use Cases", "Product", "Tech"],
+      "summary": "R&D boards, exploded views, mixed tasks, and special outputs. / 生成研发板、拆解图、混合任务和特殊输出。",
+      "prompt": "Style Template: Concept Product Breakdown\n\nUse when: Use for experimental prompt tasks, R&D boards, exploded diagrams, and unusual visual systems.\n\nPrompt recipe:\n- Define the artifact type, components, labels, material logic, and final presentation format.\n- Use clear callouts and a controlled technical style.\n\nAvoid:\n- Avoid unspecified mixed tasks.\n- Keep labels short and component relationships visible.",
+      "guidance": [
+        "Define the artifact type, components, labels, material logic, and final presentation format.",
+        "Use clear callouts and a controlled technical style."
+      ],
+      "guidanceZh": [
+        "定义产物类型、组件、标签、材质逻辑和展示格式。",
+        "使用清晰标注和受控技术风格。"
+      ],
+      "pitfalls": [
+        "Avoid unspecified mixed tasks.",
+        "Keep labels short and component relationships visible."
+      ],
+      "sourceRepo": "https://github.com/freestylefly/awesome-gpt-image-2",
+      "commit": "0999cbfa1f860086db384602ee5ee5485671cb58",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/freestylefly/awesome-gpt-image-2/blob/0999cbfa1f860086db384602ee5ee5485671cb58/data/style-library.json"
+    }
+  ]
+}

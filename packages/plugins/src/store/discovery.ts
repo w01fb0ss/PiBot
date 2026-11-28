@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { RpcError, RpcErrorCodes } from "@pibot/plugins-contract/full";
 
 const CONSENT_KEY = "connections.discoverConsent";
 
@@ -72,4 +73,13 @@ export function installedManifestNames(
         names,
       };
     });
+}
+
+export function freeInstalledName(name: string, taken: ReadonlySet<string>): string {
+  if (!taken.has(name.toLowerCase())) return name;
+  for (let suffix = 2; suffix < 100; suffix += 1) {
+    const candidate = `${name.slice(0, 190)} ${suffix}`;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+  }
+  throw new RpcError(RpcErrorCodes.invalidParams, "skill_name_exists");
 }

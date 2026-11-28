@@ -134,7 +134,6 @@ export async function connectPairedRunner(
       keys: identity,
       publicKey: input.publicKey,
       role: "responder",
-      timeoutMs: 5000,
       random: randomBytes,
       signal: active,
     });

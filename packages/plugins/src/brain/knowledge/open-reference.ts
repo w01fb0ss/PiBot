@@ -1,12 +1,19 @@
 import { lstat } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, extname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { abortable, activeGroup, visibleGroupMessage } from "@pibot/brain/kit";
 import { type FileIdentity, fileIdentity } from "@pibot/execution";
-import { RpcError, RpcErrorCodes } from "@pibot/plugins-contract/full";
+import { IdSchema, RpcError, RpcErrorCodes } from "@pibot/plugins-contract/full";
 import { BotsRepo, ConversationsRepo, MessagesRepo, RunsRepo } from "@pibot/storage";
 import type { KnowledgeRepo } from "../../store/index.ts";
-import { type ObsidianVault, obsidianVault, readNote, type VaultAccess } from "./obsidian.ts";
+import {
+  localDocumentKind,
+  type ObsidianVault,
+  obsidianVault,
+  readNote,
+  type VaultAccess,
+  vaultRoot,
+} from "./obsidian.ts";
 
 // The click half of a knowledge reference. A reply links a note with
 // `obsidian://open?vault=…&file=…`; the link itself is only a hint. What may be opened is decided
@@ -31,13 +38,16 @@ export interface ReferenceScope {
 
 export interface ReferenceCandidate {
   sourceId: string;
+  kind: "obsidian" | "folder";
   vault: ObsidianVault;
-  /** Vault-relative `.md` path derived from the link, not from any model or renderer path. */
+  /** Vault-relative document path derived from the link, not from any model or renderer path. */
   relativePath: string;
+  legacyMarkdownAlternative?: string;
 }
 
 export interface VerifiedReference {
   sourceId: string;
+  kind: "obsidian" | "folder";
   vaultPath: string;
   vaultIdentity: FileIdentity;
   notePath: string;
@@ -189,7 +199,7 @@ function sameTarget(target: string, href: string): boolean {
  * nothing else. Anything that could name a different action, a second target or a remote location
  * is refused here instead of being argued about in the host.
  */
-export function parseObsidianOpen(href: string): { vault: string; file: string } {
+export function parseObsidianOpen(href: string): { vault: string; file: string; source?: string } {
   if (href.length > MAX_HREF || /[\p{Cc}\p{Cf}]/u.test(href)) throw referenceInvalid();
   let url: URL;
   try {
@@ -201,14 +211,25 @@ export function parseObsidianOpen(href: string): { vault: string; file: string }
   if (url.pathname !== "" && url.pathname !== "/") throw referenceInvalid();
   if (url.username || url.password || url.port || url.hash) throw referenceInvalid();
   const keys = [...url.searchParams.keys()];
+  const vaultCount = keys.filter((key) => key === "vault").length;
+  const fileCount = keys.filter((key) => key === "file").length;
+  const sourceCount = keys.filter((key) => key === "source").length;
   if (
-    keys.length !== 2 ||
-    keys.filter((key) => key === "vault").length !== 1 ||
-    keys.filter((key) => key === "file").length !== 1
+    vaultCount !== 1 ||
+    fileCount !== 1 ||
+    sourceCount > 1 ||
+    keys.length !== vaultCount + fileCount + sourceCount
   )
     throw referenceInvalid();
   const vault = url.searchParams.get("vault") ?? "";
   const file = url.searchParams.get("file") ?? "";
+  const rawSource = sourceCount === 1 ? (url.searchParams.get("source") ?? "") : undefined;
+  let source: string | undefined;
+  if (rawSource !== undefined) {
+    const parsedSource = IdSchema.safeParse(rawSource);
+    if (!parsedSource.success) throw referenceInvalid();
+    source = parsedSource.data;
+  }
   if (
     !vault ||
     vault.length > MAX_VAULT_NAME ||
@@ -218,46 +239,93 @@ export function parseObsidianOpen(href: string): { vault: string; file: string }
     vault.includes("\\")
   )
     throw referenceInvalid();
-  return { vault, file: notePathFromLink(file) };
+  return {
+    vault,
+    file: notePathFromLink(file, source !== undefined),
+    ...(source ? { source } : {}),
+  };
 }
 
-/** `file` is a vault-relative note path; Obsidian's own links omit the `.md` extension. */
-function notePathFromLink(file: string): string {
-  if (!file || file.length > 4096 || file.includes("\0") || file.includes("\\"))
+function notePathFromLink(file: string, hasSource: boolean): string {
+  if (!file || file.length > 4096 || /[\p{Cc}\p{Cf}]/u.test(file) || file.includes("\\"))
     throw referenceInvalid();
   if (file.startsWith("/") || /^[A-Za-z]:/.test(file)) throw referenceInvalid();
   const parts = file.split("/");
   if (parts.some((part) => !part || part === "." || part === ".." || part.startsWith(".")))
     throw referenceInvalid();
-  const last = parts.at(-1) ?? "";
-  const dot = last.lastIndexOf(".");
-  if (dot >= 0 && last.slice(dot).toLowerCase() !== ".md") throw referenceInvalid();
-  return dot >= 0 ? parts.join("/") : `${parts.join("/")}.md`;
+  const extension = extname(file).toLowerCase();
+  // Before source IDs, Pi Bot only cited Markdown and stripped its final extension.
+  if (!hasSource) return extension === ".md" ? file : `${file}.md`;
+  if (!extension) return `${file}.md`;
+  if (!localDocumentKind(file)) throw referenceInvalid();
+  return file;
 }
 
 /**
- * The source this link can belong to: a vault assigned to this Bot or group whose folder name is
- * the one in the link. Obsidian resolves `vault` by folder name, so two assigned vaults with the
- * same name are ambiguous and neither is opened.
+ * Resolve an assigned local source. Legacy links could only name an Obsidian vault.
  */
 export function referenceCandidate(
   repo: KnowledgeRepo,
   scope: ReferenceScope,
   href: string,
+  options?: { allowMissingIdentity?: boolean },
 ): ReferenceCandidate {
-  const { vault: name, file } = parseObsidianOpen(href);
+  const { vault: name, file, source } = parseObsidianOpen(href);
+  // When the citation carries a source ID, match by that assigned source even if the folder was
+  // later moved or renamed and repointed. Legacy citations without a source ID match by folder name.
   const matches = repo
     .assigned({ botId: scope.botId, ...(scope.groupId ? { groupId: scope.groupId } : {}) })
-    .filter((entry) => entry.config.kind === "obsidian" && basename(entry.config.path) === name);
-  if (matches.length !== 1) throw referenceInvalid();
+    .filter((entry) => {
+      if (entry.config.kind !== "obsidian" && entry.config.kind !== "folder") return false;
+      return source
+        ? entry.source.id === source
+        : entry.config.kind === "obsidian" && basename(entry.config.path) === name;
+    });
+  if (matches.length > 1)
+    throw new RpcError(RpcErrorCodes.invalidParams, "knowledge_reference_ambiguous");
   const entry = matches[0];
   if (!entry) throw referenceInvalid();
   const config = entry.config;
-  if (config.kind !== "obsidian") throw referenceInvalid();
+  if (config.kind !== "obsidian" && config.kind !== "folder") throw referenceInvalid();
   // A source recorded before identities were stored cannot prove the folder is still the one the
-  // person chose; the tab has to record it again instead of this path writing a new consent.
-  if (!config.device || !config.inode) throw referenceReselect();
-  return { sourceId: entry.source.id, vault: obsidianVault(config), relativePath: file };
+  // person chose; the tab (or repoint action) has to record it again instead of this path writing
+  // a new consent.
+  if (!options?.allowMissingIdentity && (!config.device || !config.inode))
+    throw referenceReselect();
+  return {
+    sourceId: entry.source.id,
+    kind: config.kind,
+    vault: obsidianVault(config),
+    relativePath: file,
+    ...(!source && extname(new URL(href).searchParams.get("file") ?? "").toLowerCase() === ".md"
+      ? { legacyMarkdownAlternative: `${file}.md` }
+      : {}),
+  };
+}
+
+async function legacyMarkdownPath(
+  candidate: ReferenceCandidate,
+  alternative: string,
+  signal: AbortSignal,
+): Promise<string> {
+  const deadline = AbortSignal.any([signal, AbortSignal.timeout(10_000)]);
+  const exists = async (path: string) => {
+    try {
+      await abortable(lstat(join(candidate.vault.path, ...path.split("/"))), deadline);
+      return true;
+    } catch (error) {
+      deadline.throwIfAborted();
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw referenceInvalid();
+    }
+  };
+  const [literalExists, legacyExists] = await Promise.all([
+    exists(candidate.relativePath),
+    exists(alternative),
+  ]);
+  if (literalExists && legacyExists)
+    throw new RpcError(RpcErrorCodes.invalidParams, "knowledge_reference_ambiguous");
+  return legacyExists ? alternative : candidate.relativePath;
 }
 
 /**
@@ -274,12 +342,18 @@ export async function verifyReference(
   const { vault } = candidate;
   if (!vault.identity) throw referenceReselect();
   const signal = access.signal;
+  // Verify vault root identity BEFORE read policy so a vault replaced by a symlink or junction
+  // reports `knowledge_vault_changed` (offering folder reselection) instead of a generic read deny.
+  await vaultRoot(vault, signal);
+  const ref = candidate.legacyMarkdownAlternative
+    ? await legacyMarkdownPath(candidate, candidate.legacyMarkdownAlternative, signal)
+    : candidate.relativePath;
   // Asked before the read so a policy denial says what it is; `readNote` asks again from its cache.
-  const requested = join(vault.path, ...candidate.relativePath.split("/"));
+  const requested = join(vault.path, ...ref.split("/"));
   if (!(await access.authorizePath(requested, "file", signal))) throw referenceDenied();
   let relativePath: string;
   try {
-    const note = await readNote(vault, candidate.relativePath, access);
+    const note = await readNote(vault, ref, access);
     relativePath = note.path;
   } catch (error) {
     signal.throwIfAborted();
@@ -303,6 +377,7 @@ export async function verifyReference(
   if (!info.isFile() || info.isSymbolicLink()) throw referenceInvalid();
   return {
     sourceId: candidate.sourceId,
+    kind: candidate.kind,
     vaultPath: vault.path,
     vaultIdentity: vault.identity,
     notePath: relativePath,

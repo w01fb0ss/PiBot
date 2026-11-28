@@ -1,6 +1,7 @@
 import type { BigIntStats } from "node:fs";
 import { lstat, realpath } from "node:fs/promises";
 import { basename, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 import { abortable } from "@pibot/brain/kit";
 import {
   createFileTools,
@@ -8,12 +9,14 @@ import {
   type FileIdentity,
   fileIdentity,
   matchesFileIdentity,
+  samePathSpelling,
 } from "@pibot/execution";
 import { type KnowledgeConfig, RpcError, RpcErrorCodes } from "@pibot/plugins-contract/full";
+import { extractLocalDocument, searchIndexedVault } from "./local-index.ts";
 
-// Reading an Obsidian vault is the read half of the knowledge source. The vault is only ever
-// read: no writes, no index copy, and every path goes through execution's per-path authorization
-// plus its symlink / hard-link / sensitive-file checks, exactly like `read_file` in a workplace.
+// Local knowledge sources support Obsidian vaults and plain document folders (.md, .txt, .pdf,
+// .docx). Searches use a local-only SQLite FTS5 + BM25 index synced on demand, while per-path
+// checks keep every read inside its approved folder.
 
 const NOTE_EXTENSION = ".md";
 const MAX_SNIPPET_CHARS = 300;
@@ -24,12 +27,29 @@ const MAX_TITLE_LINES = 120;
 // page and hides notes further down the vault whose titles match.
 const MAX_HITS_PER_NOTE = 5;
 
-/** A stored Obsidian source reduced to what reading needs. */
+export type LocalDocumentKind = "markdown" | "text" | "pdf" | "word";
+
+const EXTENSION_KIND: Record<string, LocalDocumentKind> = {
+  ".md": "markdown",
+  ".markdown": "markdown",
+  ".txt": "text",
+  ".pdf": "pdf",
+  ".docx": "word",
+};
+
+/** Maps a file name or extension to its supported local document kind, or null if unsupported. */
+export function localDocumentKind(filePath: string): LocalDocumentKind | null {
+  return EXTENSION_KIND[extname(filePath).toLowerCase()] ?? null;
+}
+
+/** A stored local knowledge source (Obsidian vault or document folder) reduced to what reading needs. */
 export interface ObsidianVault {
   /** Canonical folder path as recorded when the person added the source. */
   path: string;
   /** Null only for records added before the app started storing identities. */
   identity: FileIdentity | null;
+  /** Whether this source was added as an Obsidian vault or a general local document folder. */
+  kind?: "obsidian" | "folder";
 }
 
 /**
@@ -57,6 +77,8 @@ export interface VaultHit {
 export interface VaultSearch {
   query: string;
   hits: VaultHit[];
+  /** Exact root verified by the index. */
+  root?: VaultRoot;
   /**
    * Set when execution stopped early; the caller says so instead of presenting a full result.
    * "time_limit" comes from the search's own deadline, which now yields partial results.
@@ -64,6 +86,7 @@ export interface VaultSearch {
   truncated?: "results" | "scan_limit" | "byte_limit" | "time_limit";
   skippedLarge: number;
   skippedUnreadable: number;
+  scannedPdf?: number;
 }
 
 export interface VaultNote {
@@ -73,9 +96,11 @@ export interface VaultNote {
   size: number;
   /** The note is longer than one read returns (2000 lines / 256 KiB). */
   truncated: boolean;
+  version?: string;
+  scanned?: boolean;
 }
 
-interface VaultRoot {
+export interface VaultRoot {
   path: string;
   identity: FileIdentity;
 }
@@ -88,12 +113,13 @@ interface NoteTitle {
 
 /** Maps the stored configuration to the reader's input; the only place that interpretation lives. */
 export function obsidianVault(
-  config: Extract<KnowledgeConfig, { kind: "obsidian" }>,
+  config: Extract<KnowledgeConfig, { kind: "obsidian" | "folder" }>,
 ): ObsidianVault {
   const { device, inode } = config;
   return {
     path: config.path,
     identity: device && inode ? { device, inode } : null,
+    kind: config.kind,
   };
 }
 
@@ -101,9 +127,26 @@ export async function searchVault(
   vault: ObsidianVault,
   query: string,
   access: VaultAccess,
+  options?: {
+    db?: DatabaseSync;
+    sourceId?: string;
+    limit?: number;
+    redact?: (text: string) => string;
+  },
 ): Promise<VaultSearch> {
   const text = query.trim();
   if (!text) throw new ExecError("invalid_input");
+  if (options?.db && options.sourceId) {
+    return searchIndexedVault(
+      options.db,
+      options.sourceId,
+      vault,
+      text,
+      access,
+      options.limit ?? 20,
+      options.redact,
+    );
+  }
   const root = await vaultRoot(vault, access.signal);
   const files = createFileTools();
   // A phrase like "project plan" should also find a note that says both words apart. Searching
@@ -159,7 +202,13 @@ export async function searchVault(
     const title = titleFromPath(file);
     ranked.push({
       rank: -1,
-      hit: { path: file, title, line: 1, snippet: title, url: openUrl(vault.path, file) },
+      hit: {
+        path: file,
+        title,
+        line: 1,
+        snippet: title,
+        url: openUrl(vault.path, file, options?.sourceId),
+      },
     });
   }
   for (const [file, perNeedle] of byFile) {
@@ -196,14 +245,14 @@ export async function searchVault(
           title: note.title,
           line,
           snippet: snippetOf(value),
-          url: openUrl(vault.path, file),
+          url: openUrl(vault.path, file, options?.sourceId),
         },
       });
     }
   }
   // Array#sort is stable, so hits inside one rank keep the walk order (note by note, line by line).
   ranked.sort((a, b) => a.rank - b.rank);
-  const truncated = (["results", "scan_limit", "byte_limit"] as const).find((kind) =>
+  const truncated = (["results", "scan_limit", "byte_limit", "time_limit"] as const).find((kind) =>
     truncations.has(kind),
   );
   return {
@@ -212,6 +261,7 @@ export async function searchVault(
     ...(truncated ? { truncated } : {}),
     skippedLarge,
     skippedUnreadable,
+    scannedPdf: 0,
   };
 }
 
@@ -224,20 +274,38 @@ export async function readNote(
   const notePath = notePathIn(root.path, path);
   if (!(await access.authorizePath(notePath, "file", access.signal)))
     throw new ExecError("outside_workplace");
+  const rel = relative(root.path, notePath).split(sep).join("/");
+  const docKind = localDocumentKind(rel);
+  if (docKind === "pdf" || docKind === "word") {
+    const doc = await extractLocalDocument(root, notePath, rel, access.signal);
+    if (doc === "too_large" || doc === "unreadable") throw new ExecError("file_failed");
+    const emptyScanned = doc.scanned && !doc.text.trim();
+    return {
+      path: rel,
+      title: doc.title,
+      text: emptyScanned
+        ? "[该 PDF 为纯图片或扫描件，未提取到可搜索文字 / This PDF appears to be image-only (scanned) with no extractable text.]"
+        : doc.text,
+      size: doc.size,
+      truncated: doc.truncated,
+      ...(doc.scanned ? { scanned: true } : {}),
+    };
+  }
   const files = createFileTools();
   const read = await files.readFile({
     ...fileContext(root, access.signal),
     path: notePath,
     expectedPath: notePath,
+    versioned: true,
   });
   if (read.type !== "text") throw new ExecError("file_failed");
-  const rel = relative(root.path, notePath).split(sep).join("/");
   return {
     path: rel,
-    title: firstHeading(read.text) ?? titleFromPath(rel),
+    title: (docKind === "markdown" ? firstHeading(read.text) : null) ?? titleFromPath(rel),
     text: read.text,
     size: read.size,
     truncated: read.truncated,
+    version: read.version,
   };
 }
 
@@ -246,7 +314,8 @@ export async function readNote(
  * folder (moved, restored from a backup, or a different volume now mounted at that path) must not
  * become readable just because it has the same name.
  */
-async function vaultRoot(vault: ObsidianVault, signal: AbortSignal): Promise<VaultRoot> {
+export async function vaultRoot(vault: ObsidianVault, signal: AbortSignal): Promise<VaultRoot> {
+  if (!vault.identity) throw vaultChanged();
   const path = resolve(vault.path);
   // A disconnected network volume can hang lstat/realpath; the query's signal is not enough on
   // its own because the file system calls do not observe it.
@@ -264,9 +333,10 @@ async function vaultRoot(vault: ObsidianVault, signal: AbortSignal): Promise<Vau
     throw vaultChanged();
   }
   signal.throwIfAborted();
-  if (!info.isDirectory() || info.isSymbolicLink() || canonical !== path) throw vaultChanged();
-  if (vault.identity && !matchesFileIdentity(info, vault.identity)) throw vaultChanged();
-  return { path, identity: fileIdentity(info) };
+  if (!info.isDirectory() || info.isSymbolicLink() || !samePathSpelling(canonical, path))
+    throw vaultChanged();
+  if (!matchesFileIdentity(info, vault.identity)) throw vaultChanged();
+  return { path: canonical, identity: fileIdentity(info) };
 }
 
 function vaultChanged(): RpcError {
@@ -283,7 +353,7 @@ function vaultUnreadable(): RpcError {
 }
 
 /** Boundary facts execution re-verifies before and after it reads, same shape as a read root. */
-function fileContext(root: VaultRoot, signal: AbortSignal) {
+export function fileContext(root: VaultRoot, signal: AbortSignal) {
   return {
     cwd: root.path,
     writeRoots: [],
@@ -352,11 +422,11 @@ function notePathIn(root: string, input: string): string {
 function withNoteExtension(rel: string): string {
   const ext = extname(rel);
   if (!ext) return `${rel}${NOTE_EXTENSION}`;
-  if (ext.toLowerCase() !== NOTE_EXTENSION) throw new ExecError("invalid_input");
+  if (!localDocumentKind(rel)) throw new ExecError("invalid_input");
   return rel;
 }
 
-function firstHeading(text: string): string | null {
+export function firstHeading(text: string): string | null {
   for (const line of text.split("\n")) {
     const heading = /^#\s+(.*\S)\s*$/.exec(line)?.[1];
     if (heading) return heading;
@@ -364,7 +434,7 @@ function firstHeading(text: string): string | null {
   return null;
 }
 
-function titleFromPath(file: string): string {
+export function titleFromPath(file: string): string {
   const name = basename(file);
   return name.slice(0, name.length - extname(name).length);
 }
@@ -375,8 +445,14 @@ function snippetOf(line: string): string {
 }
 
 /** Shared with `knowledge_read` so a read result links the same way a search hit does. */
-export function openUrl(vaultPath: string, file: string): string {
-  const stem = file.slice(0, file.length - extname(file).length);
-  // Obsidian resolves `vault` against the vault's folder name; Pi Bot's display name may differ.
-  return `obsidian://open?vault=${encodeURIComponent(basename(vaultPath))}&file=${encodeURIComponent(stem)}`;
+export function openUrl(vaultPath: string, file: string, sourceId?: string): string {
+  const ext = extname(file);
+  const stripped = ext === NOTE_EXTENSION ? file.slice(0, file.length - ext.length) : file;
+  // Obsidian omits `.md` in its own URIs, except when the remaining stem contains a dot (for
+  // example `report.pdf.md` or `v1.2.md`), where dropping `.md` would be ambiguous with a
+  // different file extension.
+  const target =
+    !sourceId && ext === NOTE_EXTENSION && !basename(stripped).includes(".") ? stripped : file;
+  const sourceParam = sourceId ? `&source=${encodeURIComponent(sourceId)}` : "";
+  return `obsidian://open?vault=${encodeURIComponent(basename(vaultPath))}&file=${encodeURIComponent(target)}${sourceParam}`;
 }

@@ -7,6 +7,10 @@ export type Supplement = {
   kind: "memories" | "customInstructions" | "projects";
   text: string;
   title?: string;
+  /** Optional canonical path of a local project rules file (used to avoid appending AGENTS.md into itself). */
+  sourcePath?: string;
+  /** Optional explicit classification for local memory stores ("preference" -> 关于你, "method" -> Bot). */
+  memoryKind?: "preference" | "method";
   /** Project knowledge and project-scoped memories name the project they belong to. */
   project?: ProjectRef;
 };

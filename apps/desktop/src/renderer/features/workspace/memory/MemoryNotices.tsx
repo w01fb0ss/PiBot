@@ -1,3 +1,4 @@
+import { type Message, memoryNoted } from "@pibot/protocol";
 import { type Peer, useT } from "@pibot/renderer-kit";
 import { Button, IconTile } from "@pibot/ui";
 import { useEffect, useMemo, useSyncExternalStore } from "react";
@@ -9,6 +10,7 @@ import {
   type MemoryNoticeState,
   MemoryNoticesController,
   memoryNoticesByMessage,
+  noticeKey,
 } from "./memory-notices.ts";
 
 export type MemoryNoticesModel = ReturnType<typeof useMemoryNotices>;
@@ -52,26 +54,32 @@ export function useMemoryNotices(
 /** The notices one reply produced, directly under it (gaps-bits b-memnotes). */
 export function MessageMemoryNotices({
   notices,
-  messageId,
+  message,
 }: {
   notices: MemoryNoticesModel;
-  messageId: string;
+  message: Message;
 }) {
   const t = useT();
   const { controller, state } = notices;
-  const scoped = notices.byMessage.get(messageId);
+  const scoped = notices.byMessage.get(message.id);
   if (!controller || !scoped) return null;
-  const { pending, undoable, feedback } = scoped;
+  const { pending, feedback } = scoped;
+  const receiptIds = new Set(memoryNoted(message.usage)?.map((note) => note.id));
+  const undoable = scoped.undoable.flatMap((proposal) => {
+    const receipt = !!proposal.resolvedMemoryId && receiptIds.has(proposal.resolvedMemoryId);
+    return receipt || !state.dismissed?.has(noticeKey(proposal)) ? [{ proposal, receipt }] : [];
+  });
   if (!pending.length && !undoable.length && !feedback) return null;
   const busy = state.busy || state.loading;
   return (
     <aside aria-label={t("workspace.memory")} className={styles.memoryNotices}>
-      {undoable.map((proposal) => (
+      {undoable.map(({ proposal, receipt }) => (
         <AutoMemoryNotice
           key={proposal.id}
           proposal={proposal}
           controller={controller}
           busy={busy}
+          receipt={receipt}
         />
       ))}
       {pending.map((proposal) => (

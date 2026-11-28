@@ -199,28 +199,8 @@ export function Notices({ model }: { model: ChangesPaneModel }) {
       </Notice>,
     );
   if (git?.state === "none" && git.reason === "git_unavailable")
-    // macOS and Linux offer the system install here; elsewhere the download link stays.
     items.push(
-      <GitInstallCard
-        key="git"
-        context="changes"
-        onInstalled={() => model.source?.refresh()}
-        fallback={
-          scope === "turn" && (
-            <Notice tone="info">
-              <span>{t("changes.repo.noGitBody")}</span>
-              <a
-                className={styles.link}
-                href="https://git-scm.com/downloads"
-                target="_blank"
-                rel="noreferrer"
-              >
-                {t("changes.repo.installGit")}
-              </a>
-            </Notice>
-          )
-        }
-      />,
+      <GitInstallCard key="git" context="changes" onInstalled={() => model.source?.refresh()} />,
     );
   if (scope === "uncommitted" && git?.state === "repo") {
     if (git.operation) {

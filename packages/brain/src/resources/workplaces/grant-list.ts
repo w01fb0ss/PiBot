@@ -20,6 +20,11 @@ export async function grantList(
   for (const grant of local.approvals.grants.list(params)) {
     signal.throwIfAborted();
     const scope = grant.scope;
+    if (scope.kind === "paid_image") {
+      const providerName = local.models?.providerName(scope.provider);
+      result.push(providerName ? { ...grant, providerName } : grant);
+      continue;
+    }
     if ((scope.kind !== "programs" && scope.kind !== "workplace") || !scope.topicId) {
       result.push(grant);
       continue;

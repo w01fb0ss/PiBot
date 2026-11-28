@@ -65,6 +65,10 @@ export class ChatNoticeService implements BrowserHandBackRecorder {
     }
   }
 
+  listDependencies(conversationId: string, page: { before?: string; limit?: number }) {
+    return new ChatNoticesRepo(this.deps.db).listDependencies(conversationId, page);
+  }
+
   list(conversationId: string, page: { before?: string; limit?: number }) {
     return new ChatNoticesRepo(this.deps.db).list(conversationId, page);
   }
@@ -72,6 +76,9 @@ export class ChatNoticeService implements BrowserHandBackRecorder {
 
 /** Registered through brain's single RPC wrapper (validation, redacted logging, error mapping). */
 export function registerChatNoticeRpc(handle: KernelRegisterRpc, notices: ChatNoticeService) {
+  handle("chat.dependencyNotices", async ({ conversationId, before, limit }) =>
+    notices.listDependencies(conversationId, { before, limit }),
+  );
   handle("chat.notices", async ({ conversationId, before, limit }) =>
     notices.list(conversationId, { before, limit }),
   );

@@ -1,7 +1,11 @@
 import { z } from "zod";
+import { MAX_GENERATED_IMAGES } from "../chat/media.ts";
+import { CONNECTOR_NETWORK_SITE_MAX_LENGTH } from "../connectors/network.ts";
 import { IdSchema } from "../core/ids.ts";
 import { BotPageSchema } from "../core/page.ts";
 import { SandboxBlockKindSchema } from "../execution/sandbox-block.ts";
+import { DispatchModelSwitchSchema } from "../providers/dispatch-model.ts";
+import { ThinkingLevelSchema } from "../providers/providers.ts";
 import { PhoneRunnerReceiptSchema } from "../runner/offline-receipt.ts";
 import { CapabilityIdSchema, CapabilityImplTypeSchema } from "../tools/capabilities.ts";
 import { ApprovalCategorySchema, ApprovalStatusSchema, RiskSchema } from "./approvals.ts";
@@ -68,6 +72,8 @@ export const AuditKindSchema = z.enum([
   "image.loaded",
   "image.started",
   "image.finished",
+  "video.started",
+  "video.finished",
   "messages.read",
   "import.changed",
   "grant.created",
@@ -75,6 +81,7 @@ export const AuditKindSchema = z.enum([
   "policy.denied",
   "oauth.changed",
   "provider.imported",
+  "provider.video_model_changed",
   "network.changed",
   "permissions.changed",
   "search.sent",
@@ -83,6 +90,8 @@ export const AuditKindSchema = z.enum([
   "collaboration.cancelled",
   // A direct request the member answered as plain chat; the task closed without work.
   "group.task.quiet",
+  "topic.model_override",
+  "group.task.model_override",
   "group.workflow.started",
   "group.workflow.migrated",
   "group.workflow.recovered",
@@ -108,8 +117,7 @@ export const AuditKindSchema = z.enum([
   // A skill was created, imported, edited, enabled/disabled, removed or proposed/resolved.
   "skill.changed",
   "skill.downloaded",
-  // A skill's runtime environment was prepared, failed, or removed. Counts and a reason
-  // code only; the command text and its output stay in the environment's log file.
+  // A skill runtime approval or outcome. The command and its output stay in the environment log.
   "skill.runtime.prepared",
   // The user asked Pi Bot to install Git system-wide (started, then how it ended); the command
   // text and outcome only, never the installer's output.
@@ -195,6 +203,12 @@ export const AuditKindSchema = z.enum([
   // receipt's status). Never personas, task text or replies.
   "pi.managed",
   "pi.dispatched",
+  "pi.dispatch_model",
+  // The default Pi checked for stuck state (scope and counts per kind only) or repaired one item
+  // (action, target ids, the state before and after, who asked). Never message text or files.
+  "pi.health_checked",
+  "pi.repaired",
+  "pi.settings_changed",
 ]);
 export const AuditAuthEventSchema = z.enum([
   "oauth.connected",
@@ -211,6 +225,25 @@ export const AuditAuthEventSchema = z.enum([
 export type AuditAuthEvent = z.infer<typeof AuditAuthEventSchema>;
 // Detail contains facts only. Tool output, prompts and file content have separate storage paths.
 export const AuditDetailSchema = z.strictObject({
+  dispatchThinking: ThinkingLevelSchema.optional(),
+  dispatchModelSwitch: DispatchModelSwitchSchema.optional(),
+  knowledgeWrite: z
+    .strictObject({
+      action: z.enum(["create", "update", "delete"]),
+      ref: z.string().min(1).max(1000),
+      previousBytes: count,
+      bytes: count,
+    })
+    .optional(),
+  importDistillationConsent: z
+    .strictObject({
+      importId: IdSchema,
+      provider: z.string().min(1).max(256),
+      model: z.string().min(1).max(256),
+      conversations: count,
+      estimatedTokens: count,
+    })
+    .optional(),
   conversationImport: z
     .strictObject({
       importId: IdSchema,
@@ -234,7 +267,7 @@ export const AuditDetailSchema = z.strictObject({
       name: z.string().max(200),
       version: z.string().max(100),
       components: count,
-      domains: z.array(z.string().max(253)).max(100),
+      domains: z.array(z.string().max(CONNECTOR_NETWORK_SITE_MAX_LENGTH)).max(100),
     })
     .optional(),
   skillDownload: z
@@ -253,8 +286,14 @@ export const AuditDetailSchema = z.strictObject({
     .strictObject({
       runtime: z.enum(["python", "node"]),
       packages: count.max(1000),
-      result: z.enum(["ready", "failed", "removed"]),
+      result: z.enum(["ready", "failed", "removed", "approved"]),
+      mirror: z.literal(true).optional(),
       reasonCode: z.string().max(64).optional(),
+      skillId: IdSchema.optional(),
+      planHash: z
+        .string()
+        .regex(/^[a-f0-9]{64}$/)
+        .optional(),
     })
     .optional(),
   memoryScope: z.enum(["user", "bot", "group", "project"]).optional(),
@@ -282,8 +321,19 @@ export const AuditDetailSchema = z.strictObject({
   messageCount: count.max(50).optional(),
   conversationCount: count.max(50).optional(),
   modelId: text.max(200).optional(),
+  previousModelId: text.max(200).optional(),
   imageMode: z.enum(["text-to-image", "image-to-image"]).optional(),
-  imageCount: count.max(5).optional(),
+  imageCount: count.max(MAX_GENERATED_IMAGES).optional(),
+  video: z
+    .strictObject({
+      duration: count.min(1).max(30),
+      size: text.max(40),
+      status: z.enum(["queued", "generating", "downloading", "done", "failed", "cancelled"]),
+      estimateUsd: z.number().nonnegative().max(3000).optional(),
+      workspaceSaved: z.boolean().optional(),
+      promptSnippet: z.string().max(120),
+    })
+    .optional(),
   providerId: text.optional(),
   providerName: text.max(200).optional(),
   botName: text.max(200).optional(),
@@ -294,7 +344,7 @@ export const AuditDetailSchema = z.strictObject({
   /** Which external agent, how it ran and what kind of action it asked for; no content. */
   externalAgent: z
     .strictObject({
-      agentId: z.enum(["codex", "claude", "cursor", "opencode", "custom"]),
+      agentId: z.enum(["codex", "claude", "cursor", "opencode", "antigravity", "custom"]),
       isolation: z.enum(["sandbox", "unisolated"]).optional(),
       actionKind: z
         .string()
@@ -307,6 +357,9 @@ export const AuditDetailSchema = z.strictObject({
     .optional(),
   target: text.max(200).optional(),
   reasonCode: text.max(80).optional(),
+  groupRoundLimit: z
+    .strictObject({ before: count.min(1).max(10), after: count.min(1).max(10) })
+    .optional(),
   policySteps: z
     .array(z.string().regex(/^[a-z0-9_]{1,64}$/))
     .max(200)
@@ -450,6 +503,43 @@ export const AuditDetailSchema = z.strictObject({
   fields: z
     .array(z.string().regex(/^[A-Za-z][A-Za-z0-9_.]{0,63}$/))
     .max(40)
+    .optional(),
+  /** pi.health_checked: what was checked and how many stuck items of each kind it found. */
+  piHealth: z
+    .strictObject({
+      scope: z.enum(["all", "bot", "group"]),
+      total: count.max(10_000),
+      kinds: z
+        .array(
+          z.strictObject({
+            kind: z.string().regex(/^[a-z_]{1,32}$/),
+            count: count.max(10_000),
+          }),
+        )
+        .max(16),
+    })
+    .optional(),
+  /** One applied, non-secret settings field. */
+  piSetting: z
+    .strictObject({
+      scope: z.string().max(100),
+      key: z.string().max(120),
+      before: z.unknown(),
+      after: z.unknown(),
+    })
+    .optional(),
+  /** pi.repaired: which fix, on what, and the item's state before and after (fixed codes). */
+  piRepair: z
+    .strictObject({
+      action: z.string().regex(/^[a-z_]{1,40}$/),
+      targetKind: z.string().regex(/^[a-z_]{1,32}$/),
+      before: z.string().regex(/^[a-z_]{1,64}$/),
+      after: z
+        .string()
+        .regex(/^[a-z_]{1,64}$/)
+        .optional(),
+      outcome: z.enum(["fixed", "state_changed", "failed", "unavailable"]),
+    })
     .optional(),
   /** phone.data_read: which phone data, and how many items came back. */
   phoneData: z.enum(["media", "media_get", "sms_code", "calls", "notifications"]).optional(),

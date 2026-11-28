@@ -3,10 +3,11 @@ import { connectorSandboxEn, connectorSandboxZh } from "./connector-sandbox.ts";
 export const connectorsZh = {
   "connectors.commandDangerous":
     "危险命令：此扩展的启动命令命中了运行命令的高风险规则，可能删除数据或更改系统。请核实来源和命令后再决定是否导入；导入不代表授权执行。",
-  "connectors.commandUnverified":
-    "无法完整判定启动命令的风险。请核实命令与扩展来源；启用后仍须通过运行时权限和隔离检查。",
   "connectors.importSymlink":
-    "选择的路径包含符号链接。请直接选择真实文件或目录后重试；扩展内部也不能包含符号链接。",
+    "这个插件包或它所在的路径涉及快捷方式（替身文件）。为安全起见，请选择原始位置，或选择不含快捷方式的插件包。",
+  "connectors.importSymlinkNamed":
+    "「{item}」是快捷方式（替身文件），无法安全导入。请选择原始位置，或选择不含快捷方式的插件包。",
+  "connectors.chooseAnotherPackage": "重新选择插件包",
   "connectors.readToolSummary": "读取此连接的数据，不修改原始数据。",
   "connectors.writeToolSummary": "更改此连接的数据，按连接的确认方式执行。",
   "connectors.tool.list_contacts": "列出联系人",
@@ -20,6 +21,10 @@ export const connectorsZh = {
   "connectors.tool.create_event": "新建日程",
   "connectors.tool.update_event": "修改日程",
   "connectors.tool.delete_event": "删除日程",
+  "connectors.tool.send_message": "发送消息",
+  "connectors.tool.reply_message": "回复消息",
+  "connectors.tool.create_draft": "创建草稿",
+  "connectors.tool.send_email": "发送邮件",
   "connectors.confirmationCancelled": "你取消了确认，连接尚未启用。可以再次点「连接」确认。",
   "connectors.rememberTool": "以后这类操作直接做",
   "connectors.directGrants": "已允许直接做",
@@ -112,14 +117,15 @@ export const connectorsZh = {
   "connectors.audit.secretBackfill": "升级回填密钥引用",
   "connectors.audit.secretBackfillFailed": "旧插件密钥引用需要重新配置",
   "connectors.audit.broughtOver": "已从其他 AI 工具带过来",
+  "connectors.audit.settings": "已修改插件设置",
   "connectors.chooseDirectory": "选择插件文件夹",
   "connectors.windowsWarning":
-    "不隔离运行：此本机命令可访问整台电脑和网络。首次启用和手动重启前会另行确认。",
+    "不隔离运行：此本机程序（命令）可访问整台电脑和网络。首次启用和手动重启前会另行确认。",
   "profile.sendTargets": "发送目标",
   "connectors.reauthTab": "需要重新授权",
   "connectors.reauthNote": "授权已失效，使用这个连接的 Bot 暂时无法继续。",
   "connectors.viewConnection": "查看连接",
-  "connectors.chooseJson": "选择插件 zip 或 JSON",
+  "connectors.chooseJson": "选择应用包或 MCP 配置文件",
   "connectors.customName": "名称",
   "connectors.customUrl": "远程 MCP 地址",
   "connectors.customCommand": "命令（不经过 shell）",
@@ -156,7 +162,7 @@ export const connectorsZh = {
   "connectors.disabled": "未启用",
   "connectors.installations": "我导入的",
   "connectors.add": "添加",
-  "connectors.import": "导入扩展 / MCP",
+  "connectors.import": "导入插件包 / MCP",
   "connectors.pluginFallback": "扩展",
   "connectors.empty": "还没有连接。从下方目录连接应用，或导入扩展 / MCP。",
   "connectors.noInstallations": "还没有导入的连接。",
@@ -177,14 +183,17 @@ export const connectorsZh = {
   "connectors.unwired": "内置连接尚未接线，不可用",
   "connectors.customNote": "粘贴 MCP / mcpServers / plugin.json 配置",
   "connectors.sharedCredentialNote":
-    "此连接引用共享密钥，请在“密钥”标签里更新；连接详情不能替换其他安装或共享密钥。",
+    "此连接使用共享的访问令牌。在「访问令牌」中更换它的值，会同步更新所有使用该令牌的连接。",
+  "connectors.privateCredentialsNote": "可在「高级」的设置里分别更换此连接的令牌。",
   "connectors.secretSettingsRequired":
-    "此连接使用共享密钥，请到密钥页更新，避免改动其他连接的凭据。",
+    "此连接使用共享的访问令牌，请打开「访问令牌」更换；更换后会同步更新所有使用该令牌的连接。",
+  "connectors.openAccessTokens": "打开「访问令牌」",
+  "connectors.openAccessTokenNamed": "在「访问令牌」中更新 {name}",
   "connectors.scopeNote":
     "已启用工具可用于聊天、子任务和例行任务，并沿用来源权限。Plan 只允许只读工具；写入经过发送草稿，用户身份始终需要你确认。",
-  "connectors.json": "粘贴 JSON",
+  "connectors.json": "粘贴 MCP 配置",
   "connectors.jsonNote":
-    "可选择 Claude Code 插件文件夹、zip 或 MCP JSON，也可粘贴 JSON（最多 1 MiB）。安装前会逐项预览；原始输入不保存。",
+    "可以选择应用包文件夹、压缩包或 MCP 配置文件，也可以粘贴配置（最多 1 MB）。安装前会逐项预览。",
   "connectors.preview": "预览",
   "connectors.reading": "正在解析…",
   "connectors.importOnly": "仅导入",
@@ -206,6 +215,7 @@ export const connectorsZh = {
   "connectors.previewSkills": "将添加 {count} 个技能到：",
   "connectors.skillTargets": "选择 Bot 或群",
   "connectors.skillTargetRequired": "先选择技能的归属。不选择时只导入连接。",
+  "connectors.skillOnlyTargetRequired": "请先在上方选择要把这些技能分配给哪个 Bot 或群。",
   "connectors.skillsPartial":
     "导入已保存，部分技能未能复制。已复制的技能会保留，可以重试复制剩余技能。",
   "connectors.pendingSkillImports": "有 {count} 个导入的扩展里还有技能未分配",
@@ -224,6 +234,10 @@ export const connectorsZh = {
   "connectors.unsupported.executable": "不会导入可直接执行的程序入口",
   "connectors.unsupported.not-supported": "本期暂不支持",
   "connectors.unsupported.secret": "内容像凭据，已跳过这个技能（其余照常导入）",
+  "connectors.skippedCustomSkills":
+    "此插件包里的部分自定义技能或指令暂不支持，已自动跳过，其余内容照常导入。",
+  "connectors.skippedOtherNotice":
+    "此插件包里有 {count} 项内容暂不支持，已自动跳过（可在下方「技术详情」查看明细）。",
   "connectors.transport.http": "远程地址",
   "connectors.transport.stdio": "本机命令",
   "connectors.transport.builtin": "内置驱动",
@@ -246,7 +260,7 @@ export const connectorsZh = {
   "connectors.importDefaults": "谁能用：{access} · 确认方式：{confirmation}。导入后可在详情修改。",
   "connectors.importVersion": "版本：{version}",
   "connectors.previewSanitized": "以下仅展示后台返回的脱敏摘要，不展示 headers/env 的值。",
-  "connectors.tooLarge": "JSON 超过 1 MiB，请缩小配置后重试。",
+  "connectors.tooLarge": "配置超过 1 MB，请缩小后重试。",
   "connectors.importUncertain": "未收到导入结果，后台可能已接受。请先查看安装列表，避免重复导入。",
   "connectors.checkList": "查看安装列表",
   "connectors.enabled": "已启用",
@@ -257,7 +271,7 @@ export const connectorsZh = {
   "connectors.updateSourceDiff":
     "来源有变化：命令 {commands}，参数 {arguments}，环境变量名 {envNames}，网站 {websites}，文件 {files}",
   "connectors.updateSourceConfirm":
-    "确认后会保留 Bot / 群权限、密钥和启用状态，只替换配置。命令变化后需要重新确认以你的身份运行。",
+    "更新配置后，仍使用你已允许的网站。若来源换了网站，可在「高级」中允许新网站。命令变化后需要重新确认以你的身份运行。",
   "connectors.updateSourceNotFound": "找不到来源文件或文件夹。",
   "connectors.updateSourceDone": "已从来源更新，正在重新连接。",
   "connectors.disconnect": "断开",
@@ -345,6 +359,8 @@ export const connectorsZh = {
   "connectors.urlCredentialUnsupported":
     "URL 不能包含用户名、密码或其他凭据。请把凭据改成请求头或 userConfig 敏感项。",
   "connectors.pluginSecretReferenceUnsupported": "插件不能直接引用已有密钥，请改用敏感配置项。",
+  "connectors.settingPathOutsideRoot":
+    "此设置会被传给本机命令作为路径参数。出于安全限制，插件命令参数不能指向插件目录之外的文件夹或文件；请改选插件目录内的路径，或在插件配置中改用环境变量。",
   "connectors.commandSubstitutionUnsupported": `MCP 命令不能使用变量或密钥替换。请改用固定命令；插件目录只能通过 \${CLAUDE_PLUGIN_ROOT} 引用。`,
   "connectors.committed":
     "该配置已导入但当前未启用。导入重试不会重新启用，以免覆盖你手动停用的选择；请在连接列表手动启用，或重新预览后选择仅导入。",
@@ -352,6 +368,8 @@ export const connectorsZh = {
   "connectors.busy": "后台正在处理此资源，请稍后重试。",
   "connectors.timeout": "未能及时确认结果。请先核实当前状态，不要重复操作。",
   "connectors.failure.invalid_source": "导入来源无效",
+  "connectors.failure.website_approval_required":
+    "连接需要你重新允许这个网站。允许后，请重试连接。",
   "connectors.failure.source_changed": "来源已变化，请重新预览",
   "connectors.failure.preview_expired": "预览已过期",
   "connectors.failure.unsupported_format": "不支持此配置格式",
@@ -359,7 +377,101 @@ export const connectorsZh = {
   "connectors.failure.secret_required": "缺少所需密钥",
   "connectors.failure.secret_reconfiguration_required":
     "旧插件的密钥引用无法安全升级，请重新导入并配置此插件。",
-  "connectors.failure.auth_required": "需要授权（此流程尚未接线）",
+  "connectors.failure.auth_required": "需要登录授权才能使用",
+  "connectors.paste.label": "粘贴连接信息",
+  "connectors.paste.placeholder": "粘贴服务网址、本机启动命令或 MCP 配置",
+  "connectors.paste.argument": "命令选项 {index}",
+  "connectors.paste.variable": "设置名称",
+  "connectors.paste.value": "设置值",
+  "connectors.paste.addArgument": "添加命令选项",
+  "connectors.paste.launchOptions": "{command} 的启动选项",
+  "connectors.paste.addVariable": "添加运行设置",
+  "connectors.paste.cwd": "工作目录",
+  "connectors.paste.pickFolder": "选择文件夹",
+  "connectors.paste.timeout": "启动等待时间（秒）",
+  "connectors.paste.registrySites": "安装组件会连接 {sites}",
+  "connectors.paste.manual": "高级：手动填写",
+  "connectors.paste.mode": "连接方式",
+  "connectors.paste.manualUrl": "服务网址",
+  "connectors.paste.manualCommand": "启动命令",
+  "connectors.paste.recipients": "连接地址和密钥用途",
+  "connectors.paste.error.duplicateNames": "有两个服务名称太相近。请给它们起不同的名称再试。",
+  "connectors.paste.error.bringOverSourceChanged": "来源已变更或无法读取。请重新扫描后再试。",
+  "connectors.recovery.oauthRenewal":
+    "如果你之前已经登录，升级后可能需要重新登录，才能确认授权属于这个网址。",
+  "connectors.recovery.saveRemoteKey": "保存密钥并连接",
+  "connectors.recovery.packageLogin": "请按这个服务的文档登录，完成后点「重试」。",
+  "connectors.recovery.loginGuide": "打开服务文档",
+  "connectors.paste.fillKeys": "填写服务密钥",
+  "connectors.paste.pickKeyFile": "重新选择配置文件并预览",
+  "connectors.paste.fillKey": "为 {service} 填写密钥（{label}）",
+  "connectors.paste.error.knowledgeManaged": "请在知识库中修改此连接的使用范围。",
+  "connectors.paste.error.keyRequired": "请填写服务提供的真实密钥。",
+  "connectors.paste.key": "粘贴密钥",
+  "connectors.paste.keyNote": "确认时，Pi Bot 会为对应服务加密保存新填的密钥。",
+  "connectors.paste.protectedFields": "{names}。默认在连接时加密保存。",
+  "connectors.paste.savedKeys": "连接时会向此网站发送已保存的密钥 {names}。",
+  "connectors.paste.savedKeysForProgram": "启动时会向程序 {program} 提供已保存的密钥 {names}。",
+  "connectors.paste.configurationFields": "此连接使用的设置项包括 {names}。",
+  "connectors.paste.useSavedKeys": "我允许上面列出的服务使用对应的已保存密钥。",
+  "connectors.paste.error.savedKeysConsent": "请确认上面列出的服务可以使用对应的已保存密钥。",
+  "connectors.paste.error.savedKeysChanged": "来源更改了已保存密钥或接收方。请重新添加连接并确认。",
+  "connectors.paste.plainField": "{label}（普通配置）",
+  "connectors.paste.plainFields": "标记为普通配置",
+  "connectors.paste.plainFieldsNote":
+    "仅勾选确定不含密钥或其他隐私信息的项目。勾选的值会以明文保存。",
+  "connectors.paste.savedKey": "使用已保存的密钥名称",
+  "connectors.paste.moveKey": "将密钥移入安全存储",
+  "connectors.paste.keyEnvironment": "服务商指定的环境变量名",
+  "connectors.paste.keyEnvironmentHint":
+    "如果服务商支持通过环境变量读取密钥，请填入它指定的名称。确认后，Pi Bot 会加密保存密钥并从启动命令中移除它。",
+  "connectors.paste.error.moveCommandKey": "启动命令内含密钥。可以把密钥移入安全存储。",
+  "connectors.paste.error.keyConflict":
+    "命令里有多个密钥，或所填名称已被使用。请修改原配置后重试。",
+  "connectors.paste.siteExample": "例如 api.example.com。",
+  "connectors.paste.ignoredMetadata":
+    "已略过其他应用的状态、自动批准规则和外部设置。连接使用 Pi Bot 的权限规则。",
+  "connectors.paste.asksToUse": "每次读取前都会询问。",
+  "connectors.paste.error.command": "请粘贴一条完整的启动命令。",
+  "connectors.paste.error.url": "请输入有效的 http:// 或 https:// 网址。请把密钥填在授权设置中。",
+  "connectors.paste.error.variables":
+    "设置名称须以字母或下划线开头，可以包含字母、数字和下划线。每个名称只填一次。",
+  "connectors.paste.error.timeout": "请输入 1 到 180 之间的整数秒数。",
+  "connectors.paste.error.sites": "请输入有效的网站名称，例如 api.example.com，最多 64 个。",
+  "connectors.paste.error.key": "请粘贴完整的密钥，删掉多余的空格。",
+  "connectors.paste.error.folder": "无法打开文件夹选择器。你可以输入工作目录。",
+  "connectors.paste.error.json": "配置没有完整复制或格式有误。请重新复制完整的配置。",
+  "connectors.paste.error.shape": "找不到可以导入的 MCP 设置。请检查是否复制了完整的连接配置。",
+  "connectors.paste.error.unknownField":
+    "配置包含 Pi Bot 无法识别的设置。请核对服务商给出的连接配置。",
+  "connectors.paste.error.target": "每项连接都需要一个服务网址或一条启动命令。",
+  "connectors.paste.error.transport":
+    "无法识别这项连接的连接方式。请使用服务的网址或本机程序（命令）。",
+  "connectors.paste.error.arguments": "启动命令的选项有误。请检查复制的命令或配置。",
+  "connectors.paste.error.workingDirectory":
+    "请输入完整的文件夹路径，或用 ~/ 开头指定个人文件夹内的位置。",
+  "connectors.paste.error.headers": "连接的访问设置有误。请检查请求头和密钥名称。",
+  "connectors.paste.error.commandCredential":
+    "命令中含有密钥。请使用服务商指定的运行设置来保存密钥，再从命令中移除密钥选项。",
+  "connectors.recovery.authorize": "前往授权",
+  "connectors.recovery.extend": "延长等待并重试",
+  "connectors.recovery.runAsMe": "按我的身份运行（需确认）",
+  "connectors.recovery.reconfirm": "重新确认",
+  "connectors.recovery.login": "查看登录方法",
+  "connectors.recovery.copyLogin": "复制终端登录命令",
+  "connectors.recovery.loginCopied": "已复制登录命令。请在终端中粘贴并运行，登录后点「重试」。",
+  "connectors.recovery.loginRun": "复制下面的登录命令并在终端中运行，登录后点「重试」。",
+  "connectors.recovery.loginInstructions":
+    "打开服务商的安装指南，找到此程序的登录步骤，在终端中完成后点「重试」。",
+  "connectors.recovery.importPaths": "导入常用命令路径并重试",
+  "connectors.recovery.windowsPaths":
+    "Pi Bot 会读取 Windows 目前为此电脑和你的账号设置的命令文件夹，供你确认。",
+  "connectors.recovery.pathsConfirm": "将这些文件夹添加到命令环境后，Pi Bot 会重试此连接。",
+  "connectors.recovery.savePaths": "确认导入并重试",
+  "connectors.recovery.pathsUnavailable": "没有找到可添加的命令文件夹，或文件夹数量超过上限。",
+  "connectors.recovery.downloading": "首次启动可能需要下载组件，请等待 1–2 分钟…",
+  "connectors.recovery.startupCurrent": "当前等待 {seconds} 秒。留空使用自动设置，下次启动时生效。",
+  "connectors.recovery.automatic": "自动",
   "connectors.failure.unsupported_platform": "此平台尚不支持",
   "connectors.failure.isolation_unavailable": "命令隔离不可用，不能启动",
   "connectors.failure.dependency_missing": "缺少本机依赖",
@@ -367,7 +479,9 @@ export const connectorsZh = {
     "需要安装经典版 Outlook（新版 Outlook 不支持），或改用 macOS",
   "connectors.failure.outlook_access_denied":
     "Outlook 拒绝访问，请在经典版 Outlook 中允许程序访问日历后重试",
-  "connectors.failure.native_app_failed": "系统调用失败（native_app_failed），请检查本机应用后重试",
+  "connectors.failure.native_app_failed":
+    "无法读取本机应用，请检查对应应用是否已开启并授予系统权限后重试",
+  "connectors.failure.techCode": "查看技术错误码",
   "connectors.failure.connection_failed": "连接失败",
   "connectors.failure.cleanup_incomplete": "清理未完成，请手动重试",
   "connectors.failure.timeout": "连接超时",
@@ -385,10 +499,11 @@ export const connectorsZh = {
 export const connectorsEn: Record<keyof typeof connectorsZh, string> = {
   "connectors.commandDangerous":
     "Dangerous command: this extension startup matches high-risk command rules and may delete data or change the system. Review its source and command before importing. Importing does not authorize execution.",
-  "connectors.commandUnverified":
-    "The startup command could not be fully assessed. Review the command and extension source. Runtime permission and isolation checks still apply.",
   "connectors.importSymlink":
-    "The selected path contains a symbolic link. Select the actual file or directory instead; links inside an extension are also prohibited.",
+    "This package or its location uses a shortcut (alias or symbolic link). To import safely, choose the original location or a package without shortcuts.",
+  "connectors.importSymlinkNamed":
+    '"{item}" is a shortcut (alias or symbolic link) and can\'t be imported safely. Choose the original location or a package without shortcuts.',
+  "connectors.chooseAnotherPackage": "Choose another package",
   "connectors.readToolSummary": "Read data from this connection without changing it.",
   "connectors.writeToolSummary":
     "Change data through this connection under its confirmation settings.",
@@ -403,6 +518,10 @@ export const connectorsEn: Record<keyof typeof connectorsZh, string> = {
   "connectors.tool.create_event": "Create event",
   "connectors.tool.update_event": "Update event",
   "connectors.tool.delete_event": "Delete event",
+  "connectors.tool.send_message": "Send message",
+  "connectors.tool.reply_message": "Reply to message",
+  "connectors.tool.create_draft": "Create draft",
+  "connectors.tool.send_email": "Send email",
   "connectors.confirmationCancelled":
     "You cancelled confirmation. The connection is not enabled; select Connect to try again.",
   "connectors.rememberTool": "Always do this type of operation",
@@ -503,6 +622,7 @@ export const connectorsEn: Record<keyof typeof connectorsZh, string> = {
   "connectors.audit.secretBackfillFailed":
     "Legacy plugin secret references require reconfiguration",
   "connectors.audit.broughtOver": "Brought over from another AI tool",
+  "connectors.audit.settings": "Plugin settings changed",
   "connectors.chooseDirectory": "Choose plugin folder",
   "connectors.windowsWarning":
     "Runs without isolation: this local command can access your entire computer and network. First enable and manual restart require a separate confirmation.",
@@ -511,7 +631,7 @@ export const connectorsEn: Record<keyof typeof connectorsZh, string> = {
   "connectors.reauthNote":
     "Authorization expired. Bots using this connection cannot continue until it is renewed.",
   "connectors.viewConnection": "View connection",
-  "connectors.chooseJson": "Choose plugin zip or JSON",
+  "connectors.chooseJson": "Choose package or MCP configuration file",
   "connectors.customName": "Name",
   "connectors.customUrl": "Remote MCP URL",
   "connectors.customCommand": "Command (without a shell)",
@@ -550,7 +670,7 @@ export const connectorsEn: Record<keyof typeof connectorsZh, string> = {
   "connectors.disabled": "Disabled",
   "connectors.installations": "My imports",
   "connectors.add": "Add",
-  "connectors.import": "Import extension / MCP",
+  "connectors.import": "Import plugin package / MCP",
   "connectors.pluginFallback": "Extension",
   "connectors.empty":
     "No connections yet. Import custom MCP JSON, preview it, then choose whether to enable it.",
@@ -572,14 +692,18 @@ export const connectorsEn: Record<keyof typeof connectorsZh, string> = {
   "connectors.unwired": "Built-in connection not wired; unavailable",
   "connectors.customNote": "Paste MCP / mcpServers / plugin.json configuration",
   "connectors.sharedCredentialNote":
-    "This connection uses a shared secret. Update it in the Secrets tab; connection details cannot replace another installation’s or a shared secret.",
+    "This connection uses a shared access token. Replacing its value in Access tokens updates every connection that uses it.",
+  "connectors.privateCredentialsNote":
+    "Open Advanced settings to replace this connection's tokens individually.",
   "connectors.secretSettingsRequired":
-    "This connection uses a shared secret. Update it on the Secrets page to preserve other connections’ credentials.",
+    "This connection uses a shared access token. Open Access tokens to replace it; the new value updates every connection that uses it.",
+  "connectors.openAccessTokens": "Open Access tokens",
+  "connectors.openAccessTokenNamed": "Update {name} in Access tokens",
   "connectors.scopeNote":
     "Enabled tools work in chats, child tasks and routines under their originating permissions. Plan allows read-only tools only. Writes use send drafts; user identity always requires your confirmation.",
-  "connectors.json": "Paste JSON",
+  "connectors.json": "Paste MCP configuration",
   "connectors.jsonNote":
-    "Choose a Claude Code plugin folder, zip, or MCP JSON, or paste JSON (up to 1 MiB). Every component is previewed before install; raw input is not saved.",
+    "Choose a package folder, ZIP archive or MCP configuration file, or paste a configuration up to 1 MB. You can review each component before installing.",
   "connectors.preview": "Preview",
   "connectors.reading": "Reading…",
   "connectors.importOnly": "Import only",
@@ -603,6 +727,7 @@ export const connectorsEn: Record<keyof typeof connectorsZh, string> = {
   "connectors.skillTargets": "Choose Bots or groups",
   "connectors.skillTargetRequired":
     "Choose who owns the skills. Without a selection, only connections are imported.",
+  "connectors.skillOnlyTargetRequired": "Choose a Bot or group above for these skills first.",
   "connectors.skillsPartial":
     "The import was saved, but some skills could not be copied. Completed copies are kept. Retry to copy the remaining skills.",
   "connectors.pendingSkillImports": "{count} imported extensions have skills awaiting assignment",
@@ -623,6 +748,10 @@ export const connectorsEn: Record<keyof typeof connectorsZh, string> = {
   "connectors.unsupported.not-supported": "Not supported in this release",
   "connectors.unsupported.secret":
     "Looks like it contains a credential, so this skill was skipped; the rest are imported",
+  "connectors.skippedCustomSkills":
+    "Some custom skills or commands in this plugin package aren't supported yet and were skipped; the rest will still import.",
+  "connectors.skippedOtherNotice":
+    "{count} items in this plugin package aren't supported and were skipped (see Technical details below).",
   "connectors.transport.http": "Remote address",
   "connectors.transport.stdio": "Local command",
   "connectors.transport.builtin": "Built-in driver",
@@ -647,7 +776,7 @@ export const connectorsEn: Record<keyof typeof connectorsZh, string> = {
   "connectors.importVersion": "Version: {version}",
   "connectors.previewSanitized":
     "Only the backend’s sanitized summary is shown below, without header/env values.",
-  "connectors.tooLarge": "JSON exceeds 1 MiB. Reduce the configuration and try again.",
+  "connectors.tooLarge": "The configuration exceeds 1 MB. Shorten it and try again.",
   "connectors.importUncertain":
     "No import result received; the backend may have accepted it. Check installed plugins before importing again.",
   "connectors.checkList": "Check installed plugins",
@@ -659,7 +788,7 @@ export const connectorsEn: Record<keyof typeof connectorsZh, string> = {
   "connectors.updateSourceDiff":
     "Source changes: commands {commands}, arguments {arguments}, environment variable names {envNames}, websites {websites}, files {files}",
   "connectors.updateSourceConfirm":
-    "Your Bot/group access, secrets and enabled state stay unchanged. Only the configuration is replaced. A changed command must be confirmed again before it can run as you.",
+    "The update uses the websites you already allowed. If the source switches websites, you can allow the new site in Advanced. A changed command requires confirmation before it can run as you.",
   "connectors.updateSourceNotFound": "The source file or folder could not be found.",
   "connectors.updateSourceDone": "Updated from source and reconnecting.",
   "connectors.disconnect": "Disconnect",
@@ -757,6 +886,8 @@ export const connectorsEn: Record<keyof typeof connectorsZh, string> = {
     "URLs cannot contain usernames, passwords, or other credentials. Move the credential to a request header or a sensitive userConfig field.",
   "connectors.pluginSecretReferenceUnsupported":
     "Plugins cannot reference existing secrets directly. Use a sensitive configuration field instead.",
+  "connectors.settingPathOutsideRoot":
+    "This setting is passed as a local command path argument. For safety, plugin command arguments can't point outside the plugin folder; choose a path inside the plugin folder or pass it via an environment variable in the plugin.",
   "connectors.commandSubstitutionUnsupported": `MCP commands cannot use variable or secret substitution. Use a fixed command; the plugin directory may only be referenced with \${CLAUDE_PLUGIN_ROOT}.`,
   "connectors.committed":
     "This configuration is already imported but currently disabled. Retrying the import will not re-enable it, so a manual disable is preserved; enable it from the connector list, or preview again and choose import-only.",
@@ -765,6 +896,8 @@ export const connectorsEn: Record<keyof typeof connectorsZh, string> = {
   "connectors.timeout":
     "Could not confirm the result in time. Check the current state before repeating the operation.",
   "connectors.failure.invalid_source": "Invalid import source",
+  "connectors.failure.website_approval_required":
+    "Allow this website again, then retry the connection.",
   "connectors.failure.source_changed": "Source changed; preview again",
   "connectors.failure.preview_expired": "Preview expired",
   "connectors.failure.unsupported_format": "Unsupported configuration format",
@@ -772,7 +905,122 @@ export const connectorsEn: Record<keyof typeof connectorsZh, string> = {
   "connectors.failure.secret_required": "Required secret is missing",
   "connectors.failure.secret_reconfiguration_required":
     "The legacy plugin's secret references could not be upgraded safely. Re-import and configure this plugin.",
-  "connectors.failure.auth_required": "Authorization required",
+  "connectors.failure.auth_required": "Sign in and authorize this connection to use it.",
+  "connectors.paste.label": "Paste connection details",
+  "connectors.paste.placeholder": "Paste a service URL, a local command, or an MCP configuration",
+  "connectors.paste.argument": "Command option {index}",
+  "connectors.paste.variable": "Setting name",
+  "connectors.paste.value": "Setting value",
+  "connectors.paste.addArgument": "Add command option",
+  "connectors.paste.launchOptions": "Launch options for {command}",
+  "connectors.paste.addVariable": "Add environment setting",
+  "connectors.paste.cwd": "Working folder",
+  "connectors.paste.pickFolder": "Choose folder",
+  "connectors.paste.timeout": "Startup wait (seconds)",
+  "connectors.paste.registrySites": "Downloads use {sites}",
+  "connectors.paste.manual": "Advanced: enter manually",
+  "connectors.paste.mode": "Connection method",
+  "connectors.paste.manualUrl": "Service address",
+  "connectors.paste.manualCommand": "Launch command",
+  "connectors.paste.recipients": "Destinations and credentials",
+  "connectors.paste.error.duplicateNames":
+    "Two services have names that are too similar. Give them distinct names and try again.",
+  "connectors.paste.error.bringOverSourceChanged":
+    "The source changed or could not be read. Scan again before retrying.",
+  "connectors.recovery.oauthRenewal":
+    "If you signed in before upgrading, you may need to sign in again so Pi Bot can verify the grant belongs to this address.",
+  "connectors.recovery.saveRemoteKey": "Save key and connect",
+  "connectors.recovery.packageLogin":
+    "Follow the service’s sign-in instructions, then select Retry.",
+  "connectors.recovery.loginGuide": "Open service documentation",
+  "connectors.paste.fillKeys": "Enter your service keys",
+  "connectors.paste.pickKeyFile": "Select the configuration file again and preview",
+  "connectors.paste.fillKey": "Enter a key for {service} ({label})",
+  "connectors.paste.error.knowledgeManaged":
+    "Change who can use this connection in Knowledge Base.",
+  "connectors.paste.error.keyRequired": "Enter the actual key from your service.",
+  "connectors.paste.key": "Paste access key",
+  "connectors.paste.keyNote": "Pi Bot encrypts any new key you enter when you confirm.",
+  "connectors.paste.protectedFields": "{names}. Encrypted on connection by default.",
+  "connectors.paste.savedKeys":
+    "When connecting, Pi Bot sends the saved keys {names} to this website.",
+  "connectors.paste.savedKeysForProgram":
+    "At startup, Pi Bot passes the saved keys {names} to {program}.",
+  "connectors.paste.configurationFields": "Settings used include {names}.",
+  "connectors.paste.useSavedKeys": "Allow each service above to use the saved keys listed for it.",
+  "connectors.paste.error.savedKeysConsent":
+    "Confirm that the services above may use the saved keys listed for them.",
+  "connectors.paste.error.savedKeysChanged":
+    "The source changed a saved key or its recipient. Add the connection again to review and confirm.",
+  "connectors.paste.plainField": "{label} (plain setting)",
+  "connectors.paste.plainFields": "Mark values as plain settings",
+  "connectors.paste.plainFieldsNote":
+    "Select only values that contain no keys or private information. Selected values are saved in plain text.",
+  "connectors.paste.savedKey": "Use a saved key name",
+  "connectors.paste.moveKey": "Move the key to secure storage",
+  "connectors.paste.keyEnvironment": "Environment variable named by the provider",
+  "connectors.paste.keyEnvironmentHint":
+    "If your provider supports reading a key from an environment variable, enter the name it specifies. On confirmation, Pi Bot encrypts the key and removes it from the launch command.",
+  "connectors.paste.error.moveCommandKey":
+    "The launch command contains an access key. You can move it to secure storage.",
+  "connectors.paste.error.keyConflict":
+    "The command contains multiple keys, or that setting name is already in use. Update the original configuration and try again.",
+  "connectors.paste.siteExample": "For example, api.example.com.",
+  "connectors.paste.ignoredMetadata":
+    "Other apps’ status, automatic approvals and external settings were left out. Pi Bot applies its own permissions.",
+  "connectors.paste.asksToUse": "Pi Bot asks before each read.",
+  "connectors.paste.error.command": "Paste a single complete launch command.",
+  "connectors.paste.error.url":
+    "Enter a valid http:// or https:// address. Enter access keys in the authorization settings.",
+  "connectors.paste.error.variables":
+    "Start each setting name with a letter or an underscore. Use letters, digits and underscores. Use each name once.",
+  "connectors.paste.error.timeout": "Enter a whole number from 1 to 180 seconds.",
+  "connectors.paste.error.sites": "Enter up to 64 valid website names, such as api.example.com.",
+  "connectors.paste.error.key": "Paste the complete access key and remove any extra spaces.",
+  "connectors.paste.error.folder":
+    "The folder picker couldn’t open. You can enter the working folder directly.",
+  "connectors.paste.error.json":
+    "The configuration is incomplete or has a formatting error. Copy and paste the complete configuration again.",
+  "connectors.paste.error.shape":
+    "Pi Bot couldn’t find MCP settings to import. Check that you copied the full connection configuration.",
+  "connectors.paste.error.unknownField":
+    "The configuration contains a setting Pi Bot doesn’t recognize. Check the provider’s connection instructions.",
+  "connectors.paste.error.target": "Each connection needs a service address or a launch command.",
+  "connectors.paste.error.transport":
+    "Pi Bot couldn’t recognize how this service connects. Use its web address or local command.",
+  "connectors.paste.error.arguments":
+    "The launch command has invalid options. Check the copied command or configuration.",
+  "connectors.paste.error.workingDirectory":
+    "Enter a full folder path, or use ~/ for a folder inside your home directory.",
+  "connectors.paste.error.headers":
+    "The connection’s access settings are invalid. Check its request headers and access key name.",
+  "connectors.paste.error.commandCredential":
+    "The command contains an access key. Save it through the provider’s documented environment setting and remove the key option from the command.",
+  "connectors.recovery.authorize": "Continue to authorization",
+  "connectors.recovery.extend": "Wait longer and retry",
+  "connectors.recovery.runAsMe": "Run as me (confirmation required)",
+  "connectors.recovery.reconfirm": "Confirm again",
+  "connectors.recovery.login": "Show sign-in instructions",
+  "connectors.recovery.copyLogin": "Copy Terminal sign-in command",
+  "connectors.recovery.loginCopied":
+    "Login command copied. Paste and run it in Terminal, then select Retry.",
+  "connectors.recovery.loginRun":
+    "Copy the command below and run it in Terminal, then select Retry.",
+  "connectors.recovery.loginInstructions":
+    "Open the provider’s setup guide and follow the Terminal sign-in steps for this program. Then select Retry.",
+  "connectors.recovery.importPaths": "Import command folders and retry",
+  "connectors.recovery.windowsPaths":
+    "Pi Bot will read the command folders currently set in Windows for this computer and your account. You can review them before saving.",
+  "connectors.recovery.pathsConfirm":
+    "Pi Bot will add these folders to the command environment and retry this connection.",
+  "connectors.recovery.savePaths": "Confirm import and retry",
+  "connectors.recovery.pathsUnavailable":
+    "There were no command folders to add, or there were too many to import.",
+  "connectors.recovery.downloading":
+    "The first start may need to download components. This can take 1–2 minutes…",
+  "connectors.recovery.startupCurrent":
+    "Currently waits {seconds} seconds. Clear the field to use the automatic setting. Changes apply the next time it starts.",
+  "connectors.recovery.automatic": "Automatic",
   "connectors.failure.unsupported_platform": "Platform not supported yet",
   "connectors.failure.isolation_unavailable": "Command isolation is unavailable; cannot start",
   "connectors.failure.dependency_missing": "Local dependency is missing",
@@ -781,7 +1029,8 @@ export const connectorsEn: Record<keyof typeof connectorsZh, string> = {
   "connectors.failure.outlook_access_denied":
     "Outlook denied access. Allow programmatic calendar access in classic Outlook, then retry",
   "connectors.failure.native_app_failed":
-    "System call failed (native_app_failed). Check the local app, then retry",
+    "Couldn't reach the local app. Check that it's available and allowed in system permissions, then try again.",
+  "connectors.failure.techCode": "Technical error code",
   "connectors.failure.connection_failed": "Connection failed",
   "connectors.failure.cleanup_incomplete": "Cleanup incomplete; retry manually",
   "connectors.failure.timeout": "Connection timed out",

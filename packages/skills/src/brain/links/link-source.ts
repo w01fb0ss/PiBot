@@ -23,16 +23,21 @@ export function parseLink(input: string): LinkSource & { tree?: string[] } {
   } catch {
     throw linkError("skill_link_unsupported");
   }
-  if (
-    url.protocol !== "https:" ||
-    url.username ||
-    url.password ||
-    url.search ||
-    url.hash ||
-    (url.port && url.port !== "443")
-  )
+  if (url.protocol !== "https:" || url.username || url.password || (url.port && url.port !== "443"))
     throw linkError("skill_link_unsupported");
   const host = url.hostname;
+  if (host === "github.com") {
+    const query = [...url.searchParams];
+    if (
+      url.search &&
+      (query.length !== 1 || query[0]?.[0] !== "tab" || !/^[a-z0-9-]{1,80}$/i.test(query[0][1]))
+    )
+      throw linkError("skill_link_unsupported");
+    url.search = "";
+    url.hash = "";
+  } else if (url.search || url.hash) {
+    throw linkError("skill_link_unsupported");
+  }
   const hosts = new Set(["github.com", "codeload.github.com", host]);
   if (host !== "github.com" && host !== "codeload.github.com") {
     if (!url.pathname.toLowerCase().endsWith(".zip")) throw linkError("skill_link_unsupported");
@@ -62,6 +67,17 @@ export function parseLink(input: string): LinkSource & { tree?: string[] } {
     [".", ".."].includes(repo)
   )
     throw linkError("skill_link_unsupported");
+  if (
+    host === "github.com" &&
+    parts[2] === "blob" &&
+    parts.length >= 5 &&
+    parts.length <= 21 &&
+    parts.at(-1) === "SKILL.md"
+  ) {
+    parts.pop();
+    parts[2] = "tree";
+    url.pathname = `/${parts.map(encodeURIComponent).join("/")}`;
+  }
   const base = { url: url.href, host, hosts, owner, repo, subpath: "" };
   if (parts.length === 2) return { ...base, ref: "HEAD", download: archive(owner, repo, "HEAD") };
   if (host === "codeload.github.com" && parts[2] === "zip" && parts.length > 3) {

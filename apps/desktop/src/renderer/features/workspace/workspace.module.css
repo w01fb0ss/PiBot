@@ -165,18 +165,21 @@ fieldset.form {
 }
 .noticeHead {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 2px 8px;
   min-width: 0;
 }
+/* The title keeps its words whole; a long scope line (English) wraps below it instead of
+   squeezing the title to one word per line. */
 .noticeHead > strong {
-  flex: 1;
-  min-width: 0;
+  flex: 1 0 auto;
   color: var(--note-ink, var(--text));
   font-size: 12.5px;
 }
 .noticeHead > p {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
   margin: 0;
   color: var(--text2);
   font-size: 11.5px;

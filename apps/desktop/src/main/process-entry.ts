@@ -9,11 +9,13 @@ import type { prelaunchBackground } from "./background/background-prelaunch.ts";
 import type { prelaunchBrainProcess } from "./brain/brain-process.ts";
 import { monitorMainEventLoop } from "./event-loop-monitor.ts";
 import { createMainStartupTiming } from "./startup-timing.ts";
+import { desktopRegistrationSkipReason } from "./window/login-item-scope.ts";
 import type { ProviderLinkInbox } from "./window/provider-link-inbox.ts";
 
 /** Loaded after app ready; native owner and GUI graphs remain separate dynamic chunks. */
 export async function startMain(options: {
   dataDir: string;
+  dataDirDisplayPath?: string;
   version: string;
   dev: boolean;
   background: boolean;
@@ -45,6 +47,15 @@ export async function startMain(options: {
     dev,
   });
   options.onLogger?.(logger);
+  const registrationSkipReason = desktopRegistrationSkipReason({ dev, env: originalEnv });
+  if ((background || embedded) && registrationSkipReason)
+    logger.info(
+      JSON.stringify({
+        module: "login-item",
+        event: "register_skipped",
+        reason: registrationSkipReason,
+      }),
+    );
   logger[
     bootstrap.cacheDeferred || bootstrap.status === 0 || bootstrap.status === 1 ? "info" : "warn"
   ](
@@ -82,7 +93,7 @@ export async function startMain(options: {
     if (!background) {
       const { registerAppUrlScheme } = await import("./window/app-url.ts");
       if (signal.aborted) return;
-      registerAppUrlScheme(dev, logger);
+      registerAppUrlScheme(registrationSkipReason, logger);
     }
     const started = performance.now();
     if (!background && !embedded) {
@@ -137,6 +148,7 @@ export async function startMain(options: {
       timing.report(logger, "gui_setup");
       await startGuiClient({
         dataDir,
+        dataDirDisplayPath: options.dataDirDisplayPath,
         outputDir,
         version,
         dev,
@@ -258,6 +270,7 @@ export async function startMain(options: {
     timing.mark("owner_parallel_setup");
     const roleOptions = {
       dataDir,
+      dataDirDisplayPath: options.dataDirDisplayPath,
       outputDir,
       resourcesDir,
       version,

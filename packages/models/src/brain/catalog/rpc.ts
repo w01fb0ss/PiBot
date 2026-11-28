@@ -10,7 +10,7 @@ import {
   providerPlan,
   RpcError,
 } from "@pibot/models-contract/full";
-import { SettingsRepo } from "@pibot/storage";
+import { AuditRepo, BotsRepo, SettingsRepo } from "@pibot/storage";
 import { recordedModelHealth } from "../../store/index.ts";
 import type { ProviderAuth } from "../auth/provider-auth.ts";
 import type { ModelSettings } from "../settings/model-settings.ts";
@@ -28,6 +28,18 @@ export function registerModelProviderRpc(
   const settings = new SettingsRepo(ctx.db);
   const handle = ctx.rpc.handle;
   const changed = () => peer.emit("providers.changed", {});
+  const audit = new AuditRepo(ctx.db, redactor);
+  const bots = new BotsRepo(ctx.db);
+  const deadline = (signal: AbortSignal) => AbortSignal.any([signal, ctx.models.signal()]);
+  const saveKey = async (providerId: string, key: string, signal: AbortSignal) => {
+    await providers.setKey(providerId, key, signal);
+    try {
+      // The key is saved independently of catalog reachability.
+      await providers.refreshVideoCatalogForKey(providerId, signal);
+    } finally {
+      changed();
+    }
+  };
   handle("models.health", ({ models }) => recordedModelHealth(ctx.db, models));
   handle("providers.list", async () => {
     const envNames = new Set(await ctx.host.env.detect());
@@ -43,7 +55,10 @@ export function registerModelProviderRpc(
             ...entry,
             name: custom.name,
             ...(entry.id === MAGPIE_PROVIDER.id ? { baseUrl: custom.baseUrl } : {}),
-            modelCount: custom.models.length + (custom.imageModels?.length ?? 0),
+            modelCount:
+              custom.models.length +
+              (custom.imageModels?.length ?? 0) +
+              (custom.videoModels?.length ?? 0),
           }
         : entry.auth !== "custom"
           ? { ...entry, modelCount: modelCounts.get(entry.id) ?? entry.modelCount }
@@ -56,7 +71,8 @@ export function registerModelProviderRpc(
           name: cfg.name,
           group: "local",
           auth: "custom",
-          modelCount: cfg.models.length + (cfg.imageModels?.length ?? 0),
+          modelCount:
+            cfg.models.length + (cfg.imageModels?.length ?? 0) + (cfg.videoModels?.length ?? 0),
           available: true,
         });
     }
@@ -92,9 +108,8 @@ export function registerModelProviderRpc(
       };
     });
   });
-  handle("providers.setApiKey", async ({ providerId, apiKey }) => {
-    await providers.serialize(() => providers.setKey(providerId, apiKey));
-    changed();
+  handle("providers.setApiKey", async ({ providerId, apiKey }, { signal }) => {
+    await providers.serialize(() => saveKey(providerId, apiKey, deadline(signal)));
     return { ok: true };
   });
   handle("providers.addModel", async ({ providerId, modelId }) => {
@@ -116,16 +131,41 @@ export function registerModelProviderRpc(
     if (changedList) changed();
     return { ok: true };
   });
-  handle("providers.importFromEnv", async ({ providerId }) => {
+  handle("providers.videoModels", async ({ providerId, refresh }, { signal }) => {
+    const catalog = await providers.listVideoModels(providerId, refresh === true, deadline(signal));
+    if (refresh) changed();
+    return catalog;
+  });
+  handle("providers.setVideoModel", async ({ providerId, modelId, enabled }, { signal }) => {
+    const updated = await providers.serialize(() =>
+      providers.setVideoModel(providerId, modelId, enabled, deadline(signal), () => {
+        const main = bots.getMain();
+        if (!main) throw new Error("main_bot_unavailable");
+        audit.append({
+          botId: main.id,
+          kind: "provider.video_model_changed",
+          summary: "Video model availability changed / 视频模型可用状态已更改",
+          detail: {
+            actor: "user",
+            providerId,
+            modelId,
+            reasonCode: enabled ? "enabled" : "disabled",
+          },
+        });
+      }),
+    );
+    if (updated) changed();
+    return { ok: true };
+  });
+  handle("providers.importFromEnv", async ({ providerId }, { signal }) => {
     await providers.serialize(async () => {
       providers.assertWritable(providerId);
       const entry = providers.catalog.find((p) => p.id === providerId && p.auth === "apiKey");
       if (!entry?.envVarName) throw new RpcError(-32602, "No importable environment variable");
       const key = await ctx.host.env.read(entry.envVarName);
       if (key === undefined) throw new RpcError(-32602, "Environment variable unavailable");
-      await providers.setKey(providerId, key);
+      await saveKey(providerId, key, deadline(signal));
     });
-    changed();
     return { ok: true };
   });
   handle("providers.remove", async ({ providerId, auth: mode }) => {
@@ -194,12 +234,12 @@ export function registerModelProviderRpc(
       };
     }
     await providers.requireCredentials(providerId);
-    const { baseUrl, api, headers } = providers.get(providerId);
+    const { baseUrl, api, headers, videoApi } = providers.get(providerId);
     const apiKey = await providers.secrets.get(providerScope(providerId), "apiKey");
     return {
       models: await agent.fetchCustomModels({
         baseUrl,
-        api,
+        api: videoApi === "agnes" ? "openai-completions" : api,
         ...(headers ? { headers } : {}),
         ...(apiKey ? { apiKey } : {}),
       }),
@@ -266,7 +306,10 @@ export function registerModelProviderRpc(
           name: MAGPIE_PROVIDER.name,
           baseUrl: magpieBaseUrl(port),
           api: "openai-completions",
-          models: discovered,
+          models: discovered.map(({ input, ...model }) => ({
+            ...model,
+            ...(input ? { input: [...input] } : {}),
+          })),
         },
         deadline,
       );

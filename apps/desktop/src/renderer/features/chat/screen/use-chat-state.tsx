@@ -9,9 +9,7 @@ import { useRuntimeHealth } from "../../../app/runtime-health.ts";
 import { useDisplayConversation } from "../../../app/startup-display.tsx";
 import { useChatFolders } from "../../folders/use-chat-folders.ts";
 import { useCatalog } from "../../workspace/profile/catalog.ts";
-import { useAgentCommandMenu } from "../composer/AgentCommandMenu.tsx";
 import { useComposerDraft, useRetryDraft } from "../composer/composer-drafts.tsx";
-import { useSkillCommands } from "../composer/SkillCommands.tsx";
 import { useAttachmentDrop } from "../composer/useAttachmentDrop.ts";
 import { useAttachments } from "../composer/useAttachments.ts";
 import { useInputHistory } from "../composer/useInputHistory.ts";
@@ -21,6 +19,7 @@ import { useTimelineDay } from "../messages/MessageTime.tsx";
 import { usePlacedNotices } from "../status/ChatNotices.tsx";
 import type { ActivityState } from "../tools/local-activity.ts";
 import { useLocalActivity } from "../tools/local-activity.ts";
+import { findOverrideModel, useOverrideModels } from "../topics/ModelOverrideControl.tsx";
 import { useTopicTitle } from "../topics/use-topic-title.ts";
 import { useTopicWorkplace } from "../topics/useTopicWorkplace.ts";
 import { useWorkplaces } from "../topics/useWorkplaces.ts";
@@ -143,9 +142,12 @@ export function useChatState({ peer, target, visible, disconnected }: ConnectedC
     groupedCache.current = groupActivity(activity.state, groupedCache.current);
     return groupedCache.current;
   }, [activity.state]);
+  const runId = activeRun(state);
   const conversationMessages = new Set(state.messages.map((message) => message.id));
   const waiting = activity.state.approvals.find(
-    (approval) => approval.status === "pending" && conversationMessages.has(approval.messageId),
+    (approval) =>
+      approval.status === "pending" &&
+      (conversationMessages.has(approval.messageId) || (!!runId && approval.runId === runId)),
   );
   const composing = useRef(false);
   const textarea = useRef<HTMLTextAreaElement>(null);
@@ -167,7 +169,6 @@ export function useChatState({ peer, target, visible, disconnected }: ConnectedC
     !state.hasMore,
   );
   const noticeBotName = useCallback(() => name, [name]);
-  const runId = activeRun(state);
   const busy = state.pending || !!runId;
   // While this run waits for another Bot to release the folder (an independent review it
   // started), that Bot is the one working there; the changes pane names it, not this Bot.
@@ -228,8 +229,13 @@ export function useChatState({ peer, target, visible, disconnected }: ConnectedC
     state.historyError ||
     state.metadataLoading ||
     state.metadataError;
-  const model =
-    state.bot?.category === "image"
+  const overrideImages = useOverrideModels(
+    peer,
+    state.bot?.category === "image" && topic.modelOverride ? "image" : undefined,
+  );
+  const model = topic.modelOverride
+    ? findOverrideModel([...state.models, ...overrideImages.models], topic.modelOverride)
+    : state.bot?.category === "image"
       ? currentImageModel(state)
       : state.models.find(
           (item) => item.provider === state.bot?.modelProvider && item.id === state.bot?.modelId,
@@ -242,34 +248,8 @@ export function useChatState({ peer, target, visible, disconnected }: ConnectedC
   );
   const attachmentDrop = useAttachmentDrop(attachments.add, visible && !topic.locked);
   const agentBot = state.bot?.kind === "agent";
-  const composerDisabled = disconnected || state.pending || state.loading || attachments.reading;
-  const skillMenu = useSkillCommands({
-    // Agent skills use the same selection text; the brain supplies the validated body.
-    owners:
-      state.bot && state.bot.category !== "image"
-        ? [{ id: state.bot.id, name: state.bot.name }]
-        : [],
-    text,
-    edit: editText,
-    textarea,
-    disabled: composerDisabled,
-  });
   // A draft topic has no session yet: the Bot's last known commands stand in.
   const agentOptions = useAgentOptions(state.bot?.id ?? "", state.conversationId, agentBot);
-  const agentMenu = useAgentCommandMenu({
-    enabled: agentBot,
-    agentName: state.bot?.name ?? "",
-    commands: agentOptions.options?.commands,
-    text,
-    edit: editText,
-    textarea,
-    disabled: composerDisabled,
-  });
-  const nativeCommand = agentOptions.options?.commands.some(
-    (command) => text === `/${command.name}`,
-  );
-  const skillCommands =
-    agentBot && (nativeCommand || !skillMenu.open || !skillMenu.hasEntries) ? agentMenu : skillMenu;
   const modelsSettings = useCallback(() => {
     if (state.bot) openWorkspace({ name: "profile", botId: state.bot.id });
     else openSettings("models", "pi-model");
@@ -345,7 +325,7 @@ export function useChatState({ peer, target, visible, disconnected }: ConnectedC
     model,
     attachments,
     attachmentDrop,
-    skillCommands,
+    agentCommands: agentOptions.options?.commands,
     agentAccountStatus: agentOptions.accountStatus as AgentAccountStatus,
     checkAgentStatus: agentOptions.checkStatus,
     modelsSettings,

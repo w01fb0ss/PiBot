@@ -19,6 +19,7 @@ export function useRemoteSettings() {
     | "pairUnavailable"
     | "pairFailed"
     | "phonePairFailed"
+    | "runnerPairStartFailed"
     | "revocationPending"
     | "revocationPending.runner"
     | "revocationPending.phone"
@@ -27,6 +28,7 @@ export function useRemoteSettings() {
     | "pairRelayMismatch"
     | "relayInvalid"
   >();
+  const [errorScope, setErrorScope] = useState<"runner" | "phone">();
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const lifetime = useRef(new AbortController());
@@ -143,11 +145,13 @@ export function useRemoteSettings() {
   // "Add phone" and "add runner" share remote_pair_failed; each needs its own explanation.
   const perform = async (
     action: (current: Peer, signal: AbortSignal) => Promise<void>,
-    pairFailed: "pairFailed" | "phonePairFailed" = "pairFailed",
+    pairFailed: "pairFailed" | "phonePairFailed" | "runnerPairStartFailed" = "pairFailed",
     timeoutMs = 30_000,
+    scope?: "runner" | "phone",
   ) => {
     if (!peer || loadedPeer !== peer) return false;
     if (pending.current === lifetime.current) {
+      setErrorScope(scope);
       setActionError("busy");
       return false;
     }
@@ -163,6 +167,7 @@ export function useRemoteSettings() {
       return true;
     } catch (cause) {
       if (!owner.signal.aborted) {
+        setErrorScope(scope);
         const reasons = {
           remote_settings_stale: "stale",
           remote_pair_unavailable: "pairUnavailable",
@@ -178,7 +183,9 @@ export function useRemoteSettings() {
         setActionError(
           cause instanceof RpcError && Object.hasOwn(reasons, cause.message)
             ? reasons[cause.message as keyof typeof reasons]
-            : "failed",
+            : pairFailed === "pairFailed"
+              ? "failed"
+              : pairFailed,
         );
       }
       return false;
@@ -195,6 +202,8 @@ export function useRemoteSettings() {
     busy,
     loading: loading || loadedPeer !== peer,
     error: actionError ?? error,
+    errorScope: actionError ? errorScope : undefined,
+    clearActionError: () => setActionError(undefined),
     reload: () => {
       setActionError(undefined);
       return load();
@@ -219,17 +228,24 @@ export function useRemoteSettings() {
     add: (kind?: "runner") =>
       perform(
         async (p, signal) => {
+          setPair(undefined);
           const value = await p.call("devices.pairStart", kind ? { kind } : undefined, { signal });
           activePair.current = value.id;
           setPair({ ...value, kind, status: "waiting" });
         },
-        "phonePairFailed",
+        kind === "runner" ? "runnerPairStartFailed" : "phonePairFailed",
         65_000,
+        kind === "runner" ? "runner" : "phone",
       ),
     addRunner: (code: string) =>
-      perform(async (p, signal) => {
-        await p.call("devices.runnerPair", { code }, { signal, timeoutMs: 35_000 });
-      }),
+      perform(
+        async (p, signal) => {
+          await p.call("devices.runnerPair", { code }, { signal, timeoutMs: 35_000 });
+        },
+        "pairFailed",
+        40_000,
+        "runner",
+      ),
     cancel: () =>
       perform(async (p, signal) => {
         if (!pair) return;

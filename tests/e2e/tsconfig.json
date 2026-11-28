@@ -18,6 +18,7 @@
     "fewer-approvals/probe.ts",
     "forward/probe.ts",
     "image-norms/probe.ts",
+    "image-providers/probe.ts",
     "tool-plane/selection.ts",
     "tool-plane/defaults.ts",
     "cache/probe.ts",

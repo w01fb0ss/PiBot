@@ -78,7 +78,7 @@ export function MessageTransferDialog({
   const bots = data.bots.filter((b) => !b.archivedAt),
     groups = data.groups;
   const members = bots.filter((b) => picked.includes(b.id)),
-    coordinators = members.filter((b) => b.category !== "image");
+    coordinators = members.filter((b) => b.category !== "image" && b.kind !== "agent");
   const coordinatorId = coordinators.some((b) => b.id === coordinator)
     ? coordinator
     : (coordinators[0]?.id ?? "");

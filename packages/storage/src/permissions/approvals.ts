@@ -4,10 +4,13 @@ import {
   type Approval,
   type ApprovalFinalStatus,
   ApprovalFinalStatusSchema,
+  type ApprovalModelOption,
   ApprovalPageSchema,
   ApprovalSchema,
   type BotPage,
+  type KernelMethodParams,
 } from "@pibot/protocol-base";
+import { visibleImport, visibleImportedRows } from "../conversations/conversations.ts";
 import { transaction } from "../database/database.ts";
 import { readPage } from "../database/paging.ts";
 import { RunEventsRepo } from "../runs/run-events.ts";
@@ -19,6 +22,17 @@ export type CreateApproval = Omit<
 const columns = `id, bot_id AS botId, run_id AS runId, message_id AS messageId, conversation_id AS conversationId,
   tool_call_id AS toolCallId, category, risk, request, status, remembered,
   source,routine_run_id AS routineRunId,created_at AS createdAt, resolved_at AS resolvedAt, expires_at AS expiresAt`;
+// Pending cards nothing else keeps: paused chat cards, send drafts and parked routine gates each
+// have their own recovery. Startup recovery and the default Pi's repair share this one predicate.
+const RECOVERABLE = `NOT EXISTS(SELECT 1 FROM chat_approval_pauses p WHERE p.approval_id=approvals.id) AND NOT EXISTS(SELECT 1 FROM send_drafts d WHERE d.approval_id=approvals.id) AND NOT EXISTS(SELECT 1 FROM parked_unattended_runs p WHERE p.id=approvals.routine_run_id)`;
+// A task thread belongs to the topic that created it, even after the task has finished.
+const groupTopics = `SELECT c.id, t.id AS topicId, t.archived_at AS archivedAt
+  FROM conversations c JOIN (
+    SELECT id,group_id,archived_at FROM conversations
+    WHERE kind='group' AND internal_task_id IS NULL AND ${visibleImport}
+  ) t ON t.id=COALESCE(c.thread_of,c.id) AND t.group_id=c.group_id
+  WHERE c.group_id=? AND c.kind IN ('group','thread')
+  AND c.internal_task_id IS NULL AND ${visibleImportedRows("c.import_id")}`;
 function parseApproval(row: Record<string, unknown>): Approval {
   const { request, ...fields } = row;
   return ApprovalSchema.parse({
@@ -126,6 +140,31 @@ export class ApprovalsRepo {
     return row ? parseApproval(row) : undefined;
   }
 
+  /** Called in the same transaction as saving an explicitly requested direct-run permission. */
+  recordDirectRunRemembered(id: string): boolean {
+    return (
+      this.db
+        .prepare(`UPDATE approvals SET remembered=1 WHERE id=? AND status='allowed' AND remembered=0
+        AND json_type(request, '$.directRunRemember')='object'`)
+        .run(id).changes === 1
+    );
+  }
+
+  /** Called in the same transaction as the one-time decision. */
+  selectModel(
+    id: string,
+    language: "zh" | "en",
+    option: ApprovalModelOption,
+    { videoModel, domain }: Pick<Approval, "videoModel" | "domain">,
+  ) {
+    const { localized } = option;
+    const { title, facts } = localized[language];
+    this.db
+      .prepare(`UPDATE approvals SET request = json_patch(json_remove(request, '$.modelOptions'), json(?))
+        WHERE id = ? AND status = 'pending'`)
+      .run(JSON.stringify({ title, facts, localized, videoModel, domain: domain ?? null }), id);
+  }
+
   blocksTaskCompletion(runId: string): boolean {
     return !!this.db
       .prepare(
@@ -160,6 +199,58 @@ export class ApprovalsRepo {
     ).map(parseApproval);
   }
 
+  groupTimeline({
+    groupId,
+    topicId,
+    since,
+    ...page
+  }: KernelMethodParams["approvals.groupTimeline"]): Approval[] {
+    const belongs = `conversation_id IN (SELECT id FROM (${groupTopics}) WHERE topicId=?) AND source='chat'`;
+    // Keep old pending cards actionable and recently answered cards at their original position.
+    const cursor = page.before
+      ? this.db
+          .prepare(`SELECT created_at FROM approvals WHERE id=? AND ${belongs}`)
+          .get(page.before, groupId, topicId)
+      : undefined;
+    if (page.before && !cursor) return [];
+    return this.db
+      .prepare(`SELECT ${columns} FROM approvals WHERE ${belongs}
+        AND (? IS NULL OR status='pending' OR created_at>=? OR resolved_at>=?)
+        AND (? IS NULL OR (created_at,id)<(?,?))
+        ORDER BY created_at DESC,id DESC LIMIT ?`)
+      .all(
+        groupId,
+        topicId,
+        since ?? null,
+        since ?? null,
+        since ?? null,
+        cursor?.created_at ?? null,
+        cursor?.created_at ?? null,
+        page.before ?? null,
+        page.limit ?? 50,
+      )
+      .map(parseApproval);
+  }
+
+  groupFocus(groupId: string) {
+    const row = this.db
+      .prepare(`SELECT topicId,a.id AS approvalId FROM (${groupTopics}) c
+        JOIN approvals a ON a.conversation_id=c.id
+        WHERE c.archivedAt IS NULL AND a.status='pending' AND a.source='chat'
+        ORDER BY a.created_at,a.id LIMIT 1`)
+      .get(groupId);
+    return row ? { topicId: String(row.topicId), approvalId: String(row.approvalId) } : null;
+  }
+
+  /** One pending card startup recovery would expire (not paused, no draft, no parked routine). */
+  recoverable(id: string): Approval | undefined {
+    const row = this.db
+      .prepare(`SELECT ${columns} FROM approvals WHERE id=? AND status='pending'
+      AND ${RECOVERABLE}`)
+      .get(id);
+    return row ? parseApproval(row) : undefined;
+  }
+
   pendingForRecovery(page: BotPage = {}): Approval[] {
     const { botId, ...paging } = ApprovalPageSchema.parse(page);
     const scope: [string, string][] = botId ? [["bot_id", botId]] : [];
@@ -169,14 +260,7 @@ export class ApprovalsRepo {
       columns,
       "created_at",
       paging,
-      [
-        ...scope,
-        ["status", "pending"],
-        [
-          `NOT EXISTS(SELECT 1 FROM chat_approval_pauses p WHERE p.approval_id=approvals.id) AND NOT EXISTS(SELECT 1 FROM send_drafts d WHERE d.approval_id=approvals.id) AND NOT EXISTS(SELECT 1 FROM parked_unattended_runs p WHERE p.id=approvals.routine_run_id)`,
-          1,
-        ],
-      ],
+      [...scope, ["status", "pending"], [RECOVERABLE, 1]],
       scope,
     ).map(parseApproval);
   }

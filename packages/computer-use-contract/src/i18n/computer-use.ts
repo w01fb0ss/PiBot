@@ -23,7 +23,7 @@ export const computerUseZh = {
     "界面读不到的地方，按截图里的位置点击和拖动，会移动你的鼠标，只在你空闲时做。整屏截图也算截图点击。只对这次任务有效。",
   "computerUse.card.coordinatesRequested": "这次请求里包含截图点击。",
   "computerUse.card.alwaysNote":
-    "「一直允许」：在勾选的应用里以后不再询问（截图点击除外），可在这个 Bot 资料面板的「权限与连接」里撤销",
+    "「一直允许」：在勾选的应用里以后不再询问（截图点击除外），可在这个 Bot 资料面板的「权限」里撤销",
   "computerUse.card.noticeProvider": "截图会发给 {provider}（当前用的模型）",
   "computerUse.card.noticeLocal": "截图只交给这台电脑上的本机模型",
   "computerUse.card.noticeNoImages": "当前模型不接收截图，截图点击不可用",
@@ -63,6 +63,7 @@ export const computerUseZh = {
   "computerUse.unavailable.wayland_limited":
     "Wayland 下只能有限地操作电脑：截图要确认，按坐标点击受限。",
   "computerUse.unavailable.driver_missing": "操作电脑的组件没有装好，请重新安装 Pi Bot。",
+  "computerUse.unavailable.helper_unavailable": "读取应用列表所需的系统组件暂时无法启动。",
   "computerUse.unavailable.permission_missing": "请在系统设置中开启辅助功能和屏幕录制权限。",
   "computerUse.unavailable.permission_missing_desktop":
     "系统没有提供操作电脑需要的显示或输入权限。请确认这个会话有桌面、Pi Bot 可以截屏和模拟输入，然后重新打开 Pi Bot。",
@@ -136,6 +137,7 @@ export const computerUseZh = {
   "computerUse.picker.more": "还有 {count} 个，搜索可以缩小范围",
   "computerUse.picker.truncated": "应用太多，只列出了一部分。",
   "computerUse.picker.unsupported": "读不到这台电脑上的应用：{reason}",
+  "computerUse.picker.unsupportedGeneric": "暂时无法读取这台电脑上的应用列表。",
   "computerUse.picker.loading": "正在读取这台电脑上的应用…",
   "computerUse.picker.done": "完成",
   "computerUse.retention.title": "操作截图",
@@ -192,7 +194,7 @@ export const computerUseEn: { [K in keyof typeof computerUseZh]: string } = {
     "Where the interface can't be read, the Bot clicks and drags at positions in a screenshot. This moves your mouse and only happens while you're idle. Full-screen screenshots count as screenshot clicks. This task only.",
   "computerUse.card.coordinatesRequested": "This request includes screenshot clicks.",
   "computerUse.card.alwaysNote":
-    "“Always allow”: don’t ask again in the checked apps (screenshot clicks excluded). You can revoke it on this Bot’s Permissions & connections tab.",
+    "“Always allow”: don’t ask again in the checked apps (screenshot clicks excluded). You can revoke it on this Bot’s Permissions tab.",
   "computerUse.card.noticeProvider": "Screenshots are sent to {provider} (the current model)",
   "computerUse.card.noticeLocal": "Screenshots only go to the local model on this computer",
   "computerUse.card.noticeNoImages":
@@ -322,6 +324,9 @@ export const computerUseEn: { [K in keyof typeof computerUseZh]: string } = {
   "computerUse.picker.more": "{count} more. Search to narrow the list",
   "computerUse.picker.truncated": "Too many apps; only some are listed.",
   "computerUse.picker.unsupported": "Can't list the apps on this computer: {reason}",
+  "computerUse.picker.unsupportedGeneric": "Can't list the apps on this computer right now.",
+  "computerUse.unavailable.helper_unavailable":
+    "The system helper for listing apps couldn't start.",
   "computerUse.picker.loading": "Reading the apps on this computer…",
   "computerUse.picker.done": "Done",
   "computerUse.retention.title": "Step screenshots",

@@ -14,11 +14,13 @@ export function SettingsPage({ lead, children }: { lead?: ReactNode; children: R
 }
 
 export function SettingsSection({
+  id: sectionId,
   title,
   action,
   children,
   bare = false,
 }: {
+  id?: string;
   title: string;
   /** Right side of the section title (a search box, an add button). */
   action?: ReactNode;
@@ -28,7 +30,7 @@ export function SettingsSection({
 }) {
   const id = useId();
   return (
-    <section className={styles.section} aria-labelledby={id}>
+    <section id={sectionId} className={styles.section} aria-labelledby={id}>
       <div className={styles.title}>
         <h2 id={id}>{title}</h2>
         {action}
@@ -241,6 +243,8 @@ export function SettingsFold({
   children,
   icon,
   tone,
+  open: controlledOpen,
+  onOpenChange,
 }: {
   title: string;
   summary?: string;
@@ -248,8 +252,11 @@ export function SettingsFold({
   /** The fold is a card whose head row leads with this tile. */
   icon?: IconName;
   tone?: TileTone;
+  open?: boolean;
+  onOpenChange?(open: boolean): void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [localOpen, setLocalOpen] = useState(false);
+  const open = controlledOpen ?? localOpen;
   const id = useId();
   return (
     <section className={`${styles.section} ${styles.foldCard}`} data-open={open || undefined}>
@@ -258,7 +265,10 @@ export function SettingsFold({
         className={styles.fold}
         aria-expanded={open}
         aria-controls={id}
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => {
+          if (controlledOpen === undefined) setLocalOpen(!open);
+          onOpenChange?.(!open);
+        }}
       >
         {icon && <IconTile icon={icon} tone={tone ?? "blue"} size="lg" />}
         <span className={styles.foldTitle}>{title}</span>

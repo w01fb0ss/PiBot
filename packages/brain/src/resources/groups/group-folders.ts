@@ -30,9 +30,11 @@ export class GroupFoldersService {
       folders: group.folders?.map((folder) => ({
         ...folder,
         displayPath:
-          !folder.location && containsPath(userHome, folder.path, platform)
+          folder.displayPath === folder.path &&
+          !folder.location &&
+          containsPath(userHome, folder.path, platform)
             ? `~${api.sep}${api.relative(userHome, folder.path)}`
-            : folder.path,
+            : folder.displayPath,
       })),
     };
   }
@@ -94,7 +96,7 @@ export class GroupFoldersService {
       id: randomUUID(),
       name: selected.name,
       path: selected.path,
-      displayPath: selected.path,
+      displayPath: selected.displayPath,
       location: selected.location,
     };
     if (!existing && retained.length >= 32) throw new RpcError(-32602, "Group folder limit");
@@ -135,7 +137,7 @@ export class GroupFoldersService {
         transaction(this.service.deps.db, () => {
           const repo = new GroupFoldersRepo(this.service.deps.db);
           this.retainDevice(group, selected.location);
-          if (repo.add(id, selected.path, selected.location))
+          if (repo.add(id, selected.path, selected.location, selected.displayPath))
             this.audit(group, selected.path, "added");
           if (primary === choice.id) {
             const saved = repo

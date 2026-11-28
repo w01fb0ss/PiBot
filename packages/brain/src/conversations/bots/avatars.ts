@@ -1,5 +1,5 @@
 import { randomInt } from "node:crypto";
-import { type Bot, RpcError } from "@pibot/protocol-base";
+import { BOT_AVATAR_COLORS, type Bot, RpcError } from "@pibot/protocol-base";
 
 // Keep the backend choices aligned with ui/Avatar; brain must not depend on React.
 export const avatarShapes = [
@@ -16,18 +16,7 @@ export const avatarShapes = [
   "bean",
   "tri",
 ];
-export const avatarColors = [
-  "orange",
-  "amber",
-  "blue",
-  "violet",
-  "pink",
-  "teal",
-  "green",
-  "brown",
-  "ink",
-  "gray",
-];
+export const avatarColors: readonly string[] = BOT_AVATAR_COLORS;
 export const avatarEyes = ["marks", "dot", "oval", "pixel", "sleepy"];
 export function checkAvatar(patch: Partial<Bot>) {
   for (const [value, choices] of [

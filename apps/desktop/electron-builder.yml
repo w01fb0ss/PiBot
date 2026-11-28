@@ -153,7 +153,8 @@ deb:
     - socat
   # Electron's tray speaks StatusNotifierItem itself; builder's libappindicator3-1 default no longer
   # exists on current Ubuntu.
-  recommends: []
+  recommends:
+    - fonts-noto-cjk
   afterInstall: build/linux/after-install.tpl
   afterRemove: build/linux/after-remove.tpl
   appArmorProfile: build/linux/apparmor-profile.tpl

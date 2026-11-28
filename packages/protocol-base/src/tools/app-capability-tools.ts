@@ -3,6 +3,18 @@ import type { CapabilityToolSpec } from "./capability-tools.ts";
 
 const text = (maximum: number) => z.string().trim().min(1).max(maximum);
 const page = z.number().int().min(1).max(100).optional();
+const cursorPlaceholders = new Set(["", "0", "start", "first", "none", "null", "undefined"]);
+const cursor = z
+  .union([z.string().max(64), z.number(), z.null()])
+  .transform((value) => {
+    // Third-party connections may issue opaque tokens. Native apps decode their own offsets.
+    const token = value === null ? "" : String(value).trim();
+    return cursorPlaceholders.has(token.toLowerCase()) ? undefined : token;
+  })
+  .optional()
+  .describe(
+    "Omit cursor for the first page; never pass placeholders. Copy nextCursor for later pages.",
+  );
 // A template without a connection: policy denies it for the missing connectorId; brain judges a
 // served call with the connection's own request instead. The strictest mode keeps it closed.
 const connectorPolicy = (readOnly: boolean) =>
@@ -28,7 +40,7 @@ export const appCapabilityTools = {
           .max(100)
           .refine((ids) => new Set(ids).size === ids.length, "Calendar IDs must be unique")
           .optional(),
-        cursor: text(64).optional(),
+        cursor,
         limit: page,
       })
       .refine(
@@ -68,7 +80,7 @@ export const appCapabilityTools = {
     group: "apps",
     schema: z.strictObject({
       query: text(256),
-      cursor: text(64).optional(),
+      cursor,
       limit: page,
     }),
     description:

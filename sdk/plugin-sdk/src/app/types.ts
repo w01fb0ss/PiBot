@@ -37,7 +37,7 @@ export const PiBotServerPresetSchema = z.discriminatedUnion("transport", [
     ...commonPreset,
     transport: z.literal("stdio"),
     /** Resolved only through the host's compiled-in service table. */
-    fixedService: z.enum(["calendar", "contacts", "gmail"]),
+    fixedService: z.enum(["calendar", "contacts", "gmail", "image-inspiration"]),
     env: z.record(z.string().min(1).max(64), z.string().max(4096)).default({}),
   }),
 ]);

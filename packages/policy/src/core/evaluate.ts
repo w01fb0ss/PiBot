@@ -49,7 +49,12 @@ function judge(
       return evaluateComputer({ ...input, request: input.request }, trace);
     if (input.request.category === "memory") return memoryWritePolicy(input.request);
     if (input.request.category === "agent_delegation") return agentDelegationPolicy(input, trace);
-    if (input.request.category === "bot_management" || input.request.category === "work_dispatch")
+    if (
+      input.request.category === "bot_management" ||
+      input.request.category === "work_dispatch" ||
+      input.request.category === "pi_repair" ||
+      input.request.category === "settings_change"
+    )
       return piManagerPolicy(input, trace);
     // The Bot's own background commands, which the user already approved when they started;
     // listing, reading their output and stopping them reach nothing new.

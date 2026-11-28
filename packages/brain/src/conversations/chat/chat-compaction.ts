@@ -12,6 +12,7 @@ import {
 } from "@pibot/storage";
 import type { KernelRegisterRpc } from "../../core/business-rpc.ts";
 import type { BrainRedactor } from "../../core/privacy.ts";
+import { topicModel } from "../../runtime/models/run-model.ts";
 import type { ChatService } from "./chat.ts";
 
 /** Explicit user action; no tools, automatic replay, authority transfer or second session writer. */
@@ -57,7 +58,7 @@ export function registerChatCompaction(
     )
       throw new RpcError(RpcErrorCodes.invalidParams, "compaction_scope_unavailable");
     const sessionFile = new BotSessionsRepo(db).get(bot.id, topic.id) ?? topic.piSessionFile;
-    if (!sessionFile || !bot.modelProvider || !bot.modelId || !agent.compactHistory)
+    if (!sessionFile || !agent.compactHistory)
       throw new RpcError(RpcErrorCodes.invalidParams, "session_unavailable");
     const controller = new AbortController();
     pending.set(input.requestId, { input, controller });
@@ -69,10 +70,14 @@ export function registerChatCompaction(
           controller.signal,
           AbortSignal.timeout(1_200_000),
         ]);
+        const effective = topicModel(bot, conversations.get(topic.id) ?? topic);
+        if (!effective.modelProvider || !effective.modelId)
+          throw new RpcError(RpcErrorCodes.invalidParams, "session_unavailable");
         const result = await agent.compactHistory?.({
           botId: bot.id,
           sessionFile,
-          model: { provider: bot.modelProvider as string, id: bot.modelId as string },
+          model: { provider: effective.modelProvider, id: effective.modelId },
+          ...(effective !== bot ? { compactWithSelectedModel: true } : {}),
           fork: input.fork,
           signal,
           redact: (text) => redactor.redact(text),

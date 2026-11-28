@@ -20,8 +20,8 @@ import {
 import type { SandboxBlockItem } from "@pibot/execution";
 import type { AgentErrorCode } from "@pibot/external-agents-contract/full";
 import { agentDescriptor, type Bot, MessageSchema } from "@pibot/external-agents-contract/full";
-import { agentLaunchPolicy } from "@pibot/policy";
-import { ChatNoticesRepo, RunsRepo, transaction } from "@pibot/storage";
+import { agentLaunchPolicy, EXTERNAL_AGENT_EXPLICIT_ALWAYS_REQUIRED } from "@pibot/policy";
+import { ChatNoticesRepo, RunsRepo, SettingsRepo, transaction } from "@pibot/storage";
 import { z } from "zod";
 import { AcpClosedError, AcpRemoteError } from "../acp/acp-connection.ts";
 import { AgentStartError } from "../acp/agent-sessions.ts";
@@ -30,7 +30,7 @@ import type { ExternalAgentsService } from "../service.ts";
 import { agentFileChanges } from "./agent-file-changes.ts";
 import { attachCreatedFiles } from "./agent-outputs.ts";
 import { runAgentReview } from "./agent-review.ts";
-import { answerPermission, PIBOT_BRIDGE_GATED, pibotTool } from "./permission-bridge.ts";
+import { answerPermission, PIBOT_BRIDGE_GATED, TurnPermissionCalls } from "./permission-bridge.ts";
 import { TurnTranslator } from "./turn-translator.ts";
 
 const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
@@ -181,13 +181,17 @@ function publishAgentSandboxNotices(
   agentName: string,
   language: "zh" | "en",
   items: readonly SandboxBlockItem[],
+  /** Home-relative folders the agent lists every turn and works without: refused, unremarked. */
+  quietFolders: readonly string[] = [],
 ) {
   if (!context.conversationId || !items.length) return;
   const named = items.some((item) => item.kind !== "other");
+  const quiet = new Set(quietFolders.map((path) => `~/${path}`));
   const unique = new Set<string>();
   const repo = new ChatNoticesRepo(local.deps.db);
   for (const item of items) {
     if ((named && item.kind === "other") || unique.has(`${item.kind}:${item.rule}`)) continue;
+    if (item.kind === "protected_read" && quiet.has(item.target)) continue;
     unique.add(`${item.kind}:${item.rule}`);
     const target = local.deps.redactor
       .redact(item.target)
@@ -333,6 +337,9 @@ export async function runExternalAgent(
     },
     publishActivity,
     !run.executionTaskId,
+    run.executionTaskId
+      ? undefined
+      : (replying) => local?.deps.liveActivityReplying?.(run.runId, replying),
   );
   const files = local ? agentFileChanges(local, context) : undefined;
   const record = service.bots.get(bot.id);
@@ -429,13 +436,8 @@ export async function runExternalAgent(
     // requiring a thread refused every one of them before launch (maintainers 2026-11-15).
     const groupStep = !!(run.groupId && run.taskId);
     const planStep = groupStep && !!run.threadId;
-    if (
-      (run.groupId && !groupStep) ||
-      run.executionTaskId ||
-      run.workflow ||
-      run.routine?.resumeDecision ||
-      run.parking
-    )
+    if (run.groupId && !groupStep) throw new AgentRunError("agent_group_task_required");
+    if (run.executionTaskId || run.workflow || run.routine?.resumeDecision || run.parking)
       throw new AgentRunError("agent_unavailable");
     // Attached images go to an agent that accepts them (promptCapabilities.image); any other
     // agent refuses the send instead of silently dropping them. Checked below once it started.
@@ -485,6 +487,14 @@ export async function runExternalAgent(
     watching = true;
     for (const root of writeRoots) await local.changes.turn.watchCommand(context, root, true);
     processKey = { botId: bot.id, conversationId: run.conversationId };
+    const toolInputSession = {
+      id: JSON.stringify(["external-agent-start", run.runId]),
+      model:
+        bot.modelProvider && bot.modelId
+          ? { provider: bot.modelProvider, id: bot.modelId }
+          : (new SettingsRepo(deps.db).get().defaultModel ?? undefined),
+    };
+    context.toolInputSession = toolInputSession;
     // Before the session opens: the agent may connect its `pibot` server while starting it.
     bridgeTurn = service.bridge.begin(processKey, {
       local,
@@ -517,6 +527,12 @@ export async function runExternalAgent(
       ...(groupStep && run.groupId ? { groupId: run.groupId } : {}),
       signal,
     });
+    toolInputSession.id = JSON.stringify([
+      "external-agent",
+      bot.id,
+      run.conversationId,
+      process.sessionId,
+    ]);
     timing.openMs = Date.now() - opening;
     if (pictures.length && !process.info.agentCapabilities?.promptCapabilities?.image)
       throw new AgentRunError("image_unsupported");
@@ -525,20 +541,15 @@ export async function runExternalAgent(
       record.agentId === "custom" ? record.custom?.name : agentDescriptor(record.agentId).name;
     const turn = new TurnTranslator(local, context, replies, programName);
     translator = turn;
-    /** The agent's steps that call Pi Bot's bridge tools: Pi Bot records those steps itself. */
-    const bridgeCalls = new Map<string, string>();
+    const permissionCalls = new TurnPermissionCalls();
     process.turn = {
       update: (update) => {
         timing.firstOutputMs ??= Date.now() - startedAt;
-        if (update.sessionUpdate === "tool_call") {
-          const tool = pibotTool(update);
-          if (tool) bridgeCalls.set(update.toolCallId, tool);
-        }
         // Its own step record (the browser step with its screenshot, the sent file) comes from
         // Pi Bot's tool gate; the agent's report of the same call would be a second, blank step.
         if (
           (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") &&
-          bridgeCalls.has(update.toolCallId)
+          permissionCalls.record(update)
         ) {
           turn.markStep();
           return;
@@ -555,7 +566,7 @@ export async function runExternalAgent(
             unisolated: isolation === "unisolated",
             // Work handed over by another Bot asks in the topic it came from.
             cardContext: service.delegations.from(run.runId),
-            bridgeCalls,
+            announcedCalls: permissionCalls,
             beforeWrite: files?.before,
             audit: (decision, kind, mapped) => {
               // A call of Pi Bot's own tool is decided (and counted) by Pi Bot's gate in the bridge.
@@ -564,7 +575,7 @@ export async function runExternalAgent(
                 if (decision.allowed) approvals.allowed++;
                 else approvals.denied++;
               }
-              return audit(
+              audit(
                 "external_agent.permission",
                 "External agent permission / 外部 Agent 请求权限",
                 {
@@ -574,6 +585,8 @@ export async function runExternalAgent(
                   reasonCode: decision.reason,
                 },
               );
+              if (decision.reason === EXTERNAL_AGENT_EXPLICIT_ALWAYS_REQUIRED)
+                turn.permissionRefused({ ...params.toolCall, kind }, decision.reason);
             },
           },
           params,
@@ -712,7 +725,14 @@ export async function runExternalAgent(
     await process.connection
       .sandboxDenials()
       .then((items) =>
-        publishAgentSandboxNotices(local, context, agentName, deps.language(), items),
+        publishAgentSandboxNotices(
+          local,
+          context,
+          agentName,
+          deps.language(),
+          items,
+          record.agentId === "custom" ? [] : (agentDescriptor(record.agentId).quietDenials ?? []),
+        ),
       )
       .catch(() => undefined);
     turn.finishOpen("done");
@@ -840,7 +860,7 @@ export async function runExternalAgent(
           : undefined;
       const updates = replies.finish(
         code === "aborted" ? "aborted" : "error",
-        {
+        MessageSchema.shape.usage.parse({
           stopReason: code,
           ...(record
             ? {
@@ -848,10 +868,11 @@ export async function runExternalAgent(
                   agentId: record.agentId,
                   name: agentName,
                   ...(detail ? { errorDetail: detail } : {}),
+                  ...(translator?.details.length ? { stepDetails: translator.details } : {}),
                 },
               }
             : {}),
-        },
+        }),
         code,
       );
       new RunsRepo(deps.db).finish(

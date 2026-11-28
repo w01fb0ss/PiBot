@@ -10,6 +10,7 @@ export interface BrainOptions {
   acp?: Parameters<typeof startBrain>[0]["acp"];
   host: BrainHost;
   dataDir: string;
+  dataDirDisplayPath?: string;
   resourcesDir: string;
   version: string;
   platform: NodeJS.Platform;

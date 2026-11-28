@@ -3,11 +3,11 @@ export const commandAccessZh = {
   "docker.disabled": "关闭",
   "docker.risk":
     "高权限：Docker 可以挂载宿主目录、读写工作文件夹之外的文件，并使用独立于命令网站白名单的网络。默认关闭。",
-  "docker.mac": "仅为本次前台命令开放所选本机套接字，每次都需审批，YOLO 不跳过。",
+  "docker.mac": "仅为本次前台命令开放所选本机套接字，每次都需审批，自动批准模式也不会跳过。",
   "docker.linux":
     "Docker 客户端通过专用通道直接执行，未隔离；不开放全部 Unix 套接字，也不执行宿主 Shell。每次都需审批。Docker Engine 使用系统默认套接字，暂不支持 rootless 自定义端点。",
   "docker.windows":
-    "注意：Docker 命令未隔离。开启后按命令权限执行：“总是允许”或 YOLO 可自动执行；“询问”仍需审批，“不允许”仍会拒绝。",
+    "注意：Docker 命令未隔离，每次都需审批，自动批准模式也不会跳过；设为「不允许」时仍会拒绝。",
   "docker.lifecycle":
     "仅支持单条前台 docker 命令和字面参数。关闭权限只阻止后续访问，不会停止已有容器或删除数据卷。",
   "docker.confirm": "我了解 Docker 可能超出工作文件夹及命令网络隔离范围。",
@@ -41,7 +41,7 @@ export const commandAccessZh = {
   "ssh.reason.match": "配置里用了 Match",
   "ssh.reason.includeOutsideHome": "Include 指向主目录之外",
   "ssh.reason.includeInWorkspace":
-    "Include 指向工作位置或 Bot 可写根内，Bot 能改写的配置不能决定连哪台主机",
+    "Include 指向工作文件夹或 Bot 可写文件夹内，Bot 能改写的配置不能决定连哪台主机",
   "ssh.reason.other": "配置不符合支持的写法",
   "ssh.reason.strictHostKey": "StrictHostKeyChecking 只支持 yes；把 accept-new 改成 yes",
   "ssh.reason.option": "配置里的 {option} 不支持；删掉这一行后再打开这一页",
@@ -67,11 +67,11 @@ export const commandAccessEn: Record<keyof typeof commandAccessZh, string> = {
   "docker.risk":
     "High privilege: Docker can mount host folders, read and write outside the workspace, and use networks outside the command domain allowlist. Off by default.",
   "docker.mac":
-    "Only the selected local socket is opened for this foreground command. Approval is required each time, even with YOLO.",
+    "Only the selected local socket is opened for this foreground command. Approval is required each time, even with Auto-approve.",
   "docker.linux":
     "The Docker client runs directly through a dedicated, unisolated channel, without opening all Unix sockets or executing a host shell. Approval is required each time. Docker Engine uses the system socket; rootless custom endpoints are not supported yet.",
   "docker.windows":
-    "Warning: Docker commands are not isolated. Once enabled, normal command permissions apply: Always allow or YOLO can run automatically; Ask still requires approval and Never still denies.",
+    "Warning: Docker commands are not isolated. Approval is required each time, even with Auto-approve; Never still denies.",
   "docker.lifecycle":
     "Only one foreground docker command with literal arguments is supported. Turning access off blocks future commands; it does not stop existing containers or remove volumes.",
   "docker.confirm":
@@ -107,7 +107,7 @@ export const commandAccessEn: Record<keyof typeof commandAccessZh, string> = {
   "ssh.reason.match": "The configuration uses Match",
   "ssh.reason.includeOutsideHome": "Include points outside your home folder",
   "ssh.reason.includeInWorkspace":
-    "Include points into a workspace or Bot-writable root; a configuration the Bot can rewrite must not decide which host is connected",
+    "Include points into a working folder or Bot-writable folder; a configuration the Bot can rewrite must not decide which host is connected",
   "ssh.reason.other": "The configuration uses an unsupported feature",
   "ssh.reason.strictHostKey": "StrictHostKeyChecking only supports yes; change accept-new to yes",
   "ssh.reason.option":

@@ -1,4 +1,9 @@
-import type { CustomProvider, MethodResults, Provider } from "@pibot/models-contract/full";
+import {
+  type CustomProvider,
+  imageApiRequiresKey,
+  type MethodResults,
+  type Provider,
+} from "@pibot/models-contract/full";
 import { useRpc, useT } from "@pibot/renderer-kit";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -17,7 +22,8 @@ import {
   modelSnapshot,
   patchModel,
 } from "../selection/custom-model-state.ts";
-import { customPresets } from "./custom-presets.ts";
+import type { VideoModelRow } from "../selection/custom-video-models.tsx";
+import { customPresets, presetImageModels } from "./custom-presets.ts";
 import type { Task } from "./provider-form.tsx";
 
 type SavedProvider = MethodResults["customProviders.get"];
@@ -36,6 +42,8 @@ interface FormState {
   models: ModelRow[];
   imageApi: NonNullable<CustomProvider["imageApi"]> | "none";
   imageModels: ImageModelRow[];
+  videoApi: NonNullable<CustomProvider["videoApi"]> | "none";
+  videoModels: VideoModelRow[];
   compat: Record<string, boolean>;
 }
 // Dirty baselines must never retain credential values.
@@ -44,6 +52,20 @@ const snapshot = ({ key: _key, headers: _headers, ...form }: FormState) =>
 const presets = Object.fromEntries(
   Object.entries(customPresets).map(([id, preset]) => [id, Object.values(preset.urls)[0]]),
 );
+function videoConfig(form: FormState) {
+  return form.videoApi === "none"
+    ? {}
+    : {
+        videoApi: form.videoApi,
+        videoModels: form.videoModels.map(({ rowId: _rowId, ...model }) => model),
+      };
+}
+function chatModels(form: FormState) {
+  const videoIds = new Set(
+    form.videoApi !== "none" ? form.videoModels.map((model) => model.id) : [],
+  );
+  return form.models.filter((model) => model.selected && !videoIds.has(model.id)).map(modelConfig);
+}
 function headerInput(headers: HeaderRow[]) {
   const names = new Set<string>();
   for (const header of headers) {
@@ -76,11 +98,17 @@ export function useCustomProvider(
       headers: [],
       clearHeaders: false,
       models: [],
-      imageApi: "none",
-      imageModels: [],
+      imageApi: customPresets[provider.id]?.imageApi ?? "none",
+      imageModels: presetImageModels(provider.id, presets[provider.id] ?? "").map((entry) => ({
+        ...entry,
+        rowId: crypto.randomUUID(),
+      })),
+      videoApi: customPresets[provider.id]?.videoApi ?? "none",
+      videoModels: [],
       compat: provider.id === "ollama" ? { supportsDeveloperRole: false } : {},
     }),
   );
+  const [videoCatalog, setVideoCatalog] = useState<string[]>([]);
   const [saved, setSaved] = useState<SavedProvider>();
   const [baseline, setBaseline] = useState(() => snapshot(form));
   const [loading, setLoading] = useState(provider.configured);
@@ -215,8 +243,9 @@ export function useCustomProvider(
     const run = async () => {
       if (!saved || credentialPending || snapshot(current) === baseline) return false;
       if (
-        customPresets[provider.id] &&
-        provider.id.endsWith("-api") &&
+        ((customPresets[provider.id] && provider.id.endsWith("-api")) ||
+          imageApiRequiresKey(saved.imageApi) ||
+          (current.imageApi !== "none" && imageApiRequiresKey(current.imageApi))) &&
         saved.baseUrl !== current.baseUrl
       )
         return false;
@@ -228,7 +257,8 @@ export function useCustomProvider(
           baseUrl: current.baseUrl,
           api: current.api,
           ...(Object.keys(current.compat).length ? { compat: current.compat } : {}),
-          models: current.models.filter((model) => model.selected).map(modelConfig),
+          models: chatModels(current),
+          ...videoConfig(current),
           ...(current.imageApi !== "none"
             ? {
                 imageApi: current.imageApi,
@@ -253,15 +283,16 @@ export function useCustomProvider(
   async function save() {
     if (credentialBlocked) return;
     if (
-      customPresets[provider.id] &&
-      provider.id.endsWith("-api") &&
+      ((customPresets[provider.id] && provider.id.endsWith("-api")) ||
+        (form.imageApi !== "none" && imageApiRequiresKey(form.imageApi))) &&
       !form.key &&
       !saved?.hasApiKey
     )
       throw new SetupError("models.keyInvalid");
     if (
-      customPresets[provider.id] &&
-      provider.id.endsWith("-api") &&
+      ((customPresets[provider.id] && provider.id.endsWith("-api")) ||
+        imageApiRequiresKey(saved?.imageApi) ||
+        (form.imageApi !== "none" && imageApiRequiresKey(form.imageApi))) &&
       saved &&
       saved.baseUrl !== form.baseUrl &&
       !form.key
@@ -272,9 +303,12 @@ export function useCustomProvider(
       name: form.name,
       baseUrl: form.baseUrl,
       api: form.api,
-      ...credentials(),
+      ...(form.imageApi === "comfyui-images" && !chatModels(form).length && form.videoApi === "none"
+        ? {}
+        : credentials()),
       ...(Object.keys(form.compat).length ? { compat: form.compat } : {}),
-      models: form.models.filter((model) => model.selected).map(modelConfig),
+      models: chatModels(form),
+      ...videoConfig(form),
       ...(form.imageApi !== "none"
         ? {
             imageApi: form.imageApi,
@@ -298,7 +332,7 @@ export function useCustomProvider(
     });
     await refresh();
     if (!payload.models.length) {
-      task.setSuccess(t("media.savedImages"));
+      task.setSuccess(t(payload.videoModels?.length ? "setup.saved" : "media.savedImages"));
       return;
     }
     const tested = await testProvider(rpc, result.id, testModelId);
@@ -333,11 +367,18 @@ export function useCustomProvider(
     }
   }
   async function discoverModels() {
-    if (form.imageApi !== "none" && !form.models.length)
+    if (form.videoApi === "none" && form.imageApi !== "none" && !form.models.length)
       throw new SetupError("media.noChatDiscovery");
     const rpc = requirePeer(peer);
     const unchangedCredentials = !form.key && !form.headers.length && !form.clearHeaders;
-    const unchangedConnection = saved?.baseUrl === form.baseUrl && saved.api === form.api;
+    const catalogApi =
+      form.videoApi === "agnes"
+        ? "openai-completions"
+        : form.videoApi === "gemini-veo"
+          ? "google-generative-ai"
+          : form.api;
+    const savedCatalogApi = saved?.videoApi === "agnes" ? "openai-completions" : saved?.api;
+    const unchangedConnection = saved?.baseUrl === form.baseUrl && savedCatalogApi === catalogApi;
     let found: MethodResults["customProviders.fetchModels"];
     if (saved && unchangedCredentials && unchangedConnection) {
       found = await writeCredential(() =>
@@ -356,7 +397,7 @@ export function useCustomProvider(
       const payload = validateCustom({
         name: form.name || "discovery",
         baseUrl: form.baseUrl,
-        api: form.api,
+        api: catalogApi,
         ...credentials(),
         models: [{ id: "discovery" }],
       });
@@ -367,15 +408,28 @@ export function useCustomProvider(
         ...(payload.headers ? { headers: payload.headers } : {}),
       });
     }
+    const agnes = form.videoApi === "agnes";
+    const videoCatalog = found.models
+      .map((model) => model.id)
+      .filter((id) => !agnes || /^agnes-video-/.test(id));
+    setVideoCatalog(videoCatalog);
+    const videoIds = new Set([
+      ...form.videoModels.map((model) => model.id),
+      ...(agnes ? videoCatalog : []),
+    ]);
     const existing = new Map(form.models.map((model) => [model.id, model]));
     setField(
       "models",
-      found.models.map((model) => existing.get(model.id) ?? modelRow(model)),
+      found.models
+        .filter((model) => !videoIds.has(model.id))
+        .map((model) => existing.get(model.id) ?? modelRow(model)),
     );
     if (!found.models.length) task.setSuccess(t("models.custom.noModels"));
   }
   return {
     form,
+    videoCatalog,
+    hasChatModels: chatModels(form).length > 0,
     saved,
     loading,
     loadError,
@@ -403,6 +457,11 @@ function fromSaved(info: SavedProvider): FormState {
     headers: [],
     clearHeaders: false,
     models: info.models.map(modelRow),
+    videoApi: info.videoApi ?? "none",
+    videoModels: (info.videoModels ?? []).map((model) => ({
+      ...model,
+      rowId: crypto.randomUUID(),
+    })),
     imageApi: info.imageApi ?? "none",
     imageModels: (info.imageModels ?? []).map((model) => ({
       ...model,

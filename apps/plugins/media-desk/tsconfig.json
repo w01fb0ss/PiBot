@@ -1,0 +1,22 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "composite": true,
+    "noEmit": false,
+    "declaration": true,
+    "declarationMap": false,
+    "emitDeclarationOnly": true,
+    "disableSourceOfProjectReferenceRedirect": true,
+    "noCheck": true,
+    "outDir": ".cache/tsc",
+    "tsBuildInfoFile": ".cache/tsc/tsconfig.tsbuildinfo"
+  },
+  "files": [],
+  "exclude": ["**/*.test.ts", "**/*.test.tsx", "test/**"],
+  "references": [
+    {
+      "path": "../../../sdk/plugin-sdk"
+    }
+  ]
+}

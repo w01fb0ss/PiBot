@@ -19,6 +19,14 @@ const identity = z.strictObject({
 });
 
 export const KnowledgeOpenHostMethods = {
+  "host.knowledge.trashNote": {
+    params: z.strictObject({
+      vault: identity,
+      relativePath: z.string().min(1).max(500),
+      expectedVersion: z.string().min(1).max(200),
+    }),
+    result: z.strictObject({ trashed: z.literal(true) }),
+  },
   "host.knowledge.openNote": {
     params: z.strictObject({
       /**
@@ -30,13 +38,21 @@ export const KnowledgeOpenHostMethods = {
       sourceId: IdSchema,
       vault: identity,
       note: z.strictObject({
-        /** Vault-relative `.md` path; the host resolves it and refuses anything that leaves the root. */
+        /** Vault-relative document path; the host resolves it and refuses anything that leaves the root. */
         relativePath: z.string().min(1).max(4096),
         device: z.string().min(1).max(64),
         inode: z.string().min(1).max(64),
       }),
+      /** True for plain document folders or non-Markdown files that should reveal in file manager. */
+      preferReveal: z.boolean().optional(),
     }),
-    result: z.strictObject({ opened: z.literal(true) }),
+    result: z.strictObject({
+      opened: z.literal(true),
+      method: z.enum(["obsidian", "revealed"]).optional(),
+      fallbackReason: z
+        .enum(["obsidian_unavailable", "duplicate_vault", "not_in_obsidian", "document_file"])
+        .optional(),
+    }),
   },
 } as const;
 

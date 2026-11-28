@@ -10,11 +10,7 @@ const outcome = z.object({
 });
 
 /** Bounded recent evidence, never a probe; only an explicitly recorded model owns a failure. */
-export function recordedModelHealth(
-  db: DatabaseSync,
-  models: readonly { provider: string; id: string }[],
-) {
-  const cutoff = new Date(Date.now() - 86_400_000).toISOString();
+export function recentModelOutcomes(db: DatabaseSync, cutoff: string) {
   const rows = db
     .prepare(`
     SELECT json_extract(m.usage,'$.runModel.provider') AS provider,
@@ -35,15 +31,30 @@ export function recordedModelHealth(
     WHERE e.finished_at>=? AND (e.status='done' OR (e.status='failed' AND EXISTS (
       SELECT 1 FROM background_task_health h
       WHERE h.task='memory_organization' AND h.subject=e.bot_id AND h.reason_code=e.error)))
+    UNION ALL
+    SELECT json_extract(e.payload,'$.provider'),json_extract(e.payload,'$.model'),
+      json_extract(e.payload,'$.error'),e.at
+    FROM (SELECT payload,at FROM run_events WHERE kind='model.startup_failed' AND at>=?
+          ORDER BY at DESC LIMIT 100) e
     ORDER BY at DESC
   `)
-    .all(cutoff, cutoff, cutoff);
-  const latest = new Map<string, z.infer<typeof outcome>>();
-  for (const row of rows) {
+    .all(cutoff, cutoff, cutoff, cutoff);
+  return rows.flatMap((row) => {
     const parsed = outcome.safeParse(row);
-    if (!parsed.success) continue;
-    const key = JSON.stringify([parsed.data.provider, parsed.data.model]);
-    if (!latest.has(key)) latest.set(key, parsed.data);
+    return parsed.success ? [parsed.data] : [];
+  });
+}
+
+/** Only an explicitly recorded model owns a warning in the model picker. */
+export function recordedModelHealth(
+  db: DatabaseSync,
+  models: readonly { provider: string; id: string }[],
+) {
+  const cutoff = new Date(Date.now() - 86_400_000).toISOString();
+  const latest = new Map<string, z.infer<typeof outcome>>();
+  for (const row of recentModelOutcomes(db, cutoff)) {
+    const key = JSON.stringify([row.provider, row.model]);
+    if (!latest.has(key)) latest.set(key, row);
   }
   return models.map((model) => {
     const row = latest.get(JSON.stringify([model.provider, model.id]));

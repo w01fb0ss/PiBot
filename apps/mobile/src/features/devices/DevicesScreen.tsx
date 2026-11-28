@@ -3,6 +3,7 @@
 import Constants from "expo-constants";
 import * as Linking from "expo-linking";
 import { useRouter } from "expo-router";
+import { useState } from "react";
 import { Platform, ScrollView, Text, View } from "react-native";
 import { useNotifications } from "../../push/NotificationsProvider.tsx";
 import { useText } from "../../runtime/context.tsx";
@@ -86,6 +87,7 @@ export function DevicesScreen() {
     router = useRouter(),
     tabInset = useTabBarInset();
   const androidUpdate = useAndroidUpdate();
+  const [privacyOpen, setPrivacyOpen] = useState(false);
   const current = devices.devices.find((d) => d.id === devices.selectedId) ?? devices.devices[0];
   const others = devices.devices.filter((d) => d.id !== current?.id);
   const host = current ? new URL(current.relay).host : "";
@@ -118,6 +120,8 @@ export function DevicesScreen() {
             pathKind={devices.pathKind}
             directFailure={devices.directFailure}
             error={devices.error}
+            reconnect={() => void devices.reconnect(current.id)}
+            busy={devices.action.busy}
             reconnecting={devices.reconnecting}
             lastSeen={current.id === devices.selectedId ? devices.lastSeen : undefined}
           />
@@ -217,8 +221,19 @@ export function DevicesScreen() {
               <Separator />
             </>
           )}
-          <SettingRow icon="globe" tint="gray" title={t("relay")} hint={t("relayHint", { host })} />
-          <Separator />
+          {current && (
+            <>
+              <SettingRow
+                icon="globe"
+                tint="gray"
+                title={t("devicePrivacy")}
+                hint={privacyOpen ? t("relayHint", { host }) : undefined}
+                chevron={false}
+                onPress={() => setPrivacyOpen(!privacyOpen)}
+              />
+              <Separator />
+            </>
+          )}
           <SettingRow icon="hand" tint="green" title={t("scopeTitle")} hint={t("scopeHint")} />
           {current && (
             <>
@@ -238,7 +253,17 @@ export function DevicesScreen() {
             <SettingRow
               icon="download"
               title={t("updateCheck")}
+              hint={
+                androidUpdate.checking
+                  ? t("updateChecking")
+                  : androidUpdate.feedback === "current"
+                    ? t("updateUpToDate")
+                    : androidUpdate.feedback === "failed"
+                      ? t("updateCheckFailed")
+                      : undefined
+              }
               chevron={false}
+              hintTone={androidUpdate.feedback === "failed" ? "warn" : undefined}
               disabled={androidUpdate.checkDisabled}
               onPress={() => void androidUpdate.check()}
             />

@@ -1,8 +1,117 @@
 import type { createTranslator, TranslationKey } from "@pibot/i18n";
-import { isolationReasonText } from "@pibot/i18n";
-import { type ApprovalFact, CHAT_SEARCH_TARGET } from "@pibot/protocol";
+import { isolationReasonText, runErrorText, zh } from "@pibot/i18n";
+import { type Approval, type ApprovalFact, CHAT_SEARCH_TARGET } from "@pibot/protocol";
 
-export { isolationReasonText };
+export { isolationReasonText, runErrorText };
+
+function knownSystemServiceLabel(
+  service: string | undefined,
+  t: ReturnType<typeof createTranslator>,
+): string | undefined {
+  if (!service) return undefined;
+  if (/^com\.apple\.trustd(?:\.|$)/.test(service)) return t("permissions.serviceTrust");
+  if (service === "com.apple.system.opendirectoryd.libinfo")
+    return t("permissions.serviceDirectory");
+  if (service === "com.apple.system.notification_center")
+    return t("permissions.serviceNotification");
+  if (/^com\.apple\.(?:SecurityServer|securityd(?:\..+)?|security\..+|secd)$/.test(service))
+    return t("permissions.serviceKeychain");
+  if (/^com\.apple\.pasteboard(?:\.|$)/.test(service)) return t("permissions.servicePasteboard");
+  return undefined;
+}
+
+/** Plain label for a macOS system service bundle ID (shared by approval cards, notices, settings). */
+export function systemServiceLabel(
+  service: string | undefined,
+  t: ReturnType<typeof createTranslator>,
+) {
+  return knownSystemServiceLabel(service, t) ?? t("permissions.serviceUnknown");
+}
+
+const SANDBOX_RULE_ALIASES: Record<string, TranslationKey> = {
+  ".git/hooks": "tool.sandboxRule.git_hooks",
+  ".git/config": "tool.sandboxRule.git_config",
+};
+
+/** Localized plain explanation for a known sandbox block rule; undefined hides unknown internal codes. */
+export function sandboxRuleText(
+  rule: string,
+  t: ReturnType<typeof createTranslator>,
+  options?: { websiteNotAllowed?: boolean },
+): string | undefined {
+  if (rule === "proxy_denied") {
+    return t(
+      options?.websiteNotAllowed
+        ? "tool.sandboxRule.proxy_not_allowed"
+        : "tool.sandboxRule.proxy_denied",
+    );
+  }
+  if (Object.hasOwn(SANDBOX_RULE_ALIASES, rule)) {
+    const alias = SANDBOX_RULE_ALIASES[rule];
+    if (alias) return t(alias);
+  }
+  const key = `tool.sandboxRule.${rule}`;
+  return Object.hasOwn(zh, key) ? t(key as TranslationKey) : undefined;
+}
+
+const SANDBOX_PLACEHOLDER_TARGETS = new Set(["sandbox rule", "sandbox", "socket"]);
+
+export function isDirectRunApproval(approval: Approval): boolean {
+  return (
+    approval.category === "run_command" &&
+    (approval.directRunRemember !== undefined ||
+      (approval.isolation.reason === "windows_unisolated" &&
+        !approval.explanation?.some((step) => step.code === "docker_access")) ||
+      approval.facts.some(
+        (fact) =>
+          fact.kind === "warning" &&
+          (fact.value === "outside_sandbox" || fact.value === "sandbox_outside_auto"),
+      ) ||
+      (approval.explanation?.some(
+        (step) => step.code === "outside_sandbox_once" || step.code === "sandbox_outside_command",
+      ) ??
+        false))
+  );
+}
+
+/** Humanizes sandbox block targets such as `"sandbox rule"`, `"socket"` or macOS `com.apple.*` service IDs. */
+export function sandboxTargetText(
+  block: { kind: string; target: string },
+  t: ReturnType<typeof createTranslator>,
+): string {
+  if (!block.target || SANDBOX_PLACEHOLDER_TARGETS.has(block.target)) return "";
+  if (block.kind === "system_service") {
+    const knownService = knownSystemServiceLabel(block.target, t);
+    return knownService ? ` ${knownService}` : "";
+  }
+  return ` ${block.target}`;
+}
+
+/**
+ * Windows delegated commands carry the same direct-run risk as local commands. Older approval
+ * rows may have only the structured policy trace, since display facts can already be translated.
+ */
+export function isWindowsDirectRunApproval(
+  approval: Pick<Approval, "category" | "facts" | "explanation" | "isolation">,
+) {
+  return (
+    approval.category === "run_command" &&
+    !approval.isolation.available &&
+    !approval.explanation?.some((step) => step.code === "docker_access") &&
+    (approval.isolation.reason === "windows_unisolated" ||
+      approval.facts.some(
+        (fact) => fact.kind === "warning" && fact.value === "windows_unisolated",
+      ) ||
+      (approval.explanation?.some(
+        (step) =>
+          step.code === "windows_unisolated" ||
+          step.code === "windows_command_scan" ||
+          step.code === "windows_ordinary_command" ||
+          step.code === "windows_requires_approval",
+      ) ??
+        false))
+  );
+}
 
 const warnings: Record<string, TranslationKey> = {
   command_network_confirmation: "policy.reason.command_network_confirmation",
@@ -22,8 +131,9 @@ const warnings: Record<string, TranslationKey> = {
   outside_sandbox_login: "facts.value.outside_sandbox_login",
   system_service: "facts.value.system_service",
   local_service: "facts.value.local_service",
-  sandbox_outside_auto: "permissions.sandboxAutoOutside",
+  sandbox_outside_auto: "permissions.sandboxRememberedOutside",
   acp_editor_terminal_unisolated: "facts.value.acp_editor_terminal_unisolated",
+  editor_session_rememberable: "facts.value.editor_session_rememberable",
   outside_delete: "facts.value.outside_delete",
   protected_command_path: "facts.value.protected_command_path",
   outside_workplace_write: "facts.value.outside_workplace_write",
@@ -47,6 +157,8 @@ const warnings: Record<string, TranslationKey> = {
 };
 
 export function approvalFactText(fact: ApprovalFact, t: ReturnType<typeof createTranslator>) {
+  if (fact.labelKey === "memoryUser") return t("facts.value.memoryUser");
+  if (fact.labelKey?.startsWith("memory")) return fact.value;
   if (fact.value === "readable_conversations") return t("facts.value.readableConversations");
   // A script judged by its content is named by that content's digest internally.
   if (fact.kind === "program" && /^script:[0-9a-f]+$/.test(fact.value))
@@ -61,6 +173,27 @@ export function approvalFactText(fact: ApprovalFact, t: ReturnType<typeof create
     if (/^[a-z]+(?:_[a-z]+)+$/.test(fact.value)) return t("facts.value.unknownWarning");
   }
   return fact.value;
+}
+
+/** Drafts, routines and Settings cards have their own settlement paths. */
+export function approvalPausesAtDeadline(approval: Approval) {
+  return (
+    !approval.routineRunId &&
+    !approval.draft &&
+    !approval.connectorNetworkSite &&
+    approval.category !== "settings_change"
+  );
+}
+
+export function approvalDeadline(approval: Approval, now: number) {
+  const remaining = Math.max(0, Math.ceil((Date.parse(approval.expiresAt) - now) / 1000));
+  const pauses = approvalPausesAtDeadline(approval);
+  return {
+    remaining,
+    pauses,
+    paused: remaining === 0 && pauses,
+    expired: remaining === 0 && !pauses,
+  };
 }
 
 /**

@@ -1,4 +1,5 @@
 import { isAbsolute, relative, sep } from "node:path";
+import { windowsDisplayPath } from "@pibot/brain/orchestration-kit";
 import {
   type Group,
   type GroupTaskBrief,
@@ -130,6 +131,13 @@ export async function taskBrief(
   // A file in a workspace that is not merged yet is not in the group folder the browser opens.
   const openable = !own || workspace === "merged";
   const root = await outputRoot(service, group, workflow.folder, signal);
+  const displayFolder =
+    service.deps.local.deps.platform === "win32"
+      ? windowsDisplayPath(
+          workflow.folder,
+          (workflow.workplace?.folders ?? group.folders ?? []).filter((item) => !item.location),
+        )
+      : workflow.folder;
   const writes = new RunFileChangesRepo(service.deps.db).lastWrites(
     service.runs.taskRunIds(task.id),
   );
@@ -199,8 +207,8 @@ export async function taskBrief(
     deliverables,
     acceptance,
     folder: {
-      path: workflow.folder,
-      label: root ? [root.name, root.rel].filter(Boolean).join("/") : workflow.folder,
+      path: displayFolder,
+      label: root ? [root.name, root.rel].filter(Boolean).join("/") : displayFolder,
     },
     workspace: own ? "own" : "shared",
   });

@@ -6,6 +6,7 @@ import {
   RpcError,
 } from "@pibot/protocol-base";
 import type { GroupWorkflowStepRecord } from "@pibot/storage";
+import { groupPlanText } from "@pibot/teams-contract/i18n";
 import type { WorkflowProgress } from "./group-workflow-progress.ts";
 import { implementationOwners, repairableVerdicts } from "./group-workflow-verdicts.ts";
 
@@ -54,6 +55,7 @@ export function verdictRepairPlan(
   original: GroupPlan,
   states: readonly GroupWorkflowStepRecord[],
   progress: WorkflowProgress,
+  language: "zh" | "en",
 ): GroupPlan | undefined {
   const steps = [...original.steps];
   const owners = new Map(states.map((state) => [state.stepId, state.ownerBotId]));
@@ -93,7 +95,7 @@ export function verdictRepairPlan(
     const outputs = implementation ? outputCopies(implementation, prefix) : [summary];
     steps.push({
       id: fixId,
-      title: "修复不通过项 / Repair failed checks",
+      title: groupPlanText(language, "group.plan.repair.fix"),
       owner: { botId: author },
       task,
       dependsOn: [id],
@@ -107,7 +109,7 @@ export function verdictRepairPlan(
     steps.push({
       ...before,
       id: recheckId,
-      title: "修复后复验 / Recheck the repair",
+      title: groupPlanText(language, "group.plan.repair.recheck"),
       owner: { botId: verifier },
       dependsOn: [fixId],
       inputs: outputs.map((file) => ({

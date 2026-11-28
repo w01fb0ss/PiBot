@@ -19,6 +19,7 @@ import {
 import {
   type Bot,
   canonicalImageModelId,
+  type ImageGenerationOptions,
   type ImageMode,
   type ImageModelInfo,
   RpcError,
@@ -26,6 +27,13 @@ import {
 import type { PolicyResult } from "@pibot/policy";
 import { explainPolicyResult, matchesRoutinePreauth } from "@pibot/policy";
 import { BotsRepo, ConversationsRepo, MessagesRepo, RunsRepo, ToolCallsRepo } from "@pibot/storage";
+import { imageCostCard } from "./image-cost-card.ts";
+
+export class ImageApprovalDeclined extends AgentError {
+  constructor(readonly model: Pick<ImageModelInfo, "provider" | "id">) {
+    super("permission_denied");
+  }
+}
 
 /**
  * The approved identity still holds: the same model, mode and provider configuration, and the
@@ -45,7 +53,7 @@ function sameIdentity(approved: string, current: string) {
 export class ImageAuthorization {
   readonly timing = new ToolTimer();
   private snapshot?: string;
-  private model?: ImageModelInfo;
+  private models: ImageModelInfo[] = [];
   private recordId?: string;
   private readonly previousTiming: ToolRunContext["toolTiming"];
   private readonly observeTiming: NonNullable<ToolRunContext["toolTiming"]>;
@@ -55,6 +63,8 @@ export class ImageAuthorization {
     private readonly bot: Bot,
     private readonly context: ToolRunContext,
     private readonly mode: ImageMode,
+    private readonly referenceCount: number,
+    private readonly options?: ImageGenerationOptions,
   ) {
     this.previousTiming = context.toolTiming;
     this.observeTiming = (id) => (id === this.callId ? this.timing : this.previousTiming?.(id));
@@ -69,15 +79,24 @@ export class ImageAuthorization {
     if (!local.execution.allows(context, "image_generation"))
       throw new AgentError("permission_denied");
     const current = new BotsRepo(local.deps.db).get(bot.id);
+    const conversations = new ConversationsRepo(local.deps.db);
+    const override = conversations.runModelOverride({
+      botId: bot.id,
+      conversationId: context.conversationId as string,
+      groupId: context.groupId,
+      taskId: context.taskId,
+    });
+    const provider = override?.provider ?? current?.modelProvider;
+    const id = override?.id ?? current?.modelId;
     if (
       !current ||
       current.archivedAt ||
       current.category !== "image" ||
-      current.modelId !== bot.modelId ||
-      current.modelProvider !== bot.modelProvider
+      id !== bot.modelId ||
+      provider !== bot.modelProvider
     )
       throw new AgentError("no_model");
-    const conversation = new ConversationsRepo(local.deps.db).get(context.conversationId as string);
+    const conversation = conversations.get(context.conversationId as string);
     if (context.groupId) {
       const group = activeGroup(local.deps.db, context.groupId, bot.id, context.conversationId);
       if (group.coordinatorBotId === bot.id) throw new AgentError("image_unsupported");
@@ -102,12 +121,13 @@ export class ImageAuthorization {
     )
       throw new AgentError("permission_denied");
     if (context.routineRunId) local.unattendedAuthorization.record(context);
-    if (!local.models) throw new AgentError("no_model");
-    const providerKey = local.models.configurationKey(bot.modelProvider as string);
+    const models = local.models;
+    if (!models) throw new AgentError("no_model");
+    const providerKeys = this.selections().map(({ provider }) => models.configurationKey(provider));
     return JSON.stringify([
       authorizationSnapshot(local, bot.id, context),
-      [current.category, this.mode, current.modelProvider, current.modelId],
-      providerKey,
+      [current.category, this.mode, provider, id],
+      providerKeys,
     ]);
   }
 
@@ -116,21 +136,31 @@ export class ImageAuthorization {
       throw new AgentError("permission_denied");
   }
 
-  private async currentModel() {
+  private selections() {
+    if (this.options?.kind === "compare") return this.options.models;
+    return [
+      this.options?.model ?? { provider: this.bot.modelProvider ?? "", id: this.bot.modelId ?? "" },
+    ];
+  }
+
+  private async currentModels() {
     if (!this.agent.listImageModels) throw new AgentError("no_model");
     const models = await this.agent.listImageModels({
       availableOnly: true,
-      mode: this.mode,
       signal: AbortSignal.any([this.context.signal, AbortSignal.timeout(10_000)]),
     });
-    const model = models.find(
-      (m) =>
-        m.provider === this.bot.modelProvider &&
-        m.id === canonicalImageModelId(this.bot.modelProvider ?? "", this.bot.modelId ?? ""),
-    );
-    if (!model?.configured || !model.output.includes("image")) throw new AgentError("no_model");
-    if (!model.modes.includes(this.mode)) throw new AgentError("image_mode_mismatch");
-    return model;
+    return this.selections().map(({ provider, id }) => {
+      const model = models.find(
+        (item) => item.provider === provider && item.id === canonicalImageModelId(provider, id),
+      );
+      if (!model?.configured || !model.output.includes("image")) throw new AgentError("no_model");
+      if (
+        !model.modes.includes(this.mode) ||
+        (model.maxReferences !== undefined && this.referenceCount > model.maxReferences)
+      )
+        throw new AgentError("image_mode_mismatch");
+      return model;
+    });
   }
 
   private async evaluate(): Promise<PolicyResult> {
@@ -166,23 +196,40 @@ export class ImageAuthorization {
     const { local, context, bot } = this;
     const workplace = await resolveRunWorkplace(local, context, context.signal);
     const policy = await local.getPolicy(context.signal);
-    const result = await policy.evaluate({
-      botId: bot.id,
-      request: {
-        category: "image_generation",
-        recipient: this.model?.recipient as string,
-        provider: this.model?.provider as string,
-        model: this.model?.id as string,
-      },
-      grants: local.grants(bot.id, context),
-      settings: runPermissions(local, context),
-      permissionSources: runPermissionSources(local, context),
-      workplace: workplace.value,
-      yolo: runYolo(local, context),
-      signal: context.signal,
-    });
+    const results = await Promise.all(
+      this.models.map((model) =>
+        policy.evaluate({
+          botId: bot.id,
+          request: {
+            category: "image_generation",
+            recipient: model.recipient,
+            provider: model.provider,
+            model: model.id,
+          },
+          grants: local.grants(bot.id, context),
+          settings: runPermissions(local, context),
+          permissionSources: runPermissionSources(local, context),
+          workplace: workplace.value,
+          yolo: runYolo(local, context),
+          signal: context.signal,
+        }),
+      ),
+    );
     this.assertCurrent();
-    return result;
+    const denied = results.find(({ decision }) => decision === "deny");
+    const result = denied ?? results[0];
+    if (!result) throw new AgentError("no_model");
+    if (!this.options || denied) return result;
+    // The existing per-model grant covers the ordinary single request. The combined
+    // confirmation binds every selected model and the number of requests in this run.
+    const combined = {
+      ...result,
+      decision: "ask" as const,
+      reason: "paid_generation_confirmation",
+      canRemember: false,
+    };
+    delete combined.grantScope;
+    return explainPolicyResult(combined, "boundary", "paid_generation_confirmation");
   }
 
   authorize() {
@@ -192,20 +239,43 @@ export class ImageAuthorization {
   private async authorizeCurrent() {
     this.context.permissionGroupId = runPermissionScope(this.local, this.context);
     const initial = this.identity();
-    this.model = await this.currentModel();
+    const models = await this.currentModels();
+    const model = models[0];
+    if (!model) throw new AgentError("no_model");
+    this.models = models;
     if (this.identity() !== initial) throw new AgentError("permission_denied");
     this.snapshot = initial;
+    const price = this.mode === "image-to-image" ? model.editPrice : model.generationPrice;
+    const requestCount =
+      this.options?.kind === "batch"
+        ? (this.options.prompts?.length ?? this.options.count ?? 1)
+        : models.length;
     const call: LocalToolCall = {
       id: randomUUID(),
       tool: "image_generation",
       input: {
-        provider: this.model.provider,
-        model: this.model.id,
+        provider: model.provider,
+        model: model.id,
         mode: this.mode,
-        recipient: this.model.recipient,
-        // Every adapter sends n=1 with size "auto"; the approval card shows these.
-        size: "auto",
-        count: 1,
+        recipient: model.recipient,
+        ...(this.options
+          ? {
+              kind: this.options.kind,
+              count: requestCount,
+              selections: models.map(({ provider, id, recipient }) => ({
+                provider,
+                id,
+                recipient,
+              })),
+              size: this.options.size ?? "auto",
+              ratio: this.options.ratio ?? "auto",
+            }
+          : {
+              size: model.size ?? "auto",
+              ...(model.aspectRatio ? { aspectRatio: model.aspectRatio } : {}),
+              count: model.workflowOutput ? "workflow" : 1,
+              ...(price ? { price: { ...price, references: this.referenceCount } } : {}),
+            }),
       },
     };
     this.callId = call.id;
@@ -236,14 +306,15 @@ export class ImageAuthorization {
                 toolName: "image_generation",
                 category: "web",
                 decision: "deny",
-                target: this.model?.recipient,
+                target: model.recipient,
                 reasonCode: result.reason,
                 policySteps: result.explanation.map((step) => step.code),
               },
             });
             throw new AgentError("permission_denied");
           }
-          const preauthId = result.decision === "ask" ? this.routinePaidPreauth() : undefined;
+          const preauthId =
+            !this.options && result.decision === "ask" ? this.routinePaidPreauth(model) : undefined;
           if (preauthId) {
             // Owner decision 2026-10-23: the routine's paid pre-approval stands in for the card, so a
             // scheduled run never waits up to a day for a generation the user already agreed to.
@@ -266,6 +337,7 @@ export class ImageAuthorization {
               ],
             });
           } else if (result.decision === "ask") {
+            let declined = false;
             const status = await this.local.approvals.request(
               this.context,
               call,
@@ -279,9 +351,31 @@ export class ImageAuthorization {
                   throw new ApprovalChangedError();
                 }
               },
+              {
+                requested() {},
+                resolved(approval) {
+                  declined =
+                    approval.explanation?.some((step) => step.code === "approval_user_denied") ??
+                    false;
+                },
+              },
+              undefined,
+              this.options
+                ? {
+                    text: imageCostCard(
+                      this.options,
+                      requestCount,
+                      models,
+                      this.mode,
+                      this.referenceCount,
+                    ),
+                  }
+                : undefined,
             );
             if (status !== "allowed") {
               this.context.signal.throwIfAborted();
+              if (declined)
+                throw new ImageApprovalDeclined({ provider: model.provider, id: model.id });
               throw new AgentError("permission_denied");
             }
           }
@@ -302,7 +396,7 @@ export class ImageAuthorization {
       },
       this.timing,
     );
-    return this.model;
+    return models;
   }
 
   /**
@@ -310,9 +404,9 @@ export class ImageAuthorization {
    * enabled routine of this Bot (never a trial or chat run); the policy decision before it
    * already applied the web "never" level and the network allowlist.
    */
-  private routinePaidPreauth(): string | undefined {
-    const { local, context, bot, model } = this;
-    if (!context.routineRunId || context.routineSource !== "routine" || !model) return undefined;
+  private routinePaidPreauth(model: ImageModelInfo): string | undefined {
+    const { local, context, bot } = this;
+    if (!context.routineRunId || context.routineSource !== "routine") return undefined;
     const record = local.unattendedAuthorization.record(context);
     if (!record?.routineId || record.reason === "trial") return undefined;
     const routine = local.unattended?.definition(record.routineId);
@@ -329,8 +423,8 @@ export class ImageAuthorization {
 
   async revalidate() {
     this.assertCurrent();
-    const current = await this.currentModel();
-    if (JSON.stringify(current) !== JSON.stringify(this.model))
+    const current = await this.currentModels();
+    if (JSON.stringify(current) !== JSON.stringify(this.models))
       throw new AgentError("permission_denied");
     this.assertCurrent();
   }

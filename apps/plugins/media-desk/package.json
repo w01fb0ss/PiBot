@@ -1,0 +1,16 @@
+{
+  "name": "@pibot/plugin-media-desk",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "pibot": {
+    "layer": "L2"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@pibot/plugin-sdk": "workspace:0.0.0"
+  }
+}

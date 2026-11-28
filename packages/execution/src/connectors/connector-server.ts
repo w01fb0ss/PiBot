@@ -9,8 +9,16 @@ import { commandEnvironment } from "../command/environment.ts";
 import { canonicalPath, checkedRoot, within } from "../core/paths.ts";
 import type { ExecRedactor } from "../core/types.ts";
 import { ExecError } from "../core/types.ts";
+import type { ConnectorNetworkFilter } from "../sandbox/connector-network.ts";
 import { SAFE_SYSTEM_SERVICES } from "../sandbox/sandbox-config.ts";
 import { sensitiveReadBoundary } from "../sandbox/sensitive-paths.ts";
+import type { NetworkProxy } from "../web/network-proxy.ts";
+import {
+  assertConnectorProxyBridge,
+  connectorNoProxy,
+  connectorProxyUrls,
+  withoutConnectorProxyEnvironment,
+} from "./connector-proxy-env.ts";
 import { type ConnectorServerStream, openSandboxedStdio } from "./stdio-host.ts";
 
 /** A stdio connector inherits the command boundary; its manifest cannot grant file access. */
@@ -88,7 +96,9 @@ export interface SandboxedServerOptions {
   env: NodeJS.ProcessEnv;
   /** Host configuration locations affect deny rules but never enter the server environment. */
   boundaryEnv?: Readonly<NodeJS.ProcessEnv>;
+  proxy?: NetworkProxy;
   networkDomains?: readonly string[];
+  networkFilter?: ConnectorNetworkFilter;
   /** Compatibility for existing internal callers; only network domains are honored. */
   config?: SandboxRuntimeConfig;
   allowAll: boolean;
@@ -130,6 +140,21 @@ export async function startSandboxedServer(
       signal: options.signal,
     },
   );
+  const hostEnv = options.boundaryEnv ?? {};
+  const ambient = connectorProxyUrls(hostEnv);
+  const fallback = ambient.get("ALL_PROXY");
+  const configured = options.proxy ? new URL(options.proxy.url) : undefined;
+  const http = configured ?? ambient.get("HTTP_PROXY") ?? fallback;
+  const https = configured ?? ambient.get("HTTPS_PROXY") ?? fallback;
+  if (http || https) {
+    // Only the trusted host receives the upstream. The MCP sees SRT's filtered local endpoint.
+    for (const upstream of [http, https]) if (upstream) assertConnectorProxyBridge(upstream);
+    config.network.parentProxy = {
+      http: http?.href,
+      https: https?.href,
+      noProxy: connectorNoProxy(hostEnv) ?? "",
+    };
+  }
   let serverCwd: string | undefined;
   const grantedRoots = [...(options.readOnlyRoots ?? []), ...(options.readWriteRoots ?? [])];
   // An imported Codex `cwd` only picks where the server starts; it grants no access.
@@ -138,9 +163,17 @@ export async function startSandboxedServer(
     const checkedGrants = await Promise.all(grantedRoots.map((root) => checkedRoot(resolve(root))));
     if (checkedGrants.length && !checkedGrants.some((root) => within(root, serverCwd as string)))
       throw new ExecError("outside_workplace");
+    // Granted roots always sit inside the denied Pi Bot data tree (checked in the config) and the
+    // sandbox re-allows exactly them, so a deny that is a strict ancestor of the grant holding the
+    // cwd is the expected shape. Any other deny covering the cwd (a protected tree, or a deny at
+    // or inside the grant) still refuses to start.
+    const cwdGrants = checkedGrants.filter((root) => within(root, serverCwd as string));
     if (
       config.filesystem.denyRead.some(
-        (entry) => typeof entry !== "string" && within(entry.path, serverCwd as string),
+        (entry) =>
+          typeof entry !== "string" &&
+          within(entry.path, serverCwd as string) &&
+          !cwdGrants.some((root) => root !== entry.path && within(entry.path, root)),
       )
     )
       throw new ExecError("outside_workplace");
@@ -150,7 +183,7 @@ export async function startSandboxedServer(
   // PATH, then the usual tool folders. A Dock or login-item launch has only launchd's
   // /usr/bin:/bin:/usr/sbin:/sbin, where npx, uv or a Homebrew tool is never found.
   const env = {
-    ...options.env,
+    ...withoutConnectorProxyEnvironment(options.env),
     PATH: commandEnvironment(options.platform, options.env, options.systemHome, options.tempDir, [
       ...(options.pathEntries ?? []),
     ]).PATH,
@@ -161,6 +194,7 @@ export async function startSandboxedServer(
     kernelReports: true,
     config,
     allowAll: options.allowAll,
+    networkFilter: options.networkFilter,
     command: options.command,
     args: options.args,
     env,

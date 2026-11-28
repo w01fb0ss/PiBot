@@ -30,7 +30,17 @@ export const HOME_HOOK_PATHS = [
   ".config/opencode/opencode.jsonc",
   ".config/opencode/plugin",
   ".config/opencode/plugins",
+  // Antigravity's trusted workspaces (a folder trusted there runs without its trust prompt).
+  ".gemini/antigravity-cli/settings.json",
 ] as const;
+
+/**
+ * Antigravity's workspace customization roots (`.agents`, or `.agent`, `_agents`, `_agent`) and the
+ * files in them that start programs: lifecycle hooks, MCP servers, plugins and plugin lists.
+ */
+const ANTIGRAVITY_PROJECT_PATHS = [".agents", ".agent", "_agents", "_agent"].flatMap((root) =>
+  ["hooks.json", "mcp_config.json", "plugins", "plugins.json"].map((name) => `${root}/${name}`),
+);
 
 /** The same kinds of files in a project folder, which the agent's program reads from its cwd. */
 export const PROJECT_HOOK_PATHS = [
@@ -44,6 +54,7 @@ export const PROJECT_HOOK_PATHS = [
   ".opencode/plugins",
   "opencode.json",
   "opencode.jsonc",
+  ...ANTIGRAVITY_PROJECT_PATHS,
 ] as const;
 
 const exists = async (path: string) => {
@@ -85,9 +96,10 @@ export async function hookDenies(
  * Linux: bubblewrap mounts a placeholder for a missing deny path and creates its missing parents
  * read-only, so a denied `.opencode/plugins` made `.opencode` itself uncreatable and OpenCode
  * exited before initialize (kali, 2026-11-14). The agent folders those paths sit in (`.claude`,
- * `.codex`, `.cursor`, `.opencode`) are created empty in each topic folder first: the folder
- * stays writable, the hook and plugin names inside it stay denied. A name that already exists as
- * anything but a real folder (a planted symlink) refuses the start.
+ * `.codex`, `.cursor`, `.opencode`, Antigravity's `.agents` and its variants) are created empty
+ * in each topic folder first: the folder stays writable, the hook and plugin names inside it stay
+ * denied. A name that already exists as anything but a real folder (a planted symlink) refuses
+ * the start.
  */
 async function projectParents(roots: readonly string[]) {
   const parents = [

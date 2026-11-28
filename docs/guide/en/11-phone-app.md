@@ -20,7 +20,7 @@ Download the Android app package (APK) from the [official download page](https:/
 
 ## Update the Android app
 
-The app checks for updates at startup, with at least 24 hours between automatic checks, and skips the check while your phone is offline. You can also tap **Check for updates** on the **Devices** page to check manually.
+If you have 0.0.3, [download the 0.1.0 APK](https://pibot.space/en/download/) and install it over your existing app. Starting with 0.1.0, the app checks for updates at startup, with at least 24 hours between automatic checks, and skips the check while your phone is offline. You can also tap **Check for updates** on the **Devices** page to check manually.
 
 1. Open **Devices** in Pi Bot on your phone. When you see “New version,” tap **Download and install**.
 2. After the download, Pi Bot checks the package size and checksum automatically. If verification fails, Pi Bot deletes the downloaded package. Tap **Retry** to download it again.

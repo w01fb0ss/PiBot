@@ -58,6 +58,7 @@ export function folderDialogOptions(
 
 export function createHostCapabilities(options: {
   window?: BrowserWindow;
+  takeSkillDrop?(params: { dropId: string }): string[] | null;
   gui?: Pick<Peer<typeof GuiHostMethods, Record<string, never>>, "call">;
   foreground?(): boolean;
   redactor: Redactor;
@@ -117,6 +118,11 @@ export function createHostCapabilities(options: {
   });
   return {
     teams,
+    async takeSkillDrop(params: HostParams["host.skills.takeDrop"]) {
+      check();
+      if (options.window) return options.takeSkillDrop?.(params) ?? null;
+      return (await options.gui?.call("gui.skills.takeDrop", params)) ?? null;
+    },
     async pickFolder({
       create = false,
       defaultPath,
@@ -132,7 +138,7 @@ export function createHostCapabilities(options: {
           { kind: create ? "folder-create" : "folder", defaultPath },
           GUI_PICK,
         );
-        return path ? selectedFolder(path) : null;
+        return path ? selectedFolder(path, true) : null;
       }
       if (picking) throw new RpcError(RpcErrorCodes.busy, "folder_picker_busy");
       picking = true;
@@ -157,7 +163,7 @@ export function createHostCapabilities(options: {
         const [path] = result.filePaths;
         if (result.canceled || !path) return null;
         const signal = AbortSignal.any([cancelled, AbortSignal.timeout(20_000)]);
-        const folder = await untilAborted(selectedFolder(path), signal);
+        const folder = await untilAborted(selectedFolder(path, true), signal);
         check();
         signal.throwIfAborted();
         return folder;
@@ -167,11 +173,17 @@ export function createHostCapabilities(options: {
       }
     },
     /** Workflow input picker: select one arbitrary file without reading it in the renderer. */
-    async pickFile({ defaultPath }: { defaultPath?: string } = {}): Promise<string | null> {
+    async pickFile({
+      defaultPath,
+      filters,
+    }: {
+      defaultPath?: string;
+      filters?: { name: string; extensions: string[] }[];
+    } = {}): Promise<string | null> {
       check();
       if (!options.window) {
         if (!options.gui) throw new RpcError(RpcErrorCodes.unsupported, "gui_offline");
-        return options.gui.call("gui.pick", { kind: "file", defaultPath }, GUI_PICK);
+        return options.gui.call("gui.pick", { kind: "file", defaultPath, filters }, GUI_PICK);
       }
       if (picking) throw new RpcError(RpcErrorCodes.busy, "folder_picker_busy");
       picking = true;
@@ -184,7 +196,11 @@ export function createHostCapabilities(options: {
           stop.signal,
           AbortSignal.timeout(600_000),
         ]);
-        pending = dialog.showOpenDialog(options.window, { properties: ["openFile"], defaultPath });
+        pending = dialog.showOpenDialog(options.window, {
+          properties: ["openFile"],
+          defaultPath,
+          ...(filters?.length ? { filters } : {}),
+        });
         void pending.then(
           () => {
             picking = false;

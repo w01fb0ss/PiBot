@@ -53,6 +53,11 @@ export class EndpointCapabilityRegistry implements EndpointCapabilityPort {
     this.targets.clear();
     this.declared.clear();
   }
+  phoneOnline(id: string) {
+    return this.snapshot().some(
+      (entry) => entry.kind === "phone" && entry.online && entry.id === id,
+    );
+  }
   enabled(endpointId: string) {
     return [...this.definitions.keys()].filter((id) => {
       const row = this.repo.get(endpointId, id)?.row;

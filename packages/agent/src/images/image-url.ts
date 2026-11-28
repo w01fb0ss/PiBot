@@ -11,6 +11,8 @@ export interface ImageUrlContext {
   /** Host port for any other origin; it enforces the public-destination rules. */
   fetchPublic?: ImageUrlFetch;
   signal: AbortSignal;
+  /** Set for adapters with explicit same-origin redirect handling. */
+  manualRedirects?: number;
 }
 
 /**
@@ -21,12 +23,20 @@ export interface ImageUrlContext {
 export async function imageFromUrl(raw: string, context: ImageUrlContext): Promise<ImageContent> {
   const { signal } = context;
   try {
-    const url = new URL(raw);
-    if (url.username || url.password || (url.protocol !== "https:" && url.protocol !== "http:"))
-      throw new AgentError("image_url_unavailable");
-    url.hash = "";
+    let url = new URL(raw);
     let bytes: Uint8Array;
-    if (url.origin === context.providerOrigin) {
+    for (let hop = 0; ; hop++) {
+      signal.throwIfAborted();
+      if (url.username || url.password || (url.protocol !== "https:" && url.protocol !== "http:"))
+        throw new AgentError("image_url_unavailable");
+      url.hash = "";
+      if (url.origin !== context.providerOrigin) {
+        if (url.protocol !== "https:" || !context.fetchPublic)
+          throw new AgentError("image_url_unavailable");
+        // Once a CDN owns the redirect chain it can never regain provider headers.
+        bytes = (await context.fetchPublic({ url: url.href, signal })).data;
+        break;
+      }
       const headers = new Headers(context.providerHeaders);
       headers.delete("Content-Type");
       headers.set("Accept", "image/*");
@@ -34,8 +44,17 @@ export async function imageFromUrl(raw: string, context: ImageUrlContext): Promi
         method: "GET",
         headers,
         signal,
-        redirect: "error",
+        credentials: "omit",
+        redirect: context.manualRedirects === undefined ? "error" : "manual",
       });
+      if ([301, 302, 303, 307, 308].includes(response.status)) {
+        const location = response.headers.get("location");
+        await response.body?.cancel();
+        if (!location || hop >= (context.manualRedirects ?? 0))
+          throw new AgentError("image_url_unavailable");
+        url = new URL(location, url);
+        continue;
+      }
       if (!response.ok) {
         await response.body?.cancel();
         throw new AgentError("image_url_unavailable");
@@ -45,10 +64,7 @@ export async function imageFromUrl(raw: string, context: ImageUrlContext): Promi
         throw new AgentError("image_url_unavailable");
       }
       bytes = await boundedBody(response, IMAGE_LIMIT, signal);
-    } else {
-      if (url.protocol !== "https:" || !context.fetchPublic)
-        throw new AgentError("image_url_unavailable");
-      bytes = (await context.fetchPublic({ url: url.href, signal })).data;
+      break;
     }
     if (bytes.byteLength > IMAGE_LIMIT) throw new AgentError("image_url_unavailable");
     // The served Content-Type is not trusted; the bytes decide the type.

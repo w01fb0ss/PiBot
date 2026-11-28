@@ -169,10 +169,9 @@ export const BrowserExtensionStatusSchema = z.strictObject({
   preference: z.enum(["user", "bot"]),
   /**
    * Why this instance did not register the extension's native host: it runs on a separate data
-   * folder (a test or second copy) and was not asked to, or the manifests point at another Pi Bot
-   * whose data folder still exists. Either way only an explicit "connect here" takes it over.
+   * folder, the manifests belong to another Pi Bot, or the operating system rejected setup.
    */
-  registration: z.enum(["separate_data_dir", "other_instance"]).optional(),
+  registration: z.enum(["separate_data_dir", "other_instance", "registration_failed"]).optional(),
 });
 export const HostBrowserTabSchema = z.strictObject({
   tab: HostBrowserTabIdSchema,

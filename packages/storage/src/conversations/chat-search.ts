@@ -1,14 +1,18 @@
 import type { DatabaseSync } from "node:sqlite";
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import type { ReadMessagesSearchInput } from "@pibot/protocol-base";
+import { readTransaction } from "../database/database.ts";
+import { ChatSearchIndex } from "./chat-search-index.ts";
+import { visibleImportedRows } from "./conversations.ts";
 import { readableTaskResult } from "./read-messages.ts";
 
 export type ChatSearchScope = { botId: string } | { botId: string; groupId: string };
 
 const SHORT_QUERY_BATCH = 64;
+const FTS_DIRECT_LIMIT = 400;
 const scopeFilter = `
   EXISTS(SELECT 1 FROM bots b WHERE b.id=$bot AND b.archived_at IS NULL)
-  AND c.internal_task_id IS NULL AND c.import_id IS NULL
+  AND c.internal_task_id IS NULL AND ${visibleImportedRows("c.import_id")}
   AND (($group IS NULL AND c.kind='dm' AND c.bot_id=$bot AND (m.role='user' OR m.bot_id=$bot))
     OR ($group IS NOT NULL AND c.kind='group' AND c.group_id=$group
       AND EXISTS(SELECT 1 FROM group_members gm WHERE gm.group_id=$group
@@ -19,6 +23,7 @@ const scopeFilter = `
 const messageJoin = `JOIN messages m ON m.id=d.message_id
   JOIN conversations c ON c.id=m.conversation_id`;
 const from = `chat_search_documents d ${messageJoin}`;
+type SearchValues = { $key: string; $bot: string; $group: string | null };
 const literal = (text: string) => `"${text.replaceAll('"', '""')}"`;
 
 /** A caller provides the trusted origin; indexed scope is an optimization, never authorization. */
@@ -34,20 +39,11 @@ export class ChatSearchRepo {
     const group = "groupId" in scope ? scope.groupId : null;
     const key = group ? `group:${group}` : `dm:${scope.botId}`;
     const values = { $key: key, $bot: scope.botId, $group: group };
-    const short = Array.from(query).length < 3;
-    const ids = !short
-      ? this.db
-          .prepare(`SELECT d.rowid AS row FROM chat_search_fts
-              JOIN chat_search_documents d ON d.rowid=chat_search_fts.rowid ${messageJoin}
-              WHERE chat_search_fts MATCH $match AND d.scope=$key AND ${scopeFilter}
-              ORDER BY m.created_at DESC,m.id DESC LIMIT $limit`)
-          .all({
-            ...values,
-            $limit: limit,
-            $match: `body:${literal(query)}`,
-          })
-          .map(({ row }) => Number(row))
-      : await this.shortMatches(values, query, limit, signal);
+    const indexed =
+      Array.from(query).length < 3
+        ? undefined
+        : readTransaction(this.db, () => this.indexedMatches(values, query, limit));
+    const ids = indexed ?? (await this.shortMatches(values, query, limit, signal));
     signal.throwIfAborted();
     if (!ids.length) return [];
     // Read the whole bounded, already sanitized projection so the caller can redact newly known
@@ -55,7 +51,8 @@ export class ChatSearchRepo {
     const rows = this.db
       .prepare(`SELECT m.id AS messageId,c.id AS conversationId,
         CASE WHEN length(CAST(c.title AS BLOB))>2000 THEN '' ELSE c.title END AS title,
-        m.created_at AS createdAt,d.body FROM ${from}
+        m.created_at AS createdAt,d.body,
+        CASE WHEN m.import_id IS NOT NULL THEN c.import_source END AS importSource FROM ${from}
         WHERE d.scope=$key AND ${scopeFilter} AND d.rowid IN (${ids.map((_, i) => `$row${i}`).join(",")})
         ORDER BY m.created_at DESC,m.id DESC`)
       .all({
@@ -63,7 +60,7 @@ export class ChatSearchRepo {
         ...Object.fromEntries(ids.map((row, i) => [`$row${i}`, row])),
       });
     signal.throwIfAborted();
-    return short
+    return indexed === undefined
       ? rows.filter(
           ({ body }) =>
             typeof body === "string" && body.toLowerCase().includes(query.toLowerCase()),
@@ -71,8 +68,33 @@ export class ChatSearchRepo {
       : rows;
   }
 
+  private indexedMatches(values: SearchValues, query: string, limit: number) {
+    if (new ChatSearchIndex(this.db).rebuilding()) return;
+    const cap = Math.max(FTS_DIRECT_LIMIT, limit);
+    const matched = this.db
+      .prepare("SELECT rowid FROM chat_search_fts WHERE chat_search_fts MATCH $match LIMIT $cap")
+      .all({
+        $match: `scope:${literal(values.$key)} AND body:${literal(query)}`,
+        $cap: cap + 1,
+      }) as { rowid: number }[];
+    if (!matched.length) return [];
+    // A high-frequency term is cheaper to find via the scope's time-ordered index.
+    if (matched.length > cap) return;
+    const placeholders = matched.map((_, index) => `$r${index}`).join(",");
+    return this.db
+      .prepare(`SELECT d.rowid AS row FROM chat_search_documents d ${messageJoin}
+        WHERE d.rowid IN (${placeholders}) AND d.scope=$key AND ${scopeFilter}
+        ORDER BY m.created_at DESC,m.id DESC LIMIT $limit`)
+      .all({
+        ...values,
+        ...Object.fromEntries(matched.map(({ rowid }, index) => [`$r${index}`, Number(rowid)])),
+        $limit: limit,
+      })
+      .map(({ row }) => Number(row));
+  }
+
   private async shortMatches(
-    values: { $key: string; $bot: string; $group: string | null },
+    values: SearchValues,
     query: string,
     limit: number,
     signal: AbortSignal,

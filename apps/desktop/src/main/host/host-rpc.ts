@@ -57,7 +57,14 @@ export function registerHostRpc(
     };
     capabilities?: Pick<
       ReturnType<typeof createHostCapabilities>,
-      "pickFile" | "pickFolder" | "pickSkillFile" | "notify" | "openPath" | "teams" | "revealPath"
+      | "pickFile"
+      | "pickFolder"
+      | "pickSkillFile"
+      | "notify"
+      | "openPath"
+      | "teams"
+      | "revealPath"
+      | "takeSkillDrop"
     >;
     officeRender?(
       params: HostParams["host.office.render"],
@@ -93,6 +100,10 @@ export function registerHostRpc(
     /** Obsidian vault list / Notion app presence, read on this computer. */
     knowledge?: {
       detect(): Promise<HostResults["host.knowledge.detect"]>;
+      trashNote?(
+        params: HostParams["host.knowledge.trashNote"],
+        signal: AbortSignal,
+      ): Promise<HostResults["host.knowledge.trashNote"]>;
       /**
        * The brain verified the note; the host re-checks it, asks `confirm` once through
        * the same private peer and then opens the rebuilt `obsidian://` URI.
@@ -284,7 +295,13 @@ export function registerHostRpc(
       await peer.call("host.knowledge.confirmOpen", { requestId }, { timeoutMs: 10_000 });
     });
   });
+  handle("host.knowledge.trashNote", (params, signal) => {
+    const trash = options.knowledge?.trashNote;
+    if (!trash) throw new RpcError(RpcErrorCodes.unsupported, "knowledge_trash_unavailable");
+    return trash(params, signal);
+  });
   handle("host.pickFile", async (params) => capabilities().pickFile(params));
+  handle("host.skills.takeDrop", async (params) => capabilities().takeSkillDrop(params));
   handle("host.skills.pickFile", async () => capabilities().pickSkillFile());
   handle("host.teams.pickFile", async () => capabilities().teams.pickFile());
   handle("host.teams.read", async ({ file }) => capabilities().teams.read(file));

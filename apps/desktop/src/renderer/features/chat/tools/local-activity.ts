@@ -168,6 +168,7 @@ export class LocalActivity {
       toolCallId: event.toolCallId,
       tool: event.tool,
       summary: event.summary,
+      inputTranslation: event.inputTranslation ?? previous?.inputTranslation,
       ...((event.codeAnalysis ?? previous?.codeAnalysis)
         ? { codeAnalysis: event.codeAnalysis ?? previous?.codeAnalysis }
         : {}),
@@ -189,6 +190,9 @@ export class LocalActivity {
         : {}),
       // A card-less refusal states its reason on the end event, so the row does not wait
       // for a history reload to replace "Denied".
+      ...((event.settingsAction ?? previous?.settingsAction)
+        ? { settingsAction: event.settingsAction ?? previous?.settingsAction }
+        : {}),
       ...((event.denialReason ?? previous?.denialReason)
         ? { denialReason: event.denialReason ?? previous?.denialReason }
         : {}),

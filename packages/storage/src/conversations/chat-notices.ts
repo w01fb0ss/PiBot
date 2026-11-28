@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import { type ChatNotice, ChatNoticeSchema, IdSchema, type Page } from "@pibot/protocol-base";
+import {
+  type ChatDependencyNotice,
+  ChatDependencyNoticeSchema,
+  type ChatNotice,
+  ChatNoticeSchema,
+  IdSchema,
+  type Page,
+} from "@pibot/protocol-base";
 import { readPage } from "../database/paging.ts";
 
 const columns =
@@ -36,6 +43,35 @@ function detailOf(notice: ChatNotice) {
 /** Chat system records (centered lines); never part of `messages` or any model context. */
 export class ChatNoticesRepo {
   constructor(private readonly db: DatabaseSync) {}
+
+  addGroupVerification(
+    input: Omit<Extract<ChatNotice, { kind: "group_verification" }>, "id" | "kind" | "createdAt">,
+  ) {
+    const notice = ChatNoticeSchema.parse({
+      ...input,
+      id: randomUUID(),
+      kind: "group_verification",
+      createdAt: new Date().toISOString(),
+    });
+    this.insert(notice, detailOf(notice));
+    return notice;
+  }
+
+  addDispatchModelSwitch(
+    input: Omit<
+      Extract<ChatNotice, { kind: "dispatch_model_switch" }>,
+      "id" | "kind" | "createdAt"
+    >,
+  ) {
+    const notice = ChatNoticeSchema.parse({
+      ...input,
+      id: randomUUID(),
+      kind: "dispatch_model_switch",
+      createdAt: new Date().toISOString(),
+    });
+    this.insert(notice, detailOf(notice));
+    return notice;
+  }
 
   addConnectionNeeded(
     input: Omit<Extract<ChatNotice, { kind: "connection_needed" }>, "id" | "kind" | "createdAt">,
@@ -408,6 +444,21 @@ export class ChatNoticesRepo {
         JSON.stringify(detail),
         notice.createdAt,
       );
+  }
+
+  listDependencies(conversationId: string, page: Page): ChatDependencyNotice[] {
+    return readPage(
+      this.db,
+      "chat_notices",
+      "id,conversation_id AS conversationId,created_at AS createdAt,json_extract(detail,'$.runId') AS runId,json_extract(detail,'$.dependency') AS dependency",
+      "created_at",
+      page,
+      [
+        ["conversation_id", IdSchema.parse(conversationId)],
+        ["kind", "agent_warning"],
+        ["json_type(detail,'$.dependency')", "text"],
+      ],
+    ).map((row) => ChatDependencyNoticeSchema.parse(row));
   }
 
   /** Newest first; `before` is a notice id of this conversation. */

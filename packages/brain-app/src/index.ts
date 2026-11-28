@@ -33,6 +33,7 @@ import {
 } from "@pibot/routines/brain";
 import { skillsCapability } from "@pibot/skills/brain";
 import { teamsCapability } from "@pibot/teams/brain";
+import { type VideoOptions, videosCapability } from "@pibot/videos/brain";
 import { workspacesCapability } from "@pibot/workspaces/brain";
 import { endpointCapability } from "./endpoints/capability.ts";
 
@@ -53,6 +54,8 @@ export type BrainOptions = Omit<
   routineHost?: RoutineHostAdapter;
   /** Trusted dev channel for routines (manual triggers, clock); never set in a packaged app. */
   routineDev?: RoutineDevAdapter;
+  /** Fake-provider timing and transport for isolated acceptance. */
+  video?: VideoOptions & { testBuiltinBaseUrls?: Parameters<typeof providersCapability>[0] };
   /** Optional built-in resource override, owned by the teams capability. */
   builtinDir?: string;
   /** The real link/host adapters are supplied at the outer application boundary. */
@@ -74,6 +77,7 @@ export function capabilities(
   opts: Pick<
     BrainOptions,
     | "routineDev"
+    | "video"
     | "routineHost"
     | "builtinDir"
     | "remote"
@@ -88,9 +92,10 @@ export function capabilities(
 ): BrainCapability[] {
   // Providers supply authentication; connectors need credentials before routines register.
   return [
-    providersCapability(),
+    providersCapability(opts.video?.testBuiltinBaseUrls),
     officeCapability(),
     imagesCapability(),
+    videosCapability(opts.video),
     // Bots of kind "agent" (external coding agents over ACP).
     externalAgentsCapability(),
     memoryCapability(),
@@ -117,6 +122,7 @@ export function capabilities(
 export async function startBrain(opts: BrainOptions) {
   const {
     routineDev,
+    video,
     routineHost,
     builtinDir,
     remote,
@@ -131,9 +137,11 @@ export async function startBrain(opts: BrainOptions) {
       ...kernel,
       orchestration: createOrchestrationFactory(),
       port: bridge.port,
+      phoneRequestDeviceId: bridge.phoneRequestDeviceId,
       isPhoneRequest: bridge.isPhoneRequest,
       capabilities: capabilities({
         routineDev,
+        video,
         routineHost,
         builtinDir,
         remote,

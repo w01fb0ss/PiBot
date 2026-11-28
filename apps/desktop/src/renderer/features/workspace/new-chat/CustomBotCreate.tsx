@@ -3,6 +3,7 @@ import { Avatar, Button, Icon, IconTile } from "@pibot/ui";
 import { type RefObject, useState } from "react";
 import { ImageModelFields } from "../profile/ImageModelFields.tsx";
 import { ModelFields } from "../profile/ModelFields.tsx";
+import { VideoModelFields } from "../profile/VideoModelFields.tsx";
 import styles from "./new-chat.module.css";
 import type { NewBotState } from "./use-new-bot.ts";
 
@@ -18,6 +19,14 @@ export function CustomBotCreate({
   const t = useT();
   const { openWorkspace } = useNavigation();
   const [personaOpen, setPersonaOpen] = useState(() => Boolean(state.persona || state.norms));
+  const videoField = (
+    <VideoModelFields
+      catalog={state.videos}
+      value={state.videoChoice}
+      change={(value) => state.setVideoChoice(value ?? undefined)}
+      disabled={state.task.busy}
+    />
+  );
 
   return (
     <form
@@ -174,16 +183,21 @@ export function CustomBotCreate({
             uncertain={state.images.loading || state.images.error}
             hasMore={state.images.hasMore}
             more={state.images.more}
-          />
+          >
+            {videoField}
+          </ImageModelFields>
         ) : (
-          <ModelFields
-            {...state.catalog}
-            creation
-            value={state.value}
-            thinking={state.thinking}
-            disabled={state.task.busy || state.catalog.loading}
-            change={state.changeModel}
-          />
+          <>
+            <ModelFields
+              {...state.catalog}
+              creation
+              value={state.value}
+              thinking={state.thinking}
+              disabled={state.task.busy || state.catalog.loading}
+              change={state.changeModel}
+            />
+            {videoField}
+          </>
         )}
         {state.category === "image" && state.images.error && (
           <p role="alert" className={styles.error}>

@@ -14,19 +14,18 @@ export const skillsZh = {
   "skills.audit.downloaded": "从 {host} 下载技能来源",
   "skills.audit.downloadFailed": "下载失败",
   "skills.error.skill_link_size_changed": "来源大小超过刚才确认的大小，请重新解析并确认。",
-  "skills.error.skill_link_ref_invalid": "链接中的版本引用无效，不能含点路径、控制或双向字符。",
-  "skills.error.skill_link_subpath_invalid": "链接或清单中的技能子路径不安全。",
+  "skills.error.skill_link_ref_invalid": "无法识别链接中的版本。请重新复制 GitHub 链接。",
+  "skills.error.skill_link_subpath_invalid": "无法打开这个技能文件夹。请重新复制文件夹链接。",
   "skills.error.skill_link_host_not_allowed":
-    "来源重定向到未允许的主机，请明确提供目标主机的链接。",
-  "skills.error.skill_link_private_address": "来源指向私有、本地或回环地址，不能下载。",
-  "skills.error.skill_link_unsupported_url":
-    "下载地址必须是不含凭据或查询参数的 HTTPS 链接，且只能使用 443 端口。",
+    "这个链接跳转到了其他网站。请直接粘贴公开的下载链接。",
+  "skills.error.skill_link_private_address": "这个地址不对公网开放。请改用公开的下载链接。",
+  "skills.error.skill_link_unsupported_url": "请使用以 HTTPS 开头的公开下载链接。",
   "skills.error.skill_link_redirect_limit": "来源重定向过多，无法下载。",
   "skills.error.skill_link_timeout": "下载或分析超时，请重试。",
   "skills.error.skill_link_cancelled": "已取消链接导入。",
   "skills.link.externalSources": "另有 {count} 个外部插件来源；请逐个确认来源和大小后下载。",
   "skills.error.skill_link_unsupported":
-    "只支持公开的 GitHub 仓库、tree 链接或不含凭据与查询参数的 HTTPS ZIP 链接。",
+    "请粘贴 GitHub 仓库、技能文件夹或 SKILL.md 链接，也可以用公开的 HTTPS ZIP 链接。",
   "skills.error.skill_link_private_unsupported": "暂不支持需要登录或凭据的私有仓库。",
   "skills.error.skill_link_private_or_missing": "公开来源不存在，或它是暂不支持的私有仓库。",
   "skills.error.skill_link_download_failed": "无法安全下载这个来源，请检查网络或重试。",
@@ -34,10 +33,83 @@ export const skillsZh = {
   "skills.error.skill_link_no_skills": "这个来源里没有找到支持的技能。",
   "skills.error.skill_link_too_many_skills": "单个来源最多列出 200 个技能。",
   "skills.error.skill_link_commit_unavailable":
-    "无法确认仓库归档的提交号，请使用 GitHub codeload 链接重试。",
+    "无法确认下载的仓库版本。请从 GitHub 重新复制仓库链接。",
   "skills.error.skill_link_expired": "来源已过期，请重新解析链接。",
   "skills.error.skill_link_busy": "来源正在处理，或待处理来源过多，请稍后重试。",
   "skills.error.skill_link_candidate_missing": "请先下载来源，再选择其中的技能。",
+  "skills.secrets.title": "已保存的密钥",
+  "skills.secrets.approval": "允许「{name}」这次使用已保存的密钥（{variables}）？",
+  "skills.secrets.info":
+    "选择这个技能使用的密钥。你可以先跳过，到连接页面的「访问令牌」保存后再回来绑定。",
+  "skills.secrets.none": "没有找到这个技能需要的密钥名称。",
+  "skills.secrets.loadFailed": "暂时无法读取可用的密钥。请重试。",
+  "skills.secrets.noChoices":
+    "这个 Bot 暂无可用的密钥。你可以打开「访问令牌」，添加密钥并授权给它。",
+  "skills.secrets.unbound": "暂不绑定",
+  "skills.secrets.windows":
+    "Windows 上的技能命令暂不支持隔离，Pi Bot 不会向这些命令提供已保存的密钥。",
+  "skills.secrets.saved": "已保存密钥绑定。",
+  "skills.error.skill_secret_invalid":
+    "无法绑定这个密钥。请检查技能需要的名称和密钥允许使用的 Bot。",
+  "skills.error.skill_secret_windows": "Windows 上的技能命令暂不支持使用已保存的密钥。",
+  "skills.editor.name": "技能名称",
+  "skills.editor.purpose": "什么时候用（一句话）",
+  "skills.editor.steps": "具体步骤",
+  "skills.editor.source": "查看源文件（高级）",
+  "skills.editor.form": "返回表单",
+  "skills.editor.params": "可选填写项",
+  "skills.editor.paramHint": "用 {date} 这样的写法在步骤中引用填写项。",
+  "skills.editor.paramName": "填写项名称",
+  "skills.editor.paramDefault": "默认值（可选）",
+  "skills.editor.paramDescription": "填写提示（可选）",
+  "skills.editor.addParam": "添加填写项",
+  "skills.editor.removeParam": "删除填写项",
+  "skills.editor.paramIssue": "请为每个填写项取不同的名称，只用文字、数字或下划线。",
+  "skills.editor.attachments": "附件",
+  "skills.editor.dropFiles": "将文件拖到这里，或选择上传。",
+  "skills.editor.dropLimit": "每次最多拖入 32 个文件，总大小不超过 5 MiB。请分批添加。",
+  "skills.compatibility.details": "查看详情",
+  "skills.compatibility.impact.standard_field": "Pi Bot 可以读取这份技能的基本说明。",
+  "skills.compatibility.impact.ignored_field": "部分设置仅适用于原来的工具，相关步骤可能需要调整。",
+  "skills.compatibility.impact.allowed_tools":
+    "这个技能申请使用工具。运行时仍由 Pi Bot 按你的权限设置处理。",
+  "skills.compatibility.impact.tool_mapping":
+    "有些步骤可以用 Pi Bot 的工具来做，具体操作可能需要调整。",
+  "skills.compatibility.impact.cli": "这个技能需要原来工具提供的命令，相关步骤需要改写。",
+  "skills.compatibility.impact.slash_command": "这个技能的快捷指令需要改成普通步骤。",
+  "skills.compatibility.impact.subagent": "它会尝试调用其他助手。在 Pi Bot 里可以改用群聊协作。",
+  "skills.compatibility.impact.claude_environment":
+    "有些步骤依赖原来工具的运行设置，可能需要调整。",
+  "skills.compatibility.impact.claude_path":
+    "这个技能会在原来工具的文件夹找文件，可能需要修改文件位置。",
+  "skills.compatibility.impact.interpreter": "这个技能包含脚本，使用前可能需要准备运行环境。",
+  "skills.compatibility.impact.shell_windows":
+    "这个技能是为 Mac 或 Linux 终端写的，在 Windows 上可能跑不通。",
+  "skills.compatibility.impact.files_unavailable": "暂时读不到技能文件，兼容性检查可能不完整。",
+  "skills.preview.licenseImpact": "如果你要修改或分享这个技能，请先查看许可证的要求。",
+  "skills.runtime.prepareNow": "立即准备运行环境",
+  "skills.runtime.chatNeeds": "{name} 需要先准备运行环境。",
+  "skills.runtime.approval.windows":
+    "Windows 没有沙盒来限制这次操作。安装程序可以用你的账号权限访问文件和网络。请只在信任来源时继续。",
+  "skills.runtime.approval.resolvePython": "检查需要的软件包",
+  "skills.runtime.approval.resolvePythonBody":
+    "创建 Python 环境并联网查找所需的软件包。软件包将在你核对名单并确认后安装。",
+  "skills.runtime.approval.noPackages": "准备运行环境，不安装技能依赖包。",
+  "skills.runtime.approval.runsWindowsNode":
+    "使用下列已锁定的 JavaScript 软件包。某些可选软件包可能会跳过。",
+  "skills.runtime.reason.python_dependencies_unreviewable":
+    "无法核对完整的 Python 软件包名单。请向技能作者索取使用 PyPI 软件包的版本。",
+  "skills.runtime.openProxy": "检查网络代理",
+  "skills.runtime.reason.windows_proxy_credentials":
+    "Windows 上无法在未隔离的安装中使用需要账号或密码的代理。请检查网络代理设置。",
+  "skills.runtime.logSummary": "这是准备运行环境的技术记录。",
+  "skills.runtime.reason.install_network_failed": "下载依赖时无法连接。请检查网络代理后重试。",
+  "skills.runtime.reason.install_package_missing":
+    "找不到技能指定的包或版本。请检查依赖清单后重试。",
+  "skills.runtime.reason.install_wheel_missing":
+    "这个依赖没有适合当前 Python 和电脑的预编译版本。请向技能作者索取适用版本。",
+  "skills.runtime.mirror": "使用 Astral 镜像下载运行组件和 Python",
+  "skills.runtime.advanced": "高级",
   "skills.compatibility.title": "兼容性",
   "skills.compatibility.load": "检查兼容性",
   "skills.compatibility.unavailable": "不可用",
@@ -114,8 +186,6 @@ export const skillsZh = {
   "skills.detail.default": "默认：{value}",
   "skills.detail.lastUsed": "上次用",
   "skills.detail.body": "技能内容",
-  "skills.detail.allowedTools":
-    "技能不能提升权限：里面写的 allowed-tools 会被忽略，每一步照常按权限设置判断。",
   "skills.source.title": "来源与版本",
   "skills.source.from": "来自",
   "skills.source.local": "本机导入",
@@ -163,7 +233,7 @@ export const skillsZh = {
   "skills.runtime.notRequired": "这个技能不需要额外的运行环境。",
   "skills.runtime.needs": "需要 {what}。",
   "skills.runtime.python": "Python",
-  "skills.runtime.node": "Node",
+  "skills.runtime.node": "JavaScript 运行组件",
   "skills.runtime.packageCount": "{count} 个包",
   "skills.runtime.found": "这台电脑上找到了 {command} {version}。",
   "skills.runtime.notFound": "这台电脑上还没有找到{what}。",
@@ -176,56 +246,60 @@ export const skillsZh = {
   "skills.runtime.packages": "查看包列表",
   "skills.runtime.hidePackages": "收起包列表",
   "skills.runtime.noPackages": "依赖清单里没有列出包。",
-  "skills.runtime.log": "查看日志",
-  "skills.runtime.hideLog": "收起日志",
+  "skills.runtime.log": "查看技术日志",
+  "skills.runtime.hideLog": "收起技术日志",
   "skills.runtime.logEmpty": "还没有日志。",
   "skills.runtime.cancel": "取消",
-  "skills.runtime.retryInSkills": "到 {bot} 的技能页重试",
+  "skills.runtime.retryInSkills": "到 {bot} 的技能页准备运行环境",
   "skills.runtime.retry": "重试",
   "skills.runtime.recheck": "重新检查",
   "skills.runtime.progress": "正在{phase} {done} / {total}",
   "skills.runtime.phase.create": "创建环境",
   "skills.runtime.phase.dependencies": "安装依赖",
+  "skills.runtime.phase.resolve": "检查需要的软件包",
   "skills.runtime.phase.verify": "检查环境",
   "skills.runtime.readyLine": "已就绪 · {interpreter} · {count} 个包 · {size}",
   "skills.runtime.needsPrepare": "需要重新准备：解释器不可用，或运行环境版本、依赖已变更。",
-  "skills.runtime.notPrepared": "还没准备。准备好后，这个技能的命令可以用环境里的解释器。",
+  "skills.runtime.notPrepared": "这个技能还需要准备运行环境。",
   "skills.runtime.preparing": "正在准备，完成后可以用。",
-  "skills.runtime.nativeModules": "提示：{names} 可能需要编译工具；安装失败时看日志里的原因。",
-  "skills.runtime.reason.uv_download_failed": "未能下载或安装 uv。",
-  "skills.runtime.reason.uv_checksum_mismatch": "uv 下载包校验不符，已丢弃。",
-  "skills.runtime.reason.uv_network_failed": "无法连接 uv 下载来源。请检查网络或代理后重试。",
-  "skills.runtime.reason.uv_unsupported_platform": "此系统或处理器没有对应的 uv 下载包。",
+  "skills.runtime.reason.uv_download_failed": "无法下载或安装 Python 运行组件。请重试。",
+  "skills.runtime.reason.uv_checksum_mismatch": "下载的 Python 运行组件校验失败，已丢弃。请重试。",
+  "skills.runtime.reason.uv_network_failed": "无法下载 Python 运行组件。请检查网络代理后重试。",
+  "skills.runtime.reason.uv_unsupported_platform": "这台电脑暂不支持所需的 Python 运行组件。",
   "skills.runtime.reason.uv_cleanup_unconfirmed": "安装进程尚未确认退出。请稍后重试。",
   "skills.runtime.reason.uv_isolation_unavailable":
     "此电脑无法提供准备 Python 环境所需的命令隔离。",
+  "skills.runtime.reason.node_isolation_unavailable":
+    "此电脑无法提供准备 JavaScript 环境所需的命令隔离。",
+  "skills.runtime.reason.node_dependencies_unreviewable":
+    "无法核对要安装的 JavaScript 软件包及其来源。请向作者索取附带新版 npm 锁定文件、仅使用官方 npm 软件包的版本。",
   "skills.runtime.reason.python_requirement_unsupported":
     "技能的 Python 版本范围或依赖声明暂不支持。",
   "skills.runtime.reason.python_workspace_boundary":
     "准备环境的固定目录校验失败。普通命令的工作区权限未改变。",
-  "skills.runtime.reason.node_not_found": "没有找到 Node.js，请先安装。",
-  "skills.runtime.reason.node_version_unsatisfied": "找到的 Node.js 版本不满足技能要求，请先升级。",
-  "skills.runtime.reason.install_failed": "安装依赖时失败了，日志里有具体原因。",
+  "skills.runtime.reason.node_not_found":
+    "Pi Bot 自带的 JavaScript 运行组件不可用。请更新或重新安装 Pi Bot。",
+  "skills.runtime.reason.node_version_unsatisfied":
+    "技能需要其他版本的 JavaScript 运行组件。请更新 Pi Bot 或联系技能作者。",
+  "skills.runtime.reason.install_failed": "安装技能依赖失败。请重试，或向技能作者查询所需版本。",
   "skills.runtime.reason.cancelled": "准备被取消了。",
   "skills.runtime.reason.plan_changed": "运行环境方案变了（解释器或依赖），重新看一遍再准备。",
   "skills.runtime.approval.title": "为 {name} 准备运行环境？",
-  "skills.runtime.approval.uses": "使用",
+  "skills.runtime.approval.uses": "运行组件",
   "skills.runtime.approval.usesValue": "{interpreter}（这台电脑上已有的）",
   "skills.runtime.approval.runs": "将运行",
   "skills.runtime.approval.managedPython":
-    "按需从 github.com/astral-sh/uv 下载 uv {version}（约 {size} MB），再由 uv 从 GitHub 下载托管 Python {python}（约 30–60 MB）。",
-  "skills.runtime.approval.writesPython": "技能环境、托管 Python 和 uv 缓存目录",
-  "skills.runtime.approval.runsPython": "uv venv · uv pip install（{count} 个直接依赖）",
-  "skills.runtime.approval.runsNode":
-    "npm ci / npm install --ignore-scripts（有锁文件时用 npm ci）",
+    "按需下载 Python 运行组件（约 {size} MB）和 Python {python}（约 30–60 MB）。",
+  "skills.runtime.approval.writesPython": "此技能的环境、Python 和下载缓存",
+  "skills.runtime.approval.runsPython": "创建运行环境并安装 {count} 个依赖包",
+  "skills.runtime.approval.runsNode": "安装技能所需的 JavaScript 依赖包",
+  "skills.runtime.approval.reviewedPackages": "此次批准的软件包",
   "skills.runtime.approval.network": "联网",
-  "skills.runtime.approval.networkPython":
-    "只放行 PyPI（pypi.org、files.pythonhosted.org）和 GitHub 发行资产（github.com、objects.githubusercontent.com、release-assets.githubusercontent.com）",
-  "skills.runtime.approval.networkNode": "只放行 registry.npmjs.org",
+  "skills.runtime.approval.networkDomains": "仅可连接 {domains}。",
   "skills.runtime.approval.writes": "写入",
   "skills.runtime.approval.writesValue": "只写这个技能的环境目录",
   "skills.runtime.approval.risk":
-    "安装包会执行包自带的安装代码。虽然在沙箱里进行，只有信任这个技能才继续。",
+    "准备过程会在隔离环境中下载第三方包。请确认你信任这些包和技能的来源。",
   "skills.runtime.approval.notNow": "先不",
   "skills.runtime.approval.confirm": "准备",
   "skills.runtime.error.planChanged": "运行环境方案变了（解释器或依赖），请重新打开准备卡片。",
@@ -250,13 +324,13 @@ export const skillsZh = {
   "skills.editor.issues": "还不能保存，先改好这些地方：",
   "skills.editor.issue.front_matter":
     "开头缺少 front matter：第一行写 ---，接着写 name 和 description，再用一行 --- 结束。",
-  "skills.editor.issue.name_missing": "front matter 里缺少 name（技能名）。",
-  "skills.editor.issue.name_too_long": "name 太长，最多 80 个字。",
-  "skills.editor.issue.name_invalid": "name 里有不支持的字符。",
-  "skills.editor.issue.description_missing": "front matter 里缺少 description（什么时候用）。",
-  "skills.editor.issue.description_too_long": "description 太长，最多 1024 个字。",
-  "skills.editor.issue.description_invalid": "description 里有不支持的字符。",
-  "skills.editor.issue.body_missing": "正文是空的：在第二个 --- 下面写步骤。",
+  "skills.editor.issue.name_missing": "请填写技能名称。",
+  "skills.editor.issue.name_too_long": "技能名称最多 80 个字符。",
+  "skills.editor.issue.name_invalid": "技能名称里有不支持的字符。",
+  "skills.editor.issue.description_missing": "请用一句话说明什么时候用这个技能。",
+  "skills.editor.issue.description_too_long": "用途说明最多 1024 个字符。",
+  "skills.editor.issue.description_invalid": "用途说明里有不支持的字符。",
+  "skills.editor.issue.body_missing": "请填写技能的具体步骤。",
   "skills.editor.issue.body_too_large": "正文太长，最多 256 KB。",
   "skills.editor.issue.body_invalid": "正文里有不支持的字符。",
   "skills.editor.issue.params_invalid":
@@ -293,6 +367,7 @@ export const skillsZh = {
     "只能导入 SKILL.md（或其他 .md、.txt 文本）、.zip 技能包，或一个技能文件夹。",
   "skills.error.skill_import_too_large": `技能包总共超过 ${mb(SKILL_IMPORT_MAX_BYTES)}。`,
   "skills.error.skill_import_file_too_large": `技能包里有单个文件超过 ${mb(SKILL_IMPORT_FILE_MAX_BYTES)}，请把它去掉再导入。`,
+  "skills.error.skill_attachment_too_large": "单个附件最多 5 MiB。请压缩文件或选择较小的文件。",
   "skills.error.skill_import_too_many_files": `技能包里的文件超过 ${zhFiles}个。`,
   "skills.error.skill_import_unsafe":
     "技能包里有链接、特殊文件或不安全的文件名（如 ..、绝对路径、Windows 不允许的名字、只差大小写的重名），不能导入。",
@@ -314,6 +389,8 @@ export const skillsZh = {
   "skills.error.skill_files_invalid":
     "有文件名不合要求（如 ..、Windows 不允许的名字、只差大小写的重名，或和文件夹同名），没有保存。",
   "skills.error.skill_upload_expired": "上传的文件已经过期，请重新上传后再保存。",
+  "skills.error.skill_upload_batch_too_large": "这批附件太大。请分批上传后保存。",
+  "skills.error.skill_upload_full": "待保存的附件太多。请先保存草稿，再重新打开添加附件。",
   "skills.error.skill_upload_empty": "这个文件夹里没有可以加进来的文件。",
   "skills.error.skill_upload_skill_file":
     "SKILL.md 直接在列表第一个文件里改；要换成整个别的技能，请用「导入」。",
@@ -429,21 +506,21 @@ export const skillsEn: { [K in keyof typeof skillsZh]: string } = {
   "skills.error.skill_link_size_changed":
     "The source exceeds the size you confirmed. Resolve it and confirm again.",
   "skills.error.skill_link_ref_invalid":
-    "The version ref must not contain dot segments, control or bidirectional characters.",
-  "skills.error.skill_link_subpath_invalid": "The skill subpath in the link or manifest is unsafe.",
+    "The version in this link couldn’t be read. Copy the GitHub link again.",
+  "skills.error.skill_link_subpath_invalid":
+    "This skill folder couldn’t be opened. Copy its link again.",
   "skills.error.skill_link_host_not_allowed":
-    "The source redirected to a host that is not allowed. Provide that host's link explicitly.",
+    "This link redirects to another site. Paste the public download link directly.",
   "skills.error.skill_link_private_address":
-    "The source points to a private, local or loopback address and cannot be downloaded.",
-  "skills.error.skill_link_unsupported_url":
-    "Download URLs must use HTTPS on port 443 without credentials or query parameters.",
+    "This address is not publicly accessible. Use a public download link.",
+  "skills.error.skill_link_unsupported_url": "Use a public download link that starts with HTTPS.",
   "skills.error.skill_link_redirect_limit": "The source redirected too many times.",
   "skills.error.skill_link_timeout": "The download or scan timed out. Retry.",
   "skills.error.skill_link_cancelled": "Link import cancelled.",
   "skills.link.externalSources":
     "{count} external plugin sources require separate source and size confirmation before download.",
   "skills.error.skill_link_unsupported":
-    "Use a public GitHub repository, tree link, or HTTPS ZIP link without credentials or query parameters.",
+    "Paste a GitHub repository, skill folder or SKILL.md link. A public HTTPS ZIP link works too.",
   "skills.error.skill_link_private_unsupported":
     "Private repositories requiring login or credentials are not supported.",
   "skills.error.skill_link_private_or_missing":
@@ -454,10 +531,93 @@ export const skillsEn: { [K in keyof typeof skillsZh]: string } = {
   "skills.error.skill_link_no_skills": "No supported skills were found in this source.",
   "skills.error.skill_link_too_many_skills": "A source can list at most 200 skills.",
   "skills.error.skill_link_commit_unavailable":
-    "The archive commit could not be resolved. Retry with a GitHub codeload link.",
+    "The downloaded repository version couldn’t be verified. Copy the repository link from GitHub again.",
   "skills.error.skill_link_expired": "The source expired. Resolve the link again.",
   "skills.error.skill_link_busy": "A source is busy or too many sources are pending. Retry later.",
   "skills.error.skill_link_candidate_missing": "Download the source first, then select a skill.",
+  "skills.secrets.title": "Saved tokens",
+  "skills.secrets.approval": "Allow “{name}” to use saved tokens for this run ({variables})?",
+  "skills.secrets.info":
+    "Choose the tokens this skill needs. You can skip this step and add a token under Connections › Access tokens before binding it here.",
+  "skills.secrets.none": "No token names were found for this skill.",
+  "skills.secrets.loadFailed": "Available tokens couldn’t be loaded. Try again.",
+  "skills.secrets.noChoices":
+    "This Bot has no tokens it can use. Open Access tokens to add a token and give this Bot access.",
+  "skills.secrets.unbound": "Leave unbound",
+  "skills.secrets.windows":
+    "Skill commands on Windows lack isolation, so Pi Bot withholds saved tokens.",
+  "skills.secrets.saved": "Token bindings saved.",
+  "skills.error.skill_secret_windows": "Skill commands on Windows can’t use saved tokens yet.",
+  "skills.error.skill_secret_invalid":
+    "This token couldn’t be bound. Check the name the skill requires and which Bots can use the token.",
+  "skills.editor.name": "Skill name",
+  "skills.editor.purpose": "When to use it (one sentence)",
+  "skills.editor.steps": "Steps",
+  "skills.editor.source": "View source (advanced)",
+  "skills.editor.form": "Back to form",
+  "skills.editor.params": "Optional inputs",
+  "skills.editor.paramHint":
+    "Use a name in braces, like {date}, to refer to an input in your steps.",
+  "skills.editor.paramName": "Input name",
+  "skills.editor.paramDefault": "Default value (optional)",
+  "skills.editor.paramDescription": "Instructions (optional)",
+  "skills.editor.addParam": "Add an input",
+  "skills.editor.removeParam": "Remove input",
+  "skills.editor.paramIssue":
+    "Give each input a unique name using letters, numbers or underscores.",
+  "skills.editor.attachments": "Attachments",
+  "skills.editor.dropFiles": "Drop files here or choose Upload.",
+  "skills.editor.dropLimit":
+    "Drop up to 32 files totaling 5 MiB at a time. Split them into batches.",
+  "skills.compatibility.details": "View details",
+  "skills.compatibility.impact.standard_field": "Pi Bot can read the skill’s basic information.",
+  "skills.compatibility.impact.ignored_field":
+    "Some settings only apply in the original app. You may need to adapt those steps.",
+  "skills.compatibility.impact.allowed_tools":
+    "This skill asks to use tools. Pi Bot applies your permission settings when it runs.",
+  "skills.compatibility.impact.tool_mapping":
+    "Pi Bot has tools for some of these steps. You may need to adapt how they work.",
+  "skills.compatibility.impact.cli":
+    "This skill needs a command from the original app. Rewrite the steps that use it.",
+  "skills.compatibility.impact.slash_command": "Rewrite the skill’s shortcuts as ordinary steps.",
+  "skills.compatibility.impact.subagent":
+    "This skill tries to call other assistants. In Pi Bot, you can use a group chat to collaborate.",
+  "skills.compatibility.impact.claude_environment":
+    "Some steps rely on settings from the original app and may need changes.",
+  "skills.compatibility.impact.claude_path":
+    "This skill looks for files in the original app’s folder. You may need to update their location.",
+  "skills.compatibility.impact.interpreter":
+    "This skill includes scripts and may need a runtime before it can be used.",
+  "skills.compatibility.impact.shell_windows":
+    "This skill was written for a Mac or Linux terminal and may not run on Windows.",
+  "skills.compatibility.impact.files_unavailable":
+    "The skill files couldn’t be read, so this check may be incomplete.",
+  "skills.preview.licenseImpact":
+    "Review the license terms before modifying or sharing this skill.",
+  "skills.runtime.prepareNow": "Prepare runtime now",
+  "skills.runtime.chatNeeds": "{name} needs its runtime prepared.",
+  "skills.runtime.approval.windows":
+    "Windows has no sandbox to restrict this operation. The installer can access files and the network with your account’s permissions. Continue only if you trust the source.",
+  "skills.runtime.approval.resolvePython": "Check which packages are needed",
+  "skills.runtime.approval.resolvePythonBody":
+    "Sets up Python and checks online which packages are needed. The skill’s packages will be installed after you review and approve the list.",
+  "skills.runtime.approval.noPackages": "Prepares the runtime without adding skill packages.",
+  "skills.runtime.approval.runsWindowsNode":
+    "Uses the locked JavaScript packages below. Some optional packages may be skipped.",
+  "skills.runtime.reason.python_dependencies_unreviewable":
+    "Pi Bot couldn’t verify the full list of Python packages. Ask the skill author for a version that uses packages from PyPI.",
+  "skills.runtime.openProxy": "Check network proxy",
+  "skills.runtime.reason.windows_proxy_credentials":
+    "Unisolated setup on Windows can’t use a proxy that requires a username or password. Check your proxy settings.",
+  "skills.runtime.logSummary": "This log records what happened while setting up the runtime.",
+  "skills.runtime.reason.install_network_failed":
+    "The dependency download couldn’t connect. Check your network proxy and try again.",
+  "skills.runtime.reason.install_package_missing":
+    "A package or version listed by the skill couldn’t be found. Check the dependency list and try again.",
+  "skills.runtime.reason.install_wheel_missing":
+    "This dependency has no prebuilt version for your Python version and computer. Ask the skill author for a compatible version.",
+  "skills.runtime.mirror": "Download the runtime component and Python from the Astral mirror",
+  "skills.runtime.advanced": "Advanced",
   "skills.compatibility.title": "Compatibility",
   "skills.compatibility.load": "Check compatibility",
   "skills.compatibility.unavailable": "Unavailable",
@@ -542,8 +702,6 @@ export const skillsEn: { [K in keyof typeof skillsZh]: string } = {
   "skills.detail.default": "Default: {value}",
   "skills.detail.lastUsed": "Last used",
   "skills.detail.body": "Skill content",
-  "skills.detail.allowedTools":
-    "Skills cannot raise permissions: any allowed-tools inside are ignored and every step follows the permission settings as usual.",
   "skills.source.title": "Source and version",
   "skills.source.from": "From",
   "skills.source.local": "Imported from this computer",
@@ -597,7 +755,7 @@ export const skillsEn: { [K in keyof typeof skillsZh]: string } = {
   "skills.runtime.notRequired": "This skill needs no extra runtime.",
   "skills.runtime.needs": "Needs {what}.",
   "skills.runtime.python": "Python",
-  "skills.runtime.node": "Node",
+  "skills.runtime.node": "JavaScript runtime",
   "skills.runtime.packageCount": "{count} packages",
   "skills.runtime.found": "Found {command} {version} on this computer.",
   "skills.runtime.notFound": "No {what} found on this computer yet.",
@@ -610,66 +768,69 @@ export const skillsEn: { [K in keyof typeof skillsZh]: string } = {
   "skills.runtime.packages": "View packages",
   "skills.runtime.hidePackages": "Hide packages",
   "skills.runtime.noPackages": "The dependency files list no packages.",
-  "skills.runtime.log": "View log",
-  "skills.runtime.hideLog": "Hide log",
+  "skills.runtime.log": "View technical log",
+  "skills.runtime.hideLog": "Hide technical log",
   "skills.runtime.logEmpty": "No log yet.",
   "skills.runtime.cancel": "Cancel",
-  "skills.runtime.retryInSkills": "Go to {bot}’s skill page to retry",
+  "skills.runtime.retryInSkills": "Prepare the runtime on {bot}’s skill page",
   "skills.runtime.retry": "Retry",
   "skills.runtime.recheck": "Check again",
   "skills.runtime.progress": "{phase} {done} / {total}",
   "skills.runtime.phase.create": "Creating the environment",
   "skills.runtime.phase.dependencies": "Installing dependencies",
+  "skills.runtime.phase.resolve": "Checking which packages are needed",
   "skills.runtime.phase.verify": "Checking the environment",
   "skills.runtime.readyLine": "Ready · {interpreter} · {count} packages · {size}",
   "skills.runtime.needsPrepare":
     "Needs preparing: the interpreter is unavailable, or the runtime version or requirements changed.",
-  "skills.runtime.notPrepared":
-    "Not prepared yet. Once prepared, this skill's commands can use the environment's interpreter.",
+  "skills.runtime.notPrepared": "This skill needs its runtime prepared before it can run.",
   "skills.runtime.preparing": "Preparing; it can be used once done.",
-  "skills.runtime.nativeModules":
-    "Note: {names} may need build tools; see the log for the reason if installing fails.",
-  "skills.runtime.reason.uv_download_failed": "Could not download or install uv.",
+  "skills.runtime.reason.uv_download_failed":
+    "The Python runtime component couldn’t be downloaded or installed. Try again.",
   "skills.runtime.reason.uv_checksum_mismatch":
-    "The uv download failed its checksum and was discarded.",
+    "The downloaded Python runtime component failed verification and was discarded. Try again.",
   "skills.runtime.reason.uv_network_failed":
-    "Could not reach the uv download source. Check your network or proxy and try again.",
+    "The Python runtime component couldn’t be reached. Check your network proxy and try again.",
   "skills.runtime.reason.uv_unsupported_platform":
-    "There is no uv download for this system or processor.",
+    "The required Python runtime component isn’t available for this computer.",
   "skills.runtime.reason.uv_cleanup_unconfirmed":
     "The installer has not confirmed it exited. Try again later.",
   "skills.runtime.reason.uv_isolation_unavailable":
     "This computer cannot provide the command isolation needed to prepare Python.",
+  "skills.runtime.reason.node_isolation_unavailable":
+    "This computer cannot provide the command isolation needed to prepare JavaScript.",
+  "skills.runtime.reason.node_dependencies_unreviewable":
+    "Pi Bot couldn’t verify which JavaScript packages would be installed and where they come from. Ask the skill author for a version with a current npm lockfile and packages from the official npm registry.",
   "skills.runtime.reason.python_requirement_unsupported":
     "The skill's Python version range or dependency declaration is unsupported.",
   "skills.runtime.reason.python_workspace_boundary":
     "The managed runtime root failed its workspace check. Ordinary command workspace permissions were not changed.",
-  "skills.runtime.reason.node_not_found": "No Node.js found. Install Node.js first.",
+  "skills.runtime.reason.node_not_found":
+    "Pi Bot’s bundled JavaScript runtime is unavailable. Update or reinstall Pi Bot.",
   "skills.runtime.reason.node_version_unsatisfied":
-    "The Node.js found does not meet the skill's requirement. Upgrade it first.",
+    "This skill requires a different JavaScript runtime version. Update Pi Bot or contact the skill author.",
   "skills.runtime.reason.install_failed":
-    "Installing the dependencies failed; the log has the reason.",
+    "The skill’s dependencies couldn’t be installed. Try again or ask the author for compatible versions.",
   "skills.runtime.reason.cancelled": "Preparation was cancelled.",
   "skills.runtime.reason.plan_changed":
     "The runtime plan changed (interpreter or dependencies); review it before preparing.",
   "skills.runtime.approval.title": "Prepare a runtime for {name}?",
-  "skills.runtime.approval.uses": "Uses",
+  "skills.runtime.approval.uses": "Runtime component",
   "skills.runtime.approval.usesValue": "{interpreter} (already on this computer)",
   "skills.runtime.approval.runs": "Runs",
   "skills.runtime.approval.managedPython":
-    "Downloads uv {version} on demand from github.com/astral-sh/uv (about {size} MB). uv then downloads managed Python {python} from GitHub (about 30–60 MB).",
-  "skills.runtime.approval.writesPython": "Skill environment, managed Python, and uv cache folders",
-  "skills.runtime.approval.runsPython": "uv venv · uv pip install ({count} direct dependencies)",
-  "skills.runtime.approval.runsNode":
-    "npm ci / npm install --ignore-scripts (npm ci when a lockfile exists)",
+    "Downloads the Python runtime component (about {size} MB) and Python {python} (about 30–60 MB) if needed.",
+  "skills.runtime.approval.writesPython":
+    "This skill’s environment, Python, and the download cache",
+  "skills.runtime.approval.runsPython": "Creates the runtime and installs {count} dependencies",
+  "skills.runtime.approval.runsNode": "Installs the JavaScript packages this skill needs",
+  "skills.runtime.approval.reviewedPackages": "Packages covered by this approval",
   "skills.runtime.approval.network": "Network",
-  "skills.runtime.approval.networkPython":
-    "Only PyPI (pypi.org, files.pythonhosted.org) and GitHub release assets (github.com, objects.githubusercontent.com, release-assets.githubusercontent.com)",
-  "skills.runtime.approval.networkNode": "Only registry.npmjs.org",
+  "skills.runtime.approval.networkDomains": "Allowed sites are {domains}.",
   "skills.runtime.approval.writes": "Writes",
   "skills.runtime.approval.writesValue": "Only this skill's environment folder",
   "skills.runtime.approval.risk":
-    "Installing packages runs their install code. It happens in the sandbox, but only continue if you trust this skill.",
+    "Setup downloads third-party packages in an isolated environment. Continue only if you trust the skill and its packages.",
   "skills.runtime.approval.notNow": "Not now",
   "skills.runtime.approval.confirm": "Prepare",
   "skills.runtime.error.planChanged":
@@ -698,16 +859,14 @@ export const skillsEn: { [K in keyof typeof skillsZh]: string } = {
   "skills.editor.issues": "Not saved yet. Fix these first:",
   "skills.editor.issue.front_matter":
     "The front matter is missing: start with a --- line, then name and description, then close it with another --- line.",
-  "skills.editor.issue.name_missing": "The front matter has no name (the skill's name).",
-  "skills.editor.issue.name_too_long": "name is too long (80 characters at most).",
-  "skills.editor.issue.name_invalid": "name contains characters that are not supported.",
-  "skills.editor.issue.description_missing":
-    "The front matter has no description (when to use it).",
-  "skills.editor.issue.description_too_long": "description is too long (1024 characters at most).",
-  "skills.editor.issue.description_invalid":
-    "description contains characters that are not supported.",
-  "skills.editor.issue.body_missing":
-    "The body is empty: write the steps below the second --- line.",
+  "skills.editor.issue.name_missing": "Enter a skill name.",
+  "skills.editor.issue.name_too_long": "Use up to 80 characters for the skill name.",
+  "skills.editor.issue.name_invalid": "The skill name contains an unsupported character.",
+  "skills.editor.issue.description_missing": "Describe when to use this skill in one sentence.",
+  "skills.editor.issue.description_too_long":
+    "Use up to 1,024 characters to describe when to use this skill.",
+  "skills.editor.issue.description_invalid": "The description contains an unsupported character.",
+  "skills.editor.issue.body_missing": "Enter the steps for this skill.",
   "skills.editor.issue.body_too_large": "The body is too long (256 KB at most).",
   "skills.editor.issue.body_invalid": "The body contains characters that are not supported.",
   "skills.editor.issue.params_invalid":
@@ -746,6 +905,8 @@ export const skillsEn: { [K in keyof typeof skillsZh]: string } = {
     "Only a SKILL.md (or another .md or .txt text file), a .zip skill package or a skill folder can be imported.",
   "skills.error.skill_import_too_large": `The skill package is larger than ${mb(SKILL_IMPORT_MAX_BYTES)} in total.`,
   "skills.error.skill_import_file_too_large": `One file in the skill package is larger than ${mb(SKILL_IMPORT_FILE_MAX_BYTES)}; remove it and import again.`,
+  "skills.error.skill_attachment_too_large":
+    "Each attachment can be up to 5 MiB. Compress the file or choose a smaller one.",
   "skills.error.skill_import_too_many_files": `The skill package has more than ${enFiles} files.`,
   "skills.error.skill_import_unsafe":
     "The skill package contains links, special files or unsafe file names (such as .., absolute paths, names Windows does not allow, or names differing only in case), so it cannot be imported.",
@@ -770,6 +931,10 @@ export const skillsEn: { [K in keyof typeof skillsZh]: string } = {
   "skills.error.skill_files_invalid":
     "A file name is not allowed (such as .., a name Windows does not allow, names differing only in case, or a file named like a folder); nothing was saved.",
   "skills.error.skill_upload_expired": "The uploaded files expired. Upload them again, then save.",
+  "skills.error.skill_upload_batch_too_large":
+    "These attachments are too large for one upload. Add and save them in smaller batches.",
+  "skills.error.skill_upload_full":
+    "There are too many unsaved attachments. Save the draft and reopen it to add more.",
   "skills.error.skill_upload_empty": "There are no files in this folder to add.",
   "skills.error.skill_upload_skill_file":
     "Edit SKILL.md in the first file of the list; to replace the whole skill with another one, use Import.",

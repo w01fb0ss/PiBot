@@ -2,8 +2,9 @@
 // services the person's own buttons use. Policy already decided the call (and showed the card);
 // here every request is checked again against what Pi may never do.
 import type { LocalToolResult } from "@pibot/agent";
-import type { CapabilityContext, ToolRunContext } from "@pibot/brain/kit";
+import { type CapabilityContext, fallbackPersona, type ToolRunContext } from "@pibot/brain/kit";
 import type { Bot } from "@pibot/protocol";
+import { SettingsRepo } from "@pibot/storage";
 import { piManagerTools } from "@pibot/teams-contract";
 import { PiDispatchesRepo } from "../../store/pi-dispatches.ts";
 import { managerFailure } from "./errors.ts";
@@ -13,8 +14,11 @@ import {
   botName,
   findBot,
   findGroup,
+  groupCoordinatorRequired,
+  groupCreation,
   oneLine,
   parseModel,
+  personaFollowsRole,
   say,
 } from "./lookup.ts";
 
@@ -91,7 +95,7 @@ function appendManaged(
   });
 }
 
-export function teamList(ctx: CapabilityContext, context: ToolRunContext, input: unknown) {
+export async function teamList(ctx: CapabilityContext, context: ToolRunContext, input: unknown) {
   const args = piManagerTools.team_list.schema.parse(input);
   const busy = new PiDispatchesRepo(ctx.db).busy();
   const language = context.language;
@@ -117,8 +121,14 @@ export function teamList(ctx: CapabilityContext, context: ToolRunContext, input:
           ? "busy"
           : "idle",
   }));
+  const imageModels = args.includeImageModels
+    ? ((await ctx.agent.listImageModels?.({ availableOnly: true, signal: context.signal })) ?? [])
+        .filter((model) => model.configured)
+        .slice(0, 200)
+        .map(({ provider, id, name, modes }) => ({ provider, id, name, modes }))
+    : undefined;
   return {
-    text: JSON.stringify({ bots, groups }),
+    text: JSON.stringify({ bots, groups, imageModels }),
     summary: say(
       language,
       `${bots.length} 个 Bot、${groups.length} 个群组`,
@@ -127,10 +137,52 @@ export function teamList(ctx: CapabilityContext, context: ToolRunContext, input:
   };
 }
 
+/**
+ * Acceptance 2026-11-25: Pi's card changed a Bot's role, but its persona (what it actually follows)
+ * kept the old duties. A new role now rewrites the persona the way creating the Bot does: the Bot's
+ * model drafts it, and the fixed template stands in when that model cannot.
+ */
+async function personaForRole(
+  ctx: CapabilityContext,
+  bot: Bot,
+  role: string,
+  language: "zh" | "en",
+  parent?: AbortSignal,
+) {
+  const description = ctx.redactor.redact(role);
+  const defaults = new SettingsRepo(ctx.db).get().defaultModel;
+  const model =
+    bot.modelProvider && bot.modelId
+      ? { provider: bot.modelProvider, id: bot.modelId }
+      : defaults
+        ? { provider: defaults.provider, id: defaults.id }
+        : undefined;
+  if (model) {
+    const signal = AbortSignal.any([
+      ctx.local.shutdown.signal,
+      AbortSignal.timeout(25_000),
+      ...(parent ? [parent] : []),
+    ]);
+    try {
+      await ctx.local.models?.credentials(model.provider);
+      const persona = await ctx.agent.generatePersona({ description, language, model, signal });
+      return ctx.redactor.redact(persona.systemPrompt);
+    } catch (error) {
+      // Same fallback as creating a Bot: a missing key or a failed draft still gets a persona.
+      if (parent?.aborted || ctx.local.shutdown.signal.aborted) throw error;
+      ctx.logger.warn(
+        JSON.stringify({ module: "teams", reasonCode: "pi_persona_generation_failed" }),
+      );
+    }
+  }
+  return fallbackPersona(description, language).systemPrompt;
+}
+
 export async function botManage(
   ctx: CapabilityContext,
   context: ToolRunContext,
   input: unknown,
+  signal?: AbortSignal,
 ): Promise<LocalToolResult> {
   const language = context.language;
   try {
@@ -210,8 +262,8 @@ export async function botManage(
       return done(
         say(
           language,
-          `已归档「${bot.name}」，30 天内可以恢复`,
-          `Archived "${bot.name}"; it can be restored within 30 days`,
+          `已归档「${bot.name}」：聊天和附件保留，30 天内可以在侧栏「已归档」里恢复，超过 30 天会自动清理`,
+          `Archived "${bot.name}": its chats and attachments are kept; it can be restored from Archived in the sidebar within 30 days, after which it is cleaned up automatically`,
         ),
         say(language, `归档了 ${bot.name}`, `Archived ${bot.name}`),
       );
@@ -249,11 +301,16 @@ export async function botManage(
       if (!available.some((m) => m.provider === model.provider && m.id === model.id))
         return refusal(say(language, "这个模型现在不可用", "That model is not available"));
     }
+    const rolePersona =
+      a.role !== undefined && personaFollowsRole(bot, a.role, a.persona)
+        ? await personaForRole(ctx, bot, a.role, language, signal)
+        : undefined;
     // Only these fields: permissions, policy levels and every other setting are not Pi's to change.
     const patch = {
       ...(a.name !== undefined ? { name: a.name } : {}),
       ...(a.role !== undefined ? { description: a.role } : {}),
       ...(a.persona !== undefined ? { systemPrompt: a.persona } : {}),
+      ...(rolePersona !== undefined ? { systemPrompt: rolePersona } : {}),
       ...(model !== undefined
         ? { modelProvider: model?.provider ?? null, modelId: model?.id ?? null }
         : {}),
@@ -292,25 +349,29 @@ export async function groupManage(
   };
   try {
     if (a.action === "create") {
-      const { bots, unknown } = members(a.members);
-      if (!a.name || bots.length < 2 || bots.length > 6)
-        return refusal(
-          say(language, "建群需要 name 和 2–6 个成员", "create needs a name and 2–6 members"),
-        );
+      const { members, unknown, coordinator, coordinatorNotMember } = groupCreation(
+        ctx.db,
+        a.members,
+        a.coordinator,
+      );
       if (unknown.length)
         return refusal(
           say(
             language,
-            `找不到或已归档：${unknown.map((entry) => entry.ref).join("、")}`,
-            `Not found or archived: ${unknown.map((entry) => entry.ref).join(", ")}`,
+            `找不到或已归档：${unknown.join("、")}`,
+            `Not found or archived: ${unknown.join(", ")}`,
           ),
         );
-      const coordinator = a.coordinator ? findBot(ctx.db, a.coordinator) : bots[0];
-      if (!coordinator || !bots.some((bot) => bot.id === coordinator.id))
+      if (!a.name || members.length < 2)
+        return refusal(
+          say(language, "建群需要 name 和 2–6 个成员", "create needs a name and 2–6 members"),
+        );
+      if (coordinatorNotMember)
         return refusal(
           say(language, "协调者必须是成员之一", "The coordinator must be one of the members"),
         );
-      const botIds = [...new Set(bots.map((bot) => bot.id))];
+      if (!coordinator) return refusal(groupCoordinatorRequired(language));
+      const botIds = members.map((bot) => bot.id);
       const sameGroup = (group: { name: string; members: { botId: string }[] }) =>
         group.name.trim().toLowerCase() === a.name?.trim().toLowerCase() &&
         group.members.length === botIds.length &&
@@ -344,8 +405,8 @@ export async function groupManage(
       return done(
         say(
           language,
-          `已建群「${group.name}」（id ${group.id}）`,
-          `Created the group "${group.name}" (id ${group.id})`,
+          `已建群「${group.name}」（id ${group.id}），由 ${coordinator.name} 统筹`,
+          `Created the group "${group.name}" (id ${group.id}), coordinated by ${coordinator.name}`,
         ),
         say(language, `建了群 ${group.name}`, `Created ${group.name}`),
       );

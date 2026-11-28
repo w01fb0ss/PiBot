@@ -128,6 +128,9 @@ export const GENERAL_TOOLS = [
   "office_template_fill",
   "knowledge_search",
   "knowledge_read",
+  "knowledge_create",
+  "knowledge_update",
+  "knowledge_delete",
   "tool_discover",
   "connection_needed",
   "connector_discover",
@@ -145,6 +148,8 @@ export const GENERAL_TOOLS = [
   "task_message",
   "task_cancel",
   "image_result",
+  "generate_video",
+  "list_video_models",
   "read_messages",
   "skill_propose",
   "skill_read",
@@ -191,10 +196,17 @@ export const GENERAL_TOOLS = [
   "delegate_to_agent",
   // The default Pi's management and hand-off tools (offered only in its own direct chat).
   "team_list",
+  "team_directory",
   "bot_manage",
   "group_manage",
+  "catalog_install",
   "send_to_bot",
   "send_to_group",
+  // The default Pi's health check and repairs (same place only).
+  "pi_health_check",
+  "pi_repair",
+  "settings_read",
+  "settings_change",
 ] as const;
 
 export const CapabilitySourceSchema = z.enum(["default", "global", "group", "bot"]);

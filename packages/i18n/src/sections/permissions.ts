@@ -1,12 +1,14 @@
 // Translate permission settings, approvals, and policy warnings.
-import { linuxIsolationRemedies } from "@pibot/execution/isolation-remedy";
 
 export const permissionsZh = {
   "permissions.serviceTrust": "证书信任评估",
   "permissions.serviceDirectory": "用户与组查询",
   "permissions.serviceNotification": "系统通知",
+  "permissions.serviceKeychain": "系统钥匙串",
+  "permissions.servicePasteboard": "系统剪贴板",
+  "permissions.serviceUnknown": "其他系统服务",
   "permissions.serviceOther": "系统服务 {service}",
-  "permissions.sandboxRemembered": "沙箱里记住的授权",
+  "permissions.sandboxRemembered": "隔离环境里记住的授权",
   "permissions.sandboxRememberedSummary":
     "{count} 项 · 写入路径 {writes} · 本机服务 {local} · 系统服务 {system}",
   "permissions.sandboxRememberedSummary.one":
@@ -19,7 +21,7 @@ export const permissionsZh = {
   "policy.reason.system_service_once": "允许这个程序使用所列系统服务",
 
   "policy.reason.git_entry_confirmation_required":
-    "这条 Git 命令会运行项目里的钩子或可执行配置（见下），需要你这次明确确认，不记住；YOLO、已有授权和例行任务都不能代答",
+    "这条 Git 命令会运行项目里的钩子或可执行配置（见下），需要你这次明确确认，不记住；自动批准模式、已有授权和例行任务都不能代答",
   "facts.value.git_entry_once":
     "只允许这一次运行所列入口；只固定了入口文件本身，它再调用的程序没有固定。运行前若任何入口或配置有变化，这次会被拒绝",
   "policy.reason.git_entry_include_unknown":
@@ -39,7 +41,7 @@ export const permissionsZh = {
   "facts.value.git_hooks_path_setter":
     "仅修改项目 core.hooksPath，不读取钩子正文、不执行钩子，也不授予后续 Git 入口运行许可",
   "policy.reason.git_inline_execution_unsupported":
-    "这条 Git 命令可能调用显式覆盖的可执行配置，暂不支持逐次受控执行；普通权限、YOLO 或已有授权不能代替，不会运行",
+    "这条 Git 命令可能调用显式覆盖的可执行配置，暂不支持逐次受控执行；普通权限、自动批准模式或已有授权不能代替，不会运行",
 
   "policy.reason.git_hook_confirmation_required":
     "单次运行所示 pre-commit 原生程序钩子，需要你明确确认，不记住授权",
@@ -92,41 +94,45 @@ export const permissionsZh = {
   "policy.reason.task_web_read": "你已在本群任务内允许读取公开网页",
   "approval.allowTaskWeb": "本任务内允许读取公开网页",
   "approval.taskWebsiteHint":
-    "本群任务或计划的所有成员、重试和改派共用，仅公开网页只读 GET；不含 Bot 浏览器、登录、表单或内网。任务结束、取消、计划完成或重启后失效。",
+    "本群任务或计划的所有成员、重试和改派共用，仅查看公开网页；不含 Bot 浏览器、登录、表单或内网。任务结束、取消、计划完成或重启后失效。",
   "policy.reason.conversation_web_read": "你已在本对话内允许读取这个网站的公开网页",
   "approval.allowConversation": "本对话内允许这个网站",
   "approval.conversationWebsiteHint":
-    "仅 {domain} 及其子域名的公开网页只读 GET；不含浏览器、登录、表单或内网。此授权仅本 Bot、本对话有效，重启后失效。",
-  "permissions.singleRootScope": "仅工作根 {root}",
-  "permissions.topicGrantScope": "话题 {topic} · 当前可写根：{roots}（随话题变更）",
-  "permissions.topicGrantUnavailable": "工作范围不可用，执行前重新校验",
-  "permissions.topicGrantNoRoots": "无可写根",
-  "permissions.yoloUnisolated": "Windows 上 YOLO 自动运行命令",
+    "仅查看 {domain} 及其子域名的公开网页；不含浏览器、登录、表单或内网。此授权仅本 Bot、本对话有效，重启后失效。",
+  "permissions.singleRootScope": "仅在文件夹 {root} 内",
+  "permissions.topicGrantScope": "话题 {topic} · 当前可写文件夹：{roots}（随话题变更）",
+  "permissions.topicGrantUnavailable": "工作文件夹不可用，执行前重新校验",
+  "permissions.topicGrantNoRoots": "没有可写文件夹",
+  "permissions.yoloUnisolated": "Windows 上自动批准模式直接运行命令",
   "permissions.yoloWindowsConsentedAt":
-    "已同意（{date}）。开了 YOLO 的对话里普通命令直接运行，危险命令仍需确认。撤回后下次开启 YOLO 会再次说明。",
+    "已同意（{date}）。所有开启自动批准模式的对话都可按权限直接运行普通 Windows 命令。撤回后，这些对话里的普通命令会恢复逐次确认。",
   "permissions.yoloWindowsConsented":
-    "已同意。开了 YOLO 的对话里普通命令直接运行，危险命令仍需确认。撤回后下次开启 YOLO 会再次说明。",
-  "permissions.yoloWindowsNotConsented": "尚未同意。开启 YOLO 时可以确认。",
+    "已同意。所有开启自动批准模式的对话都可按权限直接运行普通 Windows 命令。撤回后，这些对话里的普通命令会恢复逐次确认。",
+  "permissions.yoloWindowsNotConsented": "尚未同意。开启自动批准模式时可以确认。",
   "permissions.yoloWindowsWithdraw": "撤回",
   "permissions.yoloWindowsWithdrawFailed": "未能撤回同意，请重试。",
-  "permissions.strictSandbox": "严格沙箱",
+  "permissions.strictSandbox": "严格安全隔离",
   "permissions.strictSandboxNote":
-    "打开后，命令被沙箱拦截时只说明原因，不提供「在沙箱外运行一次」，下面的清单也不生效。",
-  "permissions.sandboxAutoOutside": "自动记住",
+    "打开后，命令被安全隔离拦下时只说明原因，不提供「直接运行一次（不受安全隔离限制）」，下面的清单也不生效。",
+  "permissions.sandboxAutoOutside": "旧版自动保存 · 已停用",
+  "permissions.sandboxUserOutside": "有效授权 · 你已允许",
+  "permissions.sandboxUserOutsidePaused": "严格安全隔离已开启 · 你保存的授权暂不生效",
+  "permissions.sandboxRememberedOutside": "已记住的直接运行授权",
   "permissions.sandboxAutoDelete": "删除",
-  "permissions.sandboxOutsideCommands": "固定在沙箱外运行的命令",
+  "permissions.sandboxOutsideCommands": "固定直接运行的命令（不经安全隔离）",
   "permissions.sandboxOutsideCommandsNote":
-    "每行一条：程序名加固定参数，末尾可加 *（例如 docker compose *）。复合命令每一段都匹配才算；含重定向、cd 或变量展开的不匹配。手工条目每次仍需确认；自动条目仅限所列文件夹，按普通权限规则运行。沙箱外没有文件和网络隔离。",
-  "permissions.sandboxOutsideCommandsStrict": "严格沙箱已打开，清单暂不生效。",
+    "每行一条：程序名加固定参数，末尾可加 *（例如 git *）。复合命令每一段都匹配才算。含重定向、cd 或变量展开的不匹配。手工条目每次仍需确认。已记住的授权仅限所列文件夹，在私聊中按普通权限运行。直接运行没有文件和网络隔离保护。",
+  "permissions.sandboxOutsidePlaceholder": "例如：git *（每行一条）",
+  "permissions.sandboxOutsideCommandsStrict": "严格安全隔离已打开，清单暂不生效。",
   "permissions.sandboxOutsideCommandsInvalid":
     "格式不对：每行一条，程序名加参数，* 只能放在最后，最多 32 条。",
-  "permissions.unisolated": "未隔离",
+  "permissions.unisolated": "直接运行（无隔离保护）",
   "permissions.note.run_command.windows":
-    "Windows 没有命令沙箱。受支持的只读命令（如 dir、type）经权限检查后直接运行。",
+    "Windows 无法隔离限制命令范围，命令会以你的身份直接运行。权限允许时，查看文件列表、读取文件等支持的只读操作可直接运行。",
   "permissions.info.run_command.windows":
-    "设为「不允许」时命令不会运行。经权限检查的受支持只读命令可直接运行。普通命令逐次确认，除非这个对话开了 YOLO 且你同意无隔离执行。",
+    "设为「不允许」时命令不会运行。权限允许时，查看文件列表、读取文件等支持的只读操作可直接运行；其他命令会逐次向你确认，除非这个对话开启了自动批准模式且你同意直接运行。",
   "permissions.windowsAlwaysUnavailable":
-    "Windows 命令没有系统隔离，不能设为总是允许；YOLO 自动批准需单独开启",
+    "Windows 无法隔离限制命令范围，不能设为「总是允许」；如需自动批准，请在对话里单独开启自动批准模式",
   "permissions.connectionsAndSending": "连接与发送",
   "permissions.confirmEverySend": "这个 Bot 每次对外发送都要你确认",
   "approval.connection": "插件",
@@ -171,7 +177,7 @@ export const permissionsZh = {
   "tool.read_messages": "查询聊天历史",
   "audit.messages.read": "已查询 {messages} 条消息、{conversations} 个会话",
   "audit.messages.count": "消息 / 会话数",
-  "permissions.limited": "仍受工作区与系统边界限制",
+  "permissions.limited": "仍受工作文件夹与系统边界限制",
   "permissions.effective": "当前生效：{level}",
   "permissions.globalNetwork": "全局联网设置只是默认，Bot 可独立设置网站范围。",
   "permissions.domainOutsideGlobal": "请输入有效的网站域名。",
@@ -179,7 +185,8 @@ export const permissionsZh = {
   "tool.historyOutputNote": "历史预览：本轮运行前 32 KB 中最多 200 行，可打开完整输出。",
   "tool.outputNote": "仅保留最后 200 行，超长文本会截断。",
   "permissions.note.computer": "每个任务先弹授权卡。系统授权、不能操作的应用在「操作电脑」页。",
-  "permissions.note.read_ai_config": "每次单独批准，内容先脱敏；YOLO 仅放行这一次，不记住授权",
+  "permissions.note.read_ai_config":
+    "每次单独批准，内容先脱敏；自动批准模式仅放行这一次，不记住授权",
   "permissions.note.read_messages":
     "默认允许。可读取自己的话题和所在群的获准记录；搜索限本 Bot 的私聊或当前群。",
   "permissions.note.send_out": "经连接发消息、新建或修改内容；以你的身份发送时，每次都需要你确认",
@@ -190,37 +197,43 @@ export const permissionsZh = {
   "sidebar.waitingFor": "等你处理：{title}",
   "approval.label": "操作审批",
   "approval.danger": "危险操作：请仔细检查，每次都需要你的允许。",
+  "approval.dangerReview": "危险操作，请仔细检查。",
   "approval.deny": "拒绝",
   "approval.allowOnce": "本次允许",
   "approval.allowAlways": "一直允许",
-  "approval.alwaysHint": "「一直允许」：{scope}；可在这个 Bot 资料面板的「权限与连接」里撤销",
+  "approval.alwaysHint": "「一直允许」：{scope}；可在这个 Bot 资料面板的「权限」里撤销",
+  "approval.sandboxRememberHint":
+    "「一直允许」：{scope}。可在「设置 › 权限 › 隔离环境里记住的授权」撤销。",
+  "approval.routineRememberHint": "{scope}。可在「例行任务」中编辑这项任务，移除授权并保存。",
+  "approval.revokeServiceHint": "前往设置撤销服务授权",
+  "approval.systemServiceDetails": "查看系统服务标识",
   "approval.rememberPrograms":
-    "以后在整个工作位置（含所有子目录）运行同一组程序 {programs} 不再询问",
+    "以后在整个工作文件夹（含所有子文件夹）运行同一组程序 {programs} 不再询问",
   "approval.rememberWeb": "以后访问 {scope} 不再询问（不含子域名）",
   // Remembered form submissions in the Bot browser, per site.
   "approval.rememberSubmit": "以后在 {scope}（含子域名）提交表单不再询问",
   "permissions.submitScope": "提交表单 · {site}",
   // "always allow" on a web_fetch card remembers reading public pages for this Bot.
   "approval.rememberWebRead":
-    "以后这个 Bot 读取公开网页不再询问（只读获取；Bot 浏览器、登录、提交表单仍会问，内网地址仍拒绝）",
+    "以后这个 Bot 读取公开网页不再询问（仅查看公开网页；Bot 浏览器、登录、提交表单仍会问，内网地址仍拒绝）",
   "permissions.webReadScope": "读取公开网页",
   // Owner decision 2026-10-23: "don't ask again" on a paid image card, per Bot + exact model.
   "approval.rememberPaidImage": "这个 Bot 用这个模型不再问（{model}）",
   "permissions.paidImageScope": "付费生成图片 · {model}",
-  "approval.rememberWrite": "以后写入整个工作位置（含所有子目录）不再询问",
+  "approval.rememberWrite": "以后写入整个工作文件夹（含所有子文件夹）不再询问",
   "approval.groupWriteHint":
-    "当前群的写文件设置需要确认。选择记住这个工作位置的写入授权后，本群成员写入同一位置无需每步确认；目录外写入仍逐次询问。",
+    "当前群的写文件设置需要确认。选择记住这个工作文件夹的写入授权后，本群成员写入同一文件夹无需每步确认；文件夹外写入仍逐次询问。",
   "approval.rememberFolder": "以后对这个文件夹的同类操作不再询问",
   "approval.chatCountdown": "剩余 {time} · 到时未处理将暂停，等待你确认",
-  "approval.countdown": "剩余 {time} · 到时未处理将自动拒绝",
-  "approval.paused": "已暂停，等你确认；卡片仍可允许一次或拒绝。",
-  "approval.awaitingExpiry": "等待大脑确认处理结果…",
+  "approval.countdown": "剩余 {time} · 到时未处理将过期",
+  "approval.paused": "已暂停，等你决定",
+  "approval.awaitingExpiry": "正在确认处理结果…",
   // Maintainers 2026-11-01: the token card names the command, the tokens and the folder in rows.
   "approval.row.command": "命令",
   "approval.row.tokens": "令牌",
   "approval.row.cwd": "位置",
   "approval.tokensHidden": "{names}（不会显示值）",
-  "approval.tokenInjection": "令牌只在这条命令运行时提供，命令看不到原文。",
+  "approval.tokenInjection": "卡片隐藏令牌的值。批准后，程序运行时会通过环境变量收到令牌的原值。",
   "approval.allowTokenAlways": "以后都允许这个令牌",
   "approval.allowTokensAlways": "以后都允许这些令牌",
   "approval.allowFuture": "以后都允许",
@@ -235,10 +248,23 @@ export const permissionsZh = {
   "approval.auto_denied": "已自动拒绝",
   "approval.cancelled": "已停止，审批取消",
   "approval.expired": "审批已过期",
+  "approval.superseded": "这一步已经过时：之后对话里有了新进展。需要的话让 Bot 重新做这一步。",
   "approval.revokeHint": "可在设置里撤销",
   "facts.program": "程序",
   "facts.read": "读取",
   "facts.write": "写入",
+  "facts.library": "知识库",
+  "facts.note": "笔记",
+  "facts.diff": "差异",
+  "facts.memoryUser": "用户记忆",
+  "facts.memoryBot": "Bot 记忆",
+  "facts.memoryGroup": "群共享记忆",
+  "facts.memoryProject": "项目记忆",
+  "facts.memoryChange": "记忆修改",
+  "facts.memoryRemove": "要删除的记忆",
+  "facts.memoryNote": "记忆内容",
+  "facts.value.memoryUser": "所有 Bot 共用",
+  "approval.showDiff": "展开差异",
   "facts.network": "联网",
   "facts.cwd": "当前目录",
   "facts.warning": "提示",
@@ -247,25 +273,33 @@ export const permissionsZh = {
   "facts.value.topic_writable_scope":
     "选择「以后允许」会覆盖本话题当前的所有可写文件夹，不适用于其他话题；移除文件夹后不再覆盖。",
   "facts.value.incomplete_analysis": "无法完全确定会做什么，不能记住授权",
-  "facts.value.windows_unisolated": "此命令将在 Windows 上以你的权限运行，没有系统隔离",
-  "facts.value.local_service": "只放行这一个端口或套接字；其他端口和外网仍被沙箱拦。",
+  "facts.value.windows_unisolated":
+    "Windows 没有命令沙箱。此命令将以你的账户运行，可以读写你有权访问的文件，也可以使用你的网络。",
+  "facts.value.local_service":
+    "这次会额外开放这一个本机服务地址；其他未授权的本机服务仍受安全隔离限制，已有网络与本机服务授权保持不变。",
   "facts.value.outside_sandbox_login":
-    "这个程序要用你自己的登录或配置（如 aws、gh、kubectl、ssh 的凭据），在沙箱里跑不通，所以直接请你批准在沙箱外运行",
+    "这个程序需要读取你本机的登录凭据或配置（如 aws、gh、kubectl、ssh），在安全隔离里无法运行，因此请你批准直接运行（不受安全隔离限制）",
   "facts.value.outside_sandbox":
-    "这次在沙箱外运行，没有文件和网络隔离：能读写你的整个用户目录、访问任意网络。只放行这一次，不会记住",
+    "命令会以你的身份直接运行，可以读写你能访问的文件并联网。安全隔离不会限制文件和网络访问。",
+  "approval.directRunRemember": "直接运行并记住",
+  "approval.manageDirectRun": "管理已保存的直接运行授权",
+  "approval.directRunLegacy":
+    "这台电脑上的旧版 Pi Bot 可能自动记住本次直接运行的权限。更新电脑上的 Pi Bot 后，你可以单独选择是否记住。",
+  "approval.directRunRememberHint":
+    "这次运行结束后，任何 Bot 在私聊中从「{folder}」文件夹运行以「{program}」开头的匹配命令，都可按普通权限跳过安全隔离。后续命令可以使用不同参数，也能访问该文件夹以外的文件和网络。可在「设置 › 权限 › 高级」删除。",
   "facts.value.acp_editor_terminal_unisolated":
     "命令将由编辑器终端直接执行；Pi Bot 无法证明编辑器提供了系统隔离",
   "facts.value.editor_session_rememberable":
-    "可选「本次会话都允许」：仅本 ACP 会话内，同样的程序和参数不再询问；会话结束即失效，不保存为授权",
-  "facts.value.outside_delete": "将删除工作位置以外的文件",
-  "facts.value.protected_command_path": "涉及本次可写工作位置以外的受保护数据",
+    "「本次会话都允许」只在这次编辑器连接期间有效，断开即失效。每次仍检查是否在会话的工作文件夹内。只读命令可用同一程序和选项读取不同文件或搜索不同内容，也可更改选项的值。切换目录可选会话内的其他文件夹。修改文件的命令必须使用完全相同的参数。",
+  "facts.value.outside_delete": "将删除工作文件夹以外的文件",
+  "facts.value.protected_command_path": "涉及本次可写工作文件夹以外的受保护数据",
   "facts.value.outside_workplace_write":
-    "将写入工作位置以外的路径：只能允许这一次，只放开上面列出的路径，下次还会再问",
+    "将写入工作文件夹以外的路径：只能允许这一次，只放开上面列出的路径，下次还会再问",
   "approval.outsideWriteFolderHint":
     "要在这里继续工作，可以通过系统选择框为本话题添加可写文件夹。添加成功后原请求作废，Bot 会重试。也可在话题的文件夹菜单中添加。",
   "approval.addWritableFolder": "把这个文件夹加为可写文件夹",
-  "facts.value.outside_permissions": "将修改工作位置以外的文件权限",
-  "facts.value.remove_workplace_root": "将删除整个工作位置",
+  "facts.value.outside_permissions": "将修改工作文件夹以外的文件权限",
+  "facts.value.remove_workplace_root": "将删除整个工作文件夹",
   "facts.value.system_settings": "可能修改系统设置",
   "facts.value.force_push": "将强制推送 Git 历史",
   "facts.value.hard_remote_reset": "将丢弃本地修改并重置 Git 历史",
@@ -277,44 +311,75 @@ export const permissionsZh = {
   "facts.value.scriptByContent": "按内容核对过的脚本（内容改了会再问）",
   "facts.value.currentChatHistory": "此 Bot 的私聊或当前群的过往话题",
   "facts.value.unknownWarning": "无法完全确定此操作的影响，请仔细检查",
+  "commandProtection.title": "运行命令所需的系统保护",
+  "commandProtection.blocked": "系统保护恢复前，需要它的 Bot 命令不会在这台电脑上运行。",
+  "commandProtection.ready": "系统保护已就绪。可以让 Bot 重试。",
+  "commandProtection.checkFailed": "无法确认系统保护是否就绪。请再检查一次。",
+  "commandProtection.installNote":
+    "Pi Bot 会用系统的软件安装工具装到这台电脑上。系统可能要求管理员确认。",
+  "commandProtection.manualNote": "无法从这里安装，请让管理员安装所需组件，然后再检查。",
+  "commandProtection.outcome.installed": "安装完成。等几秒后再检查系统保护。",
+  "commandProtection.outcome.denied": "系统没有批准安装。请重试，或复制命令请管理员安装。",
+  "commandProtection.outcome.failed": "系统安装工具未能完成安装。请重试，或复制命令请管理员安装。",
+  "commandProtection.outcome.busy": "已有一个安装在进行，请稍等再检查。",
+  "commandProtection.advanced": "高级",
+  "commandProtection.apparmor":
+    "请管理员检查 AppArmor 的拒绝记录，确认受影响的程序和配置。仅当系统已经有允许 bwrap 使用用户命名空间的配置、但尚未加载时，请管理员用下方命令加载。",
+  "commandProtection.copy": "复制命令",
+  "commandProtection.copied": "已复制",
+  "commandProtection.recheck": "重新检测",
+  "commandProtection.install": "安装 {dependency}",
   "isolation.warning": "命令在执行设备上不隔离运行。",
+  "isolation.deviceBlocked": "在「{name}」恢复系统保护前，需要它的 Bot 命令不会在这台设备上运行。",
+  "isolation.deviceInstall": "请让管理员在「{name}」上安装 {dependency}。",
   "isolation.reason.windows_unisolated":
-    "Windows 暂不支持命令隔离，每条命令都要你批准后才直接运行。",
+    "Windows 上的命令以你的权限运行。权限允许时，受支持的只读命令可直接运行。其他获准执行的命令需要你确认，除非你在这个对话中开启自动批准，并同意在没有系统保护的情况下运行。",
+  "isolation.warning.device": "这台设备当前无法隔离命令。",
+  "isolation.warning.device.blocked": "这台设备当前无法隔离命令。需要隔离的普通命令会被拦下。",
+  "isolation.reason.windows_unisolated_consented":
+    "Windows 上没有命令沙箱。经权限检查的只读命令可以直接运行。你已同意无隔离运行，开启 YOLO 的对话里普通命令可以直接运行。危险或无法解析的命令仍会询问。",
   "isolation.reason.acp_editor_terminal_unisolated":
     "命令由编辑器终端直接执行；Pi Bot 无法证明编辑器提供了系统隔离。",
   "isolation.reason.platform_unsupported": "这个系统不支持命令隔离。",
   "isolation.reason.sandbox_dependencies_or_runtime_unavailable": "隔离组件缺失或无法启动。",
   "isolation.reason.linux_bubblewrap_missing":
-    "没有找到 bubblewrap（bwrap），命令隔离需要它。安装（Debian/Ubuntu：sudo apt install bubblewrap；Fedora：sudo dnf install bubblewrap）后重启执行端。",
+    "缺少 bubblewrap。Pi Bot 需要它来限制命令可以访问的文件。",
   "isolation.reason.linux_socat_missing":
-    "没有找到 socat，命令隔离用它转发沙箱内的网络访问。安装（Debian/Ubuntu：sudo apt install socat）后重启执行端。",
-  "isolation.reason.linux_userns_disabled": linuxIsolationRemedies.linux_userns_disabled.zh,
-  "isolation.reason.linux_userns_limit_zero": linuxIsolationRemedies.linux_userns_limit_zero.zh,
+    "缺少 socat。Pi Bot 需要它来按你的联网设置处理命令的网络访问。",
+  "isolation.reason.linux_userns_disabled":
+    "这台电脑关闭了命令所需的系统功能。请在支持该功能的电脑上运行 Pi Bot。",
+  "isolation.reason.linux_ripgrep_unavailable":
+    "Pi Bot 找不到运行命令所需的随附组件。请重新安装并打开 Pi Bot。",
+  "isolation.reason.linux_sandbox_host_unavailable":
+    "命令保护组件没能启动。请重新安装并打开 Pi Bot。",
+  "isolation.reason.linux_userns_limit_zero":
+    "这台电脑关闭了命令所需的系统功能。请在支持该功能的电脑上运行 Pi Bot。",
   "isolation.reason.linux_seccomp_helper_unavailable":
-    linuxIsolationRemedies.linux_seccomp_helper_unavailable.zh,
-  "isolation.reason.linux_userns_restricted": linuxIsolationRemedies.linux_userns_restricted.zh,
+    "Pi Bot 无法启动限制命令权限的组件。请重新安装并打开 Pi Bot。",
+  "isolation.reason.linux_userns_restricted":
+    "系统未能建立运行命令所需的保护。请让管理员检查这台电脑的 AppArmor 设置。",
   "isolation.reason.isolation_check_unfinished":
     "沙箱自检还没完成（电脑较忙），运行命令时会重新检查。",
   "isolation.available": "已开启",
   "isolation.unavailable": "不可用",
-  "workplaces.title": "工作位置",
-  "workplaces.headerLabel": "工作位置",
-  "workplaces.header": "工作位置 {name}，点击打开工作位置面板",
+  "workplaces.title": "工作文件夹",
+  "workplaces.headerLabel": "工作文件夹",
+  "workplaces.header": "工作文件夹 {name}，点击打开工作文件夹面板",
   "workplaces.unavailable": "无法加载",
   "workplaces.folderMissing": "文件夹已不存在",
   "workplaces.runnerOffline": "执行端离线",
   "workplaces.folderMissingHint":
-    "这个话题的文件夹已不存在或被移走。请在上方改选文件夹，或改用 Bot 主目录。",
-  "workplaces.home": "Bot 主目录",
+    "这个话题的文件夹已不存在或被移走。请在上方改选文件夹，或改用 Bot 自己的文件夹。",
+  "workplaces.home": "Bot 自己的文件夹",
   "workplaces.note": "Bot 只能在这些文件夹里写文件。",
-  "workplaces.current": "当前目录",
+  "workplaces.current": "当前文件夹",
   "workplaces.setCurrent": "设为当前",
   "workplaces.add": "添加文件夹",
   "workplaces.remove": "移除",
   "workplaces.removeNamed": "移除 {name}",
-  "workplaces.close": "关闭工作位置",
+  "workplaces.close": "关闭工作文件夹",
   "workplaces.permissions": "在设置里调整权限 →",
-  "workplaces.error": "无法更新工作位置，请重试。",
+  "workplaces.error": "无法更新工作文件夹，请重试。",
   "permissions.note": "这是所有 Bot 的默认权限，每个 Bot 可以在自己资料里的「权限」单独改。",
   "permissions.error": "无法加载或保存权限，请重试。",
   "permissions.operations": "本机操作",
@@ -333,12 +398,12 @@ export const permissionsZh = {
   "permissions.category.agent_delegation": "交给外部 Agent",
   "permissions.category.web": "访问网站",
   "permissions.note.run_command":
-    "工作位置内已知只读命令直接运行；总是允许时，隔离内的命令也直接运行。位置外写入、非包仓库联网、安装与后台启动仍需确认，受保护位置仍拒绝",
+    "工作文件夹内已知只读命令直接运行；总是允许时，安全隔离内的命令也直接运行。文件夹外写入、常用软件源以外联网、安装与后台启动仍需确认，受保护位置仍拒绝",
   "permissions.note.read_file":
-    "工作位置以外的文件会先问你；允许一次后，同一文件夹在这次回复里不再问",
+    "工作文件夹以外的文件会先问你；允许一次后，同一文件夹在这次回复里不再问",
   "permissions.note.list_dir": "看文件夹里有什么、找文件、搜索文件内容",
   "permissions.note.write_file":
-    "工作位置内按这里的设置写入；位置外的写入逐次确认，受保护位置仍拒绝。执行端不允许位置外写入；可用的文件检查点可在改动页恢复",
+    "工作文件夹内按这里的设置写入；文件夹外的写入逐次确认，受保护位置仍拒绝。执行端不允许文件夹外写入；可用的文件检查点可在改动页恢复",
   "permissions.note.web":
     "访问和读取公开网页默认允许。设为「询问」会按权限提示。每个网站首次自动登录或提交表单仍会问你。",
   "permissions.level.never": "不允许",
@@ -350,15 +415,36 @@ export const permissionsZh = {
   "permissions.grantsError": "无法加载或撤销授权，请重试。",
   "permissions.loadMore": "加载更多",
   "permissions.network": "联网",
-  "permissions.allowNetwork": "Bot 跑的命令可以联网",
-  "permissions.networkNote": "关闭后仅限名单；自动执行的命令仍只开放包仓库和你添加的网站",
+  "permissions.allowNetwork": "扩大联网范围",
+  "permissions.webNetworkOn":
+    "读取公开网页、使用 Bot 浏览器和连接已配置的图片和视频服务时，不再受网站名单限制。各项权限仍然生效。",
+  "permissions.webNetworkOff":
+    "开启后，读取公开网页、使用 Bot 浏览器和连接已配置的图片和视频服务时可访问名单外的站点。各项权限仍然生效。",
+  "permissions.networkOn":
+    "这台电脑上，经确认或自动批准的隔离命令可访问公开网站。按「总是允许」自动运行的隔离命令只可访问名单内的网站和常用软件下载来源。",
+  "permissions.networkOff": "这台电脑上，普通隔离命令只能访问名单内的公开网站。",
+  "permissions.networkOnWindows":
+    "这台 Windows 电脑可以按权限运行普通命令。命令以你的身份直接运行，可以联网，网站名单无法限制它。",
+  "permissions.networkOffWindows":
+    "这台 Windows 电脑上的普通命令会被拦下。Bot 仍可使用有权限的文件工具。",
+  "permissions.networkOnUnknown":
+    "经确认或自动批准的隔离命令可访问公开网站，符合权限的 Windows 普通命令可以直接联网。",
+  "permissions.networkOffUnknown":
+    "普通隔离命令只能访问名单内的公开网站。Windows 普通命令会被拦下。",
+  "permissions.networkDetails": "查看联网细则",
+  "permissions.networkHideDetails": "收起联网细则",
+  "permissions.networkExceptions":
+    "配对执行设备上的受限自动命令只能访问常用软件下载来源（如 npm 和 PyPI）。开关打开时会自动加入这些来源，关闭时只允许名单中已有的来源。另行获准跳过安全隔离的命令可以直接联网，网站名单无法限制它。访问本机和局域网服务另有权限。",
   "permissions.commandDomainsNote":
-    "自动执行的命令只开放包仓库和这份清单。需要访问飞书、GitHub 等服务时，在这里添加域名；不会自动关闭上面的联网开关。",
+    "为这台 Mac 或 Linux 电脑上的隔离命令添加网站，如 feishu.cn 或 github.com。编辑名单不会改变联网开关。",
+  "permissions.commandDomainsNoteOff":
+    "关闭扩大联网范围时，这台 Mac 或 Linux 电脑上的普通隔离命令只能访问名单内的公开网站，常用软件源也需加到名单。",
   "permissions.noExplicitDomains": "还没有添加网站。",
-  "permissions.noDomains": "列表为空：不允许访问任何网站。",
-  "permissions.domain": "网站域名",
+  "permissions.noDomains": "名单里还没有网站。",
+  "permissions.domain": "网站域名（如 feishu.cn）",
   "permissions.addDomain": "添加网站",
-  "permissions.domainInvalid": "请输入域名，不含协议、端口或路径（最多 200 项）。",
+  "permissions.domainInvalid":
+    "请只填主域名，例如 feishu.cn 或 api.github.com，不要带 https://、端口或路径（最多 200 项）。",
   "permissions.removeDomain": "移除网站 {domain}",
   "permissions.paths": "命令搜索路径",
   "permissions.pathsNote": "可选：在默认 PATH 之外添加目录，每行一个绝对路径。",
@@ -419,9 +505,38 @@ export const permissionsZh = {
   "tool.todo_pause": "暂停任务清单",
   "tool.unknown": "使用工具",
   "tool.step": "{action}{target} · 第 {step} 步",
-  "tool.sandboxBlocked": "沙箱拦下了：{kind} {target}{program}（规则：{rule}）",
+  "tool.sandboxBlocked": "安全隔离拦下了：{kind}{target}{program}（{rule}）",
+  "tool.sandboxBlockedNoRule": "安全隔离拦下了：{kind}{target}{program}",
+  "tool.sandboxRule.proxy_denied": "网络代理拒绝了连接",
+  "tool.sandboxRule.proxy_not_allowed": "网站不在允许名单内",
+  "tool.sandboxRule.loopback_proxy": "本机服务未开放",
+  "tool.sandboxRule.loopback_socket": "本机服务端口未开放",
+  "tool.sandboxRule.loopback_bind": "不允许监听本机端口",
+  "tool.sandboxRule.loopback_namespace": "隔离网络内无法访问本机服务",
+  "tool.sandboxRule.local_bind": "不允许监听网络端口",
+  "tool.sandboxRule.socket": "不允许直接连接网络",
+  "tool.sandboxRule.unix_socket": "安全隔离不允许这个连接",
+  "tool.sandboxRule.mach_lookup": "系统服务未开放",
+  "tool.sandboxRule.keychain": "不允许访问系统钥匙串",
+  "tool.sandboxRule.pasteboard": "不允许访问系统剪贴板",
+  "tool.sandboxRule.dev_write": "不允许写入系统设备",
+  "tool.sandboxRule.credential_store": "受保护的凭据目录不可读取",
+  "tool.sandboxRule.bot_home": "受保护的凭据目录不可读取",
+  "tool.sandboxRule.deny_read": "受保护的文件不可读取",
+  "tool.sandboxRule.write_root": "超出当前工作文件夹范围",
+  "tool.sandboxRule.explicit_deny": "受保护的位置不可修改",
+  "tool.sandboxRule.file_write": "不允许写入该位置",
+  "tool.sandboxRule.git_metadata": "受保护的 Git 配置不可修改",
+  "tool.sandboxRule.git_hooks": "受保护的 Git 钩子不可修改",
+  "tool.sandboxRule.git_config": "受保护的 Git 配置不可修改",
   "tool.networkSettingsBlocked": "联网设置拦下了：{target} 不在允许的网站名单里，命令未运行",
+  "tool.sandboxLocalBlocked": "安全隔离拦下了命令{program}与{service}的连接。",
+  "tool.sandboxLocalListeningBlocked": "安全隔离拦下了命令{program}在{service}等待连接。",
+  "tool.sandboxLocalService": "本机服务",
+  "tool.sandboxLocalServiceDocker": "本机 Docker 服务",
+  "tool.sandboxConnectionDetails": "高级 · 连接详情",
   "tool.sandboxSeeApproval": "查看审批 ↓",
+  "tool.sandboxSeePermissions": "查看权限设置",
   "tool.website.add": "允许访问 {domain}…",
   "tool.website.saved": "{domain} 已加入，可重试 · 查看范围",
   "tool.website.title": "加入允许的网站",
@@ -439,10 +554,22 @@ export const permissionsZh = {
   "tool.website.noRetry":
     "仅保存网站权限，联网开关和其他授权保持原设置。保存后请重试命令；不会自动执行。私网和本机服务仍按原规则授权。",
   "tool.website.confirm": "加入允许的网站",
+  "tool.website.retryBotScope":
+    "此网站会一直保留在这个 Bot 的允许列表中，直到你在它的权限设置中移除。",
+  "tool.website.retryGroupScope":
+    "此网站会一直保留在这个群的允许列表中，直到你在群权限设置中移除。",
+  "tool.website.retrySkip": "保持阻止",
+  "tool.website.retryConfirm": "允许此网站并重试",
+  "tool.website.retryHelp": "Pi Bot 会重新检查权限，再用同一条命令继续。",
+  "tool.website.retryRan":
+    "刚才的命令可能已经执行了一部分。确认后，Pi Bot 会重新检查权限，再从头执行这条命令。",
+  "tool.website.retryStarted": "已允许 {domain}，正在重试",
+  "tool.website.retryExpired": "这次重试已过期。你仍可加入网站，然后在聊天中重新发起。",
+
   "tool.website.full":
     "这个范围的允许网站已满（200 项）。请先在权限设置中移除不需要的网站，再重试。",
   "tool.website.unavailable": "这条拦截记录或所属 Bot／群已不可用。请回到当前对话重新发起操作。",
-  "tool.sandboxKind.outside_workplace_write": "工作位置外写入",
+  "tool.sandboxKind.outside_workplace_write": "工作文件夹外写入",
   "tool.sandboxKind.protected_name": "受保护的位置",
   "tool.sandboxKind.git_resource": "Git 资源",
   "tool.sandboxKind.network": "联网",
@@ -451,8 +578,14 @@ export const permissionsZh = {
   "tool.sandboxKind.protected_path": "受保护的位置",
   "tool.sandboxKind.credential_read": "凭据读取",
   "tool.sandboxKind.protected_read": "受保护的读取",
-  "tool.sandboxKind.other": "沙箱规则",
-  "tool.executing": "正在{action}{target} · 第 {step} 步",
+  "tool.sandboxKind.other": "安全限制",
+  "tool.executing": "正在{action}{target}",
+  "tool.active.command": "正在运行{target}",
+  "tool.active.read": "正在读{target}",
+  "tool.active.write": "正在写{target}",
+  "tool.active.edit": "正在修改{target}",
+  "tool.active.search": "正在搜索{target}",
+  "tool.active.webpage": "正在看网页{target}",
   "tool.group.summary": "执行了 {count} 步 · {types}",
   "tool.group.summaryOne": "执行了 {count} 步 · {types}",
   "tool.group.progress": "已完成 {count} 步",
@@ -466,7 +599,8 @@ export const permissionsZh = {
   "tool.status.waitingReviewFolderUnknown": "等待其他 Bot 释放工作区后开始审查",
   "tool.status.done": "已完成",
   "tool.status.error": "失败",
-  "tool.status.blocked": "已拒绝",
+  "tool.status.blocked": "已被程序拦截",
+  "tool.status.userDenied": "已拒绝",
   "tool.status.aborted": "已停止",
   "tool.exit": "退出码 {code}",
   "tool.duration": "耗时 {seconds} 秒",
@@ -484,8 +618,11 @@ export const permissionsEn: { [K in keyof typeof permissionsZh]: string } = {
   "permissions.serviceTrust": "Certificate trust evaluation",
   "permissions.serviceDirectory": "User and group lookup",
   "permissions.serviceNotification": "System notifications",
+  "permissions.serviceKeychain": "System keychain",
+  "permissions.servicePasteboard": "System clipboard",
+  "permissions.serviceUnknown": "Other system service",
   "permissions.serviceOther": "System service {service}",
-  "permissions.sandboxRemembered": "Remembered sandbox permissions",
+  "permissions.sandboxRemembered": "Remembered isolation permissions",
   "permissions.sandboxRememberedSummary":
     "{count} items · Write paths {writes} · Local services {local} · System services {system}",
   "permissions.sandboxRememberedSummary.one":
@@ -498,7 +635,7 @@ export const permissionsEn: { [K in keyof typeof permissionsZh]: string } = {
   "policy.reason.system_service_once": "Allow this program to use the listed system service",
 
   "policy.reason.git_entry_confirmation_required":
-    "This Git command would run project hooks or executable configuration (listed below). Confirm it explicitly this time; it is not remembered, and YOLO, existing grants and routines cannot answer it",
+    "This Git command would run project hooks or executable configuration (listed below). Confirm it explicitly this time; it is not remembered, and Auto-approve, existing grants and routines cannot answer it",
   "facts.value.git_entry_once":
     "Allows the listed entries to run this one time. Only the entry files are pinned, not the programs they call. If any entry or config changes before launch, the run is refused",
   "policy.reason.git_entry_include_unknown":
@@ -518,7 +655,7 @@ export const permissionsEn: { [K in keyof typeof permissionsZh]: string } = {
   "facts.value.git_hooks_path_setter":
     "Only change project core.hooksPath. Do not read hook contents, run hooks, or authorize later Git execution.",
   "policy.reason.git_inline_execution_unsupported":
-    "This Git command may invoke an explicit executable configuration override. Controlled per-use execution is unsupported; ordinary permissions, YOLO or existing grants cannot authorize it. Not executed.",
+    "This Git command may invoke an explicit executable configuration override. Controlled per-use execution is unsupported; ordinary permissions, Auto-approve or existing grants cannot authorize it. Not executed.",
   "policy.reason.git_hook_confirmation_required":
     "Running this pre-commit native-program hook requires explicit confirmation for this call; permission is not remembered",
   "policy.reason.git_hook_unsupported":
@@ -575,43 +712,49 @@ export const permissionsEn: { [K in keyof typeof permissionsZh]: string } = {
   "policy.reason.task_web_read": "You allowed public web reads for this group task",
   "approval.allowTaskWeb": "Allow public web reads for this task",
   "approval.taskWebsiteHint":
-    "Shared by this group task or plan's members, retries and reassignments; public read-only GET only. Excludes the Bot browser, logins, forms and private addresses. Expires on task end, cancellation, plan completion or restart.",
+    "Shared by this group task or plan's members, retries and reassignments; reading public web pages only. Excludes the Bot browser, logins, forms and private addresses. Expires on task end, cancellation, plan completion or restart.",
   "policy.reason.conversation_web_read":
     "You allowed public web reads from this website in this conversation",
   "approval.allowConversation": "Allow this website in this conversation",
   "approval.conversationWebsiteHint":
-    "Public read-only GET on {domain} and its subdomains only; excludes browser, login, forms and private networks. Only this Bot and conversation; expires on restart.",
-  "permissions.singleRootScope": "Single writable root: {root}",
+    "Reading public web pages on {domain} and its subdomains only; excludes browser, login, forms and private networks. Only this Bot and conversation; expires on restart.",
+  "permissions.singleRootScope": "Only in folder {root}",
   "permissions.topicGrantScope":
-    "Topic {topic} · Current writable roots: {roots} (follows topic changes)",
+    "Topic {topic} · Current writable folders: {roots} (follows topic changes)",
   "permissions.topicGrantUnavailable": "Working folders unavailable; rechecked before execution",
-  "permissions.topicGrantNoRoots": "No writable roots",
-  "permissions.yoloUnisolated": "YOLO runs commands automatically on Windows",
+  "permissions.topicGrantNoRoots": "No writable folders",
+  "permissions.yoloUnisolated": "Auto-approve runs commands directly on Windows",
   "permissions.yoloWindowsConsentedAt":
-    "Consented on {date}. Ordinary commands run directly in conversations with YOLO on. Dangerous commands still ask. Withdraw to see the explanation next time you turn on YOLO.",
+    "Consented on {date}. Eligible ordinary Windows commands can run directly in every conversation with Auto-approve on. Withdrawing restores individual approval for those commands in all of those conversations.",
   "permissions.yoloWindowsConsented":
-    "Consented. Ordinary commands run directly in conversations with YOLO on. Dangerous commands still ask. Withdraw to see the explanation next time you turn on YOLO.",
-  "permissions.yoloWindowsNotConsented": "Consent not given. You can confirm when turning on YOLO.",
+    "Consented. Eligible ordinary Windows commands can run directly in every conversation with Auto-approve on. Withdrawing restores individual approval for those commands in all of those conversations.",
+  "permissions.yoloWindowsNotConsented":
+    "Consent not given. You can confirm when turning on Auto-approve.",
   "permissions.yoloWindowsWithdraw": "Withdraw",
   "permissions.yoloWindowsWithdrawFailed": "Couldn't withdraw consent. Try again.",
-  "permissions.strictSandbox": "Strict sandbox",
+  "permissions.strictSandbox": "Strict isolation",
   "permissions.strictSandboxNote":
-    "When on, a command the sandbox blocks only explains why; running it once outside the sandbox is not offered, and the list below is ignored.",
-  "permissions.sandboxAutoOutside": "Automatically remembered",
+    "When on, a command blocked by safety isolation only explains why; running it once outside isolation is not offered, and the list below is ignored.",
+  "permissions.sandboxAutoOutside": "Saved automatically by an older version · inactive",
+  "permissions.sandboxUserOutside": "Active permission · allowed by you",
+  "permissions.sandboxUserOutsidePaused": "Strict isolation is on · your permission is paused",
+  "permissions.sandboxRememberedOutside": "Remembered direct-run permission",
   "permissions.sandboxAutoDelete": "Delete",
-  "permissions.sandboxOutsideCommands": "Commands that run outside the sandbox",
+  "permissions.sandboxOutsideCommands": "Commands that run directly (outside isolation)",
   "permissions.sandboxOutsideCommandsNote":
-    "One per line: the program and fixed arguments, optionally ending in * (for example docker compose *). Every part of a compound command must match; redirects, cd and variable expansion never match. Manual entries require confirmation each time. Automatic entries apply only to the listed folder and follow ordinary permissions. Outside runs have no file or network isolation.",
-  "permissions.sandboxOutsideCommandsStrict": "Strict sandbox is on, so the list is not in effect.",
+    "Use one entry per line with the program and any fixed arguments, optionally ending in * (for example git *). Every part of a compound command must match. Commands with redirects, cd or variable expansion do not match. Manual entries require confirmation each time. Remembered permissions apply only in the listed folder and follow ordinary permissions in direct chats. Direct runs have no file or network isolation.",
+  "permissions.sandboxOutsidePlaceholder": "e.g. git * (one per line)",
+  "permissions.sandboxOutsideCommandsStrict":
+    "Strict isolation is on, so the list is not in effect.",
   "permissions.sandboxOutsideCommandsInvalid":
     "Invalid entry: one per line, a program and its arguments, * only at the end, at most 32 entries.",
-  "permissions.unisolated": "Unisolated",
+  "permissions.unisolated": "Runs directly (unisolated)",
   "permissions.note.run_command.windows":
-    "Windows has no command sandbox. Supported read-only commands, such as dir and type, run directly when permissions allow.",
+    "Windows cannot isolate commands, so they run directly as you. Supported read-only actions (such as listing or reading files) run directly when permissions allow.",
   "permissions.info.run_command.windows":
-    "Don't allow blocks commands. Supported read-only commands run directly when permissions allow. Ordinary commands ask each time unless YOLO is on in the conversation and you consented to unisolated execution.",
+    "Don't allow blocks commands. Supported read-only actions run directly when permissions allow. Other commands ask each time unless Auto-approve is on in the conversation and you consented to direct execution.",
   "permissions.windowsAlwaysUnavailable":
-    "Windows commands have no system isolation and cannot be set to Always; YOLO auto-approval must be enabled separately",
+    "Windows cannot isolate commands, so Run commands cannot be set to Always; turn on Auto-approve in a conversation separately",
   "permissions.connectionsAndSending": "Connections and sending",
   "permissions.confirmEverySend": "This Bot asks you before every send",
   "approval.connection": "Connected app",
@@ -669,7 +812,7 @@ export const permissionsEn: { [K in keyof typeof permissionsZh]: string } = {
   "permissions.note.computer":
     "Each task asks first with a grant card. System permissions and blocked apps are on the Computer use page.",
   "permissions.note.read_ai_config":
-    "Approve each read; sensitive values are removed first. YOLO allows once without remembering.",
+    "Approve each read; sensitive values are removed first. Auto-approve allows once without remembering.",
   "permissions.note.read_messages":
     "Allowed by default. Read its own topics and permitted group history; search only this Bot’s private chats or the current group.",
   "permissions.note.send_out":
@@ -681,11 +824,18 @@ export const permissionsEn: { [K in keyof typeof permissionsZh]: string } = {
   "sidebar.waitingFor": "Waiting for you: {title}",
   "approval.label": "Operation approval",
   "approval.danger": "Dangerous operation: review carefully. Permission is required every time.",
+  "approval.dangerReview": "Dangerous operation. Review carefully.",
   "approval.deny": "Deny",
   "approval.allowOnce": "Allow this time",
   "approval.allowAlways": "Always allow",
   "approval.alwaysHint":
-    "“Always allow”: {scope}. You can revoke it on this Bot’s Permissions & connections tab.",
+    "“Always allow”: {scope}. You can revoke it on this Bot’s Permissions tab.",
+  "approval.sandboxRememberHint":
+    "Always allow: {scope}. Revoke under Settings › Permissions › Remembered isolation permissions.",
+  "approval.routineRememberHint":
+    "{scope}. To revoke, edit this routine in Routines, remove the permission and save.",
+  "approval.revokeServiceHint": "Revoke service access in Settings",
+  "approval.systemServiceDetails": "Show system service identifier",
   "approval.rememberPrograms":
     "Don’t ask again for the same programs ({programs}) in the working folders, including all subfolders",
   "approval.rememberWeb": "Don’t ask again for {scope} (subdomains excluded)",
@@ -703,15 +853,15 @@ export const permissionsEn: { [K in keyof typeof permissionsZh]: string } = {
     "This group's file-write setting requires approval. Remembering write access to these working folders covers the group's members, so later steps in the same location do not ask again. Writes outside these working folders still require approval each time.",
   "approval.rememberFolder": "Don’t ask again for this kind of operation in this folder",
   "approval.chatCountdown": "{time} remaining · Pauses for your decision when time runs out",
-  "approval.countdown": "{time} remaining · Automatically denied when time runs out",
-  "approval.paused": "Paused for your decision. You can still allow once or deny.",
-  "approval.awaitingExpiry": "Waiting for the background service to confirm the result…",
+  "approval.countdown": "{time} remaining · Expires if unanswered",
+  "approval.paused": "Paused — waiting for you",
+  "approval.awaitingExpiry": "Confirming the result…",
   "approval.row.command": "Command",
   "approval.row.tokens": "Tokens",
   "approval.row.cwd": "Folder",
   "approval.tokensHidden": "{names} (value never shown)",
   "approval.tokenInjection":
-    "The token is provided only while this command runs; the command text never contains it.",
+    "The card hides the token value. Once approved, the program receives the original value in an environment variable when it runs.",
   "approval.allowTokenAlways": "Always allow this token",
   "approval.allowTokensAlways": "Always allow these tokens",
   "approval.allowFuture": "Always allow",
@@ -727,10 +877,24 @@ export const permissionsEn: { [K in keyof typeof permissionsZh]: string } = {
   "approval.auto_denied": "Automatically denied",
   "approval.cancelled": "Stopped; approval cancelled",
   "approval.expired": "Approval expired",
+  "approval.superseded":
+    "This step is out of date: the conversation has moved on since. Ask the Bot to do it again if you still need it.",
   "approval.revokeHint": "Revoke in Settings",
   "facts.program": "Programs",
   "facts.read": "Reads",
   "facts.write": "Writes",
+  "facts.library": "Library",
+  "facts.note": "Note",
+  "facts.diff": "Diff",
+  "facts.memoryUser": "User memory",
+  "facts.memoryBot": "Bot memory",
+  "facts.memoryGroup": "Shared group memory",
+  "facts.memoryProject": "Project memory",
+  "facts.memoryChange": "Memory change",
+  "facts.memoryRemove": "Memory to delete",
+  "facts.memoryNote": "Memory text",
+  "facts.value.memoryUser": "Shared by all Bots",
+  "approval.showDiff": "Show diff",
   "facts.network": "Network",
   "facts.cwd": "Working directory",
   "facts.warning": "Notice",
@@ -741,17 +905,23 @@ export const permissionsEn: { [K in keyof typeof permissionsZh]: string } = {
   "facts.value.incomplete_analysis":
     "The operation cannot be fully determined; permission cannot be remembered",
   "facts.value.windows_unisolated":
-    "This command runs on Windows with your permissions and without system isolation",
+    "Windows has no command sandbox. This command runs under your account. It can read and write files you can access and use your network.",
   "facts.value.local_service":
-    "Only this port or socket is allowed; other ports and the internet remain blocked by the sandbox.",
+    "Additionally opens this local service address; other unauthorized local services stay blocked by safety isolation, and existing network or local-service permissions remain unchanged.",
   "facts.value.outside_sandbox_login":
-    "This program needs your own login or configuration (aws, gh, kubectl, ssh credentials and the like) and cannot work inside the sandbox, so it asks to run outside it",
+    "This program needs your own login or configuration (aws, gh, kubectl, ssh credentials and the like) and cannot work inside safety isolation, so it asks to run directly outside isolation",
   "facts.value.outside_sandbox":
-    "This run is outside the sandbox, with no file or network isolation: it can read and write your whole user folder and reach any network. Allowed this once only, never remembered",
+    "The command runs directly with your permissions. It can read and write files you can access and use the network, without file or network isolation.",
+  "approval.directRunRemember": "Run and remember",
+  "approval.manageDirectRun": "Manage saved direct-run permissions",
+  "approval.directRunLegacy":
+    "The older Pi Bot on this computer may automatically remember this direct-run permission. Update Pi Bot on the computer to choose whether to remember it.",
+  "approval.directRunRememberHint":
+    "After this run finishes, any Bot in a direct chat can run matching commands starting with “{program}” from “{folder}” under ordinary permissions, without a separate prompt to skip isolation. Future commands can use different arguments and can access files outside the folder and the network. Remove this permission in Settings › Permissions › Advanced.",
   "facts.value.acp_editor_terminal_unisolated":
     "The command runs directly in the editor terminal; Pi Bot cannot verify system isolation there",
   "facts.value.editor_session_rememberable":
-    "“Allow for this session” covers the same program and arguments in this ACP session only; it ends with the session and is never saved as a permission",
+    "“Allow for this session” ends when the editor disconnects. Each command is still checked against the session’s working folders. Read-only commands with the same program and options may use different files, search terms or option values. Folder changes can select a different folder within the session. Commands that change files must use the exact same arguments.",
   "facts.value.outside_delete": "Deletes files outside the working folders",
   "facts.value.protected_command_path":
     "References protected data outside this run's writable folders",
@@ -774,23 +944,63 @@ export const permissionsEn: { [K in keyof typeof permissionsZh]: string } = {
   "facts.value.currentChatHistory":
     "Past topics in this Bot’s private chats or in the current group",
   "facts.value.unknownWarning": "The impact cannot be fully determined; review carefully",
+  "commandProtection.title": "System protection for commands",
+  "commandProtection.blocked":
+    "Bot commands that require system protection are blocked on this computer until it’s restored.",
+  "commandProtection.ready": "System protection is ready. You can ask your Bot to try again.",
+  "commandProtection.checkFailed":
+    "Pi Bot couldn’t check whether system protection is ready. Check again.",
+  "commandProtection.installNote":
+    "Pi Bot will install this on the computer using the system’s software installer. Your system may ask an administrator to confirm.",
+  "commandProtection.manualNote":
+    "Ask your administrator to install the required software, then check again.",
+  "commandProtection.outcome.installed":
+    "Installation finished. Wait a few seconds, then check system protection again.",
+  "commandProtection.outcome.denied":
+    "The system didn’t approve the install. Try again or copy the command for your administrator.",
+  "commandProtection.outcome.failed":
+    "The system installer couldn’t finish. Try again or copy the command for your administrator.",
+  "commandProtection.outcome.busy":
+    "An installation is already in progress. Wait a moment, then check again.",
+  "commandProtection.advanced": "Advanced",
+  "commandProtection.apparmor":
+    "Ask your administrator to check the AppArmor denial log for the affected executable and profile. If a bwrap profile that allows user namespaces is already installed but has yet to load, your administrator can use the command below.",
+  "commandProtection.copy": "Copy command",
+  "commandProtection.copied": "Copied",
+  "commandProtection.recheck": "Check again",
+  "commandProtection.install": "Install {dependency}",
   "isolation.warning": "Commands run without isolation on the execution device.",
+  "isolation.deviceBlocked":
+    "Commands that need system protection are blocked on {name} until it is working there.",
+  "isolation.deviceInstall": "Ask an administrator to install {dependency} on {name}.",
   "isolation.reason.windows_unisolated":
-    "Windows doesn't support command isolation yet. Each command runs directly only after you approve it.",
+    "Windows commands run with your permissions. Supported read-only commands can run directly when permissions allow. Other permitted commands require confirmation unless you enable automatic approvals in that conversation and agree to run without system protection.",
+  "isolation.warning.device": "Command isolation is currently unavailable on this device.",
+  "isolation.warning.device.blocked":
+    "Command isolation is currently unavailable on this device. Ordinary commands that require it are blocked.",
+  "isolation.reason.windows_unisolated_consented":
+    "Windows has no command sandbox. Supported read-only commands run when permissions allow. You’ve consented to unisolated execution, so ordinary commands run in chats with YOLO on. Dangerous commands and commands Pi can’t parse still ask.",
   "isolation.reason.acp_editor_terminal_unisolated":
     "The command runs directly in the editor terminal; Pi Bot cannot verify system isolation there.",
   "isolation.reason.platform_unsupported": "This system doesn't support command isolation.",
   "isolation.reason.sandbox_dependencies_or_runtime_unavailable":
     "The isolation components are missing or failed to start.",
   "isolation.reason.linux_bubblewrap_missing":
-    "bubblewrap (bwrap) is missing and command isolation needs it. Install it (Debian/Ubuntu: sudo apt install bubblewrap; Fedora: sudo dnf install bubblewrap), then restart the execution device.",
+    "Pi Bot needs bubblewrap to limit which files commands can access.",
   "isolation.reason.linux_socat_missing":
-    "socat is missing; command isolation uses it to forward network access inside the sandbox. Install it (Debian/Ubuntu: sudo apt install socat), then restart the execution device.",
-  "isolation.reason.linux_userns_disabled": linuxIsolationRemedies.linux_userns_disabled.en,
-  "isolation.reason.linux_userns_limit_zero": linuxIsolationRemedies.linux_userns_limit_zero.en,
+    "Pi Bot needs socat to route command traffic according to your network settings.",
+  "isolation.reason.linux_userns_disabled":
+    "This computer has disabled a system feature required for command protection. Run Pi Bot on a computer that supports it.",
+  "isolation.reason.linux_ripgrep_unavailable":
+    "Pi Bot couldn’t find a bundled component needed to run commands. Reinstall and reopen Pi Bot.",
+  "isolation.reason.linux_sandbox_host_unavailable":
+    "A command protection component couldn’t start. Reinstall and reopen Pi Bot.",
+  "isolation.reason.linux_userns_limit_zero":
+    "This computer has disabled a system feature required for command protection. Run Pi Bot on a computer that supports it.",
   "isolation.reason.linux_seccomp_helper_unavailable":
-    linuxIsolationRemedies.linux_seccomp_helper_unavailable.en,
-  "isolation.reason.linux_userns_restricted": linuxIsolationRemedies.linux_userns_restricted.en,
+    "Pi Bot couldn’t start a component that limits what commands can do. Reinstall and reopen Pi Bot.",
+  "isolation.reason.linux_userns_restricted":
+    "The system couldn’t set up the protection needed to run commands. Ask an administrator to check AppArmor on the affected computer.",
   "isolation.reason.isolation_check_unfinished":
     "The sandbox self-check has not finished (the computer is busy); it is checked again when a command runs.",
   "isolation.available": "Enabled",
@@ -849,17 +1059,37 @@ export const permissionsEn: { [K in keyof typeof permissionsZh]: string } = {
   "permissions.grantsError": "Couldn’t load or revoke permissions. Try again.",
   "permissions.loadMore": "Load more",
   "permissions.network": "Network",
-  "permissions.allowNetwork": "Commands run by bots can access the network",
-  "permissions.networkNote":
-    "When off, listed sites only. Automatic commands use package repositories and sites you add",
+  "permissions.allowNetwork": "Broader network access",
+  "permissions.webNetworkOn":
+    "Public web requests, the Bot browser, and configured image and video services can reach hosts beyond the website list. Their separate permissions still apply.",
+  "permissions.webNetworkOff":
+    "Turn this on to let public web requests, the Bot browser, and configured image and video services reach hosts beyond the website list. Their separate permissions still apply.",
+  "permissions.networkOn":
+    "On this computer, isolated commands you approve or that Auto-approve clears can reach public websites. Isolated commands that run under Always allow can reach listed sites and common software download sources only.",
+  "permissions.networkOff":
+    "On this computer, ordinary isolated commands can reach only listed public websites.",
+  "permissions.networkOnWindows":
+    "On this Windows computer, ordinary commands can run when permissions allow. They run directly with your network access, beyond the limits of the website list.",
+  "permissions.networkOffWindows":
+    "This Windows computer blocks ordinary commands. Bots can still use file tools when permissions allow.",
+  "permissions.networkOnUnknown":
+    "Approved isolated commands can reach public websites. Ordinary Windows commands can run with direct network access when permissions allow.",
+  "permissions.networkOffUnknown":
+    "Ordinary isolated commands can reach only listed public websites. Ordinary Windows commands are blocked.",
+  "permissions.networkDetails": "Show network rules",
+  "permissions.networkHideDetails": "Hide network rules",
+  "permissions.networkExceptions":
+    "Restricted automatic commands on paired execution devices can reach common software download sources such as npm and PyPI. With broader access on, these sources are included automatically. With it off, only those sources already on the list are allowed. Commands separately approved to run outside isolation can use the network directly, beyond the limits of the website list. Local and private network services have their own permissions.",
   "permissions.commandDomainsNote":
-    "Automatic commands can reach only package repositories and this list. Add domains for services such as Feishu or GitHub here; editing the list keeps the network switch unchanged.",
+    "Add websites such as feishu.cn or github.com for isolated commands on this Mac or Linux computer. Editing this list does not change the network switch.",
+  "permissions.commandDomainsNoteOff":
+    "With broader access off, ordinary isolated commands on this Mac or Linux computer can reach only the listed public sites, including any software sources you add.",
   "permissions.noExplicitDomains": "No websites added yet.",
-  "permissions.noDomains": "The list is empty: no websites are allowed.",
-  "permissions.domain": "Website domain",
+  "permissions.noDomains": "No websites have been added to the list.",
+  "permissions.domain": "Website domain (e.g. feishu.cn)",
   "permissions.addDomain": "Add website",
   "permissions.domainInvalid":
-    "Enter a domain without a scheme, port, or path (up to 200 entries).",
+    "Enter just the domain name, such as feishu.cn or api.github.com, without https://, ports, or paths (up to 200 entries).",
   "permissions.removeDomain": "Remove website {domain}",
   "permissions.paths": "Command search paths",
   "permissions.pathsNote":
@@ -923,10 +1153,41 @@ export const permissionsEn: { [K in keyof typeof permissionsZh]: string } = {
   "tool.todo_pause": "Pause task list",
   "tool.unknown": "Use tool",
   "tool.step": "{action}{target} · Step {step}",
-  "tool.sandboxBlocked": "Blocked by the sandbox: {kind} {target}{program} (rule: {rule})",
+  "tool.sandboxBlocked": "Blocked by safety isolation: {kind}{target}{program} ({rule})",
+  "tool.sandboxBlockedNoRule": "Blocked by safety isolation: {kind}{target}{program}",
+  "tool.sandboxRule.proxy_denied": "blocked by the network proxy",
+  "tool.sandboxRule.proxy_not_allowed": "website not on the allowed list",
+  "tool.sandboxRule.loopback_proxy": "local service not allowed",
+  "tool.sandboxRule.loopback_socket": "local service port not allowed",
+  "tool.sandboxRule.loopback_bind": "listening on a local port is not allowed",
+  "tool.sandboxRule.loopback_namespace": "local service unreachable inside isolated network",
+  "tool.sandboxRule.local_bind": "listening on a network port is not allowed",
+  "tool.sandboxRule.socket": "direct network connections are not allowed",
+  "tool.sandboxRule.unix_socket": "this connection is restricted",
+  "tool.sandboxRule.mach_lookup": "system service not allowed",
+  "tool.sandboxRule.keychain": "system keychain access is not allowed",
+  "tool.sandboxRule.pasteboard": "system clipboard access is not allowed",
+  "tool.sandboxRule.dev_write": "writing to system devices is not allowed",
+  "tool.sandboxRule.credential_store": "protected credential folder cannot be read",
+  "tool.sandboxRule.bot_home": "protected credential folder cannot be read",
+  "tool.sandboxRule.deny_read": "protected file cannot be read",
+  "tool.sandboxRule.write_root": "outside the current working folder",
+  "tool.sandboxRule.explicit_deny": "protected location cannot be changed",
+  "tool.sandboxRule.file_write": "writing to this location is not allowed",
+  "tool.sandboxRule.git_metadata": "protected Git metadata cannot be changed",
+  "tool.sandboxRule.git_hooks": "protected Git hooks cannot be changed",
+  "tool.sandboxRule.git_config": "protected Git config cannot be changed",
   "tool.networkSettingsBlocked":
     "Blocked by network settings: {target} is not allowed; the command did not run",
+  "tool.sandboxLocalBlocked":
+    "Safety isolation prevented the command{program} from reaching {service}.",
+  "tool.sandboxLocalListeningBlocked":
+    "Safety isolation prevented the command{program} from accepting connections on this computer ({service}).",
+  "tool.sandboxLocalService": "a service on this computer",
+  "tool.sandboxLocalServiceDocker": "Docker on this computer",
+  "tool.sandboxConnectionDetails": "Advanced · connection details",
   "tool.sandboxSeeApproval": "See approval ↓",
+  "tool.sandboxSeePermissions": "View permission settings",
   "tool.website.add": "Allow access to {domain}…",
   "tool.website.saved": "{domain} added; retry when ready · View scope",
   "tool.website.title": "Add an allowed website",
@@ -945,11 +1206,24 @@ export const permissionsEn: { [K in keyof typeof permissionsZh]: string } = {
   "tool.website.noRetry":
     "Only the website permission is saved. Network switches and other permissions keep their current settings. Retry the command yourself; it will not run automatically. Private networks and local services still use their existing approval rules.",
   "tool.website.confirm": "Add allowed website",
+  "tool.website.retryBotScope":
+    "This website stays on this Bot’s allowed list until you remove it in the Bot’s permission settings.",
+  "tool.website.retryGroupScope":
+    "This website stays on this group’s allowed list until you remove it in the group’s permission settings.",
+  "tool.website.retrySkip": "Keep blocked",
+  "tool.website.retryConfirm": "Allow this website and retry",
+  "tool.website.retryHelp": "Pi Bot checks permissions again before running the same command.",
+  "tool.website.retryRan":
+    "The command may have already completed some steps. Pi Bot checks permissions again before running it from the beginning.",
+  "tool.website.retryStarted": "{domain} allowed. Retrying",
+  "tool.website.retryExpired":
+    "This retry expired. You can still add the website and ask the Bot to try again.",
+
   "tool.website.full":
     "This scope already has 200 allowed websites. Remove unused entries in its permission settings, then retry.",
   "tool.website.unavailable":
     "This block record or its Bot/group is no longer available. Return to the current conversation and try the operation again.",
-  "tool.sandboxKind.outside_workplace_write": "write outside the workplace",
+  "tool.sandboxKind.outside_workplace_write": "write outside the working folder",
   "tool.sandboxKind.protected_name": "protected location",
   "tool.sandboxKind.git_resource": "Git resource",
   "tool.sandboxKind.network": "network access",
@@ -958,8 +1232,14 @@ export const permissionsEn: { [K in keyof typeof permissionsZh]: string } = {
   "tool.sandboxKind.protected_path": "protected location",
   "tool.sandboxKind.credential_read": "credential read",
   "tool.sandboxKind.protected_read": "protected read",
-  "tool.sandboxKind.other": "sandbox rule",
-  "tool.executing": "Running: {action}{target} · Step {step}",
+  "tool.sandboxKind.other": "safety restriction",
+  "tool.executing": "Running: {action}{target}",
+  "tool.active.command": "Running{target}",
+  "tool.active.read": "Reading{target}",
+  "tool.active.write": "Writing{target}",
+  "tool.active.edit": "Editing{target}",
+  "tool.active.search": "Searching{target}",
+  "tool.active.webpage": "Viewing webpage{target}",
   "tool.group.summary": "Completed {count} steps · {types}",
   "tool.group.summaryOne": "Completed {count} step · {types}",
   "tool.group.progress": "Steps completed: {count}",
@@ -974,7 +1254,8 @@ export const permissionsEn: { [K in keyof typeof permissionsZh]: string } = {
     "Waiting for another Bot to release the workspace before review",
   "tool.status.done": "Done",
   "tool.status.error": "Failed",
-  "tool.status.blocked": "Denied",
+  "tool.status.blocked": "Blocked by the app",
+  "tool.status.userDenied": "Denied",
   "tool.status.aborted": "Stopped",
   "tool.exit": "Exit code {code}",
   "tool.duration": "{seconds} seconds",

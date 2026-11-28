@@ -67,13 +67,14 @@ export async function workflowPriced(
   bot: Bot,
   workflow: Pick<WorkflowRun, "contract"> | undefined,
   signal: AbortSignal,
+  hasOverride = false,
 ): Promise<boolean> {
   if (!workflow?.contract.budget?.costUsd) return false;
   // An external agent's turns are billed to its own account and never count against Pi
   // Bot's cost budget, so its step is not blocked for an unknown price.
   if (bot.kind === "agent") return true;
   const auxiliary =
-    workflow.contract.model?.tier === "cheap"
+    !hasOverride && workflow.contract.model?.tier === "cheap"
       ? new SettingsRepo(deps.db).get().auxiliaryModel
       : undefined;
   return pricedModels(

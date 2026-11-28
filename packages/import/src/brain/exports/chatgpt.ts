@@ -1,12 +1,17 @@
-// Select the active ChatGPT branch without including tool messages or hidden scaffolding.
+// Select visible text and tool metadata from the active ChatGPT branch.
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import { z } from "zod";
 import { ImportFailure } from "../adapter.ts";
+import { attachmentParts, ImportedToolParts } from "../history-parts.ts";
 import { type ConversationItem, readableText } from "./text.ts";
 
 const stamp = z.number().finite().min(0).max(253_402_300_799);
 const nullableStamp = stamp.nullish();
 const record = z.object({
+  sensitive: z.literal(true).optional().catch(undefined),
+  excluded: z.literal(true).optional().catch(undefined),
+  memory_excluded: z.literal(true).optional().catch(undefined),
+  is_do_not_remember: z.literal(true).optional().catch(undefined),
   title: z.string().nullish(),
   create_time: stamp,
   update_time: nullableStamp,
@@ -23,7 +28,7 @@ const node = z.object({
   message: z.unknown(),
 });
 const message = z.object({
-  author: z.object({ role: z.string() }),
+  author: z.object({ role: z.string(), name: z.string().nullish() }),
   recipient: z.string().nullish(),
   create_time: nullableStamp,
   content: z
@@ -76,11 +81,15 @@ async function branch(mapping: Record<string, unknown>, current: string, signal:
   return path.reverse();
 }
 
-function* messageItems(raw: unknown, createdAt: number): Generator<ConversationItem> {
+function* messageItems(
+  raw: unknown,
+  createdAt: number,
+  tools: ImportedToolParts,
+): Generator<ConversationItem> {
   const parsed = message.safeParse(raw);
   if (!parsed.success) throw new ImportFailure("format");
   const {
-    author: { role },
+    author: { role, name },
     content,
     metadata,
     recipient,
@@ -95,8 +104,18 @@ function* messageItems(raw: unknown, createdAt: number): Generator<ConversationI
       };
     return;
   }
+  const call = role === "assistant" && recipient && recipient !== "all";
+  if (call || role === "tool") {
+    yield {
+      kind: "message",
+      role: "assistant",
+      text: "",
+      createdAt: iso(create_time ?? createdAt),
+      historyParts: [call ? tools.call(recipient) : tools.result(undefined, name ?? undefined)],
+    };
+    return;
+  }
   if (role !== "user" && role !== "assistant") return;
-  if (recipient && recipient !== "all") return;
   const parts = content?.parts ?? [];
   const fields = parts.filter((part): part is string => typeof part === "string");
   const media = parts.filter((part) => image.safeParse(part).success).length;
@@ -104,8 +123,16 @@ function* messageItems(raw: unknown, createdAt: number): Generator<ConversationI
   if (attachments) yield { kind: "attachments", count: attachments };
   const text = readableText(fields);
   const type = content?.content_type;
-  if (!text || (type && type !== "text" && type !== "multimodal_text")) return;
-  yield { kind: "message", role, text, createdAt: iso(create_time ?? createdAt) };
+  if (type && type !== "text" && type !== "multimodal_text") return;
+  const historyParts = attachmentParts(metadata?.attachments ?? []);
+  if (text || historyParts.length)
+    yield {
+      kind: "message",
+      role,
+      text,
+      createdAt: iso(create_time ?? createdAt),
+      ...(historyParts.length ? { historyParts } : {}),
+    };
 }
 
 export async function* chatgptConversation(
@@ -115,19 +142,27 @@ export async function* chatgptConversation(
   const parsed = record.safeParse(raw);
   if (!parsed.success) throw new ImportFailure("format");
   const { title, create_time, update_time, mapping, current_node, gizmo_id } = parsed.data;
+  const messages = await branch(mapping, current_node, signal);
   const project =
     gizmo_id?.startsWith("g-p-") && gizmo_id.length <= 120
       ? { key: `chatgpt:${gizmo_id}`, name: "" }
       : undefined;
   yield {
     kind: "topic",
+    ...(parsed.data.sensitive ||
+    parsed.data.excluded ||
+    parsed.data.memory_excluded ||
+    parsed.data.is_do_not_remember
+      ? { memoryExcluded: true as const }
+      : {}),
     title: (title ?? "").slice(0, 200),
     createdAt: iso(create_time),
     updatedAt: iso(update_time ?? create_time),
     ...(project ? { project } : {}),
   };
-  for (const raw of await branch(mapping, current_node, signal)) {
+  const tools = new ImportedToolParts();
+  for (const raw of messages) {
     signal.throwIfAborted();
-    yield* messageItems(raw, create_time);
+    yield* messageItems(raw, create_time, tools);
   }
 }

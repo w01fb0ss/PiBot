@@ -2,41 +2,28 @@
 
 // Devices tab and pairing.
 export const devicesZh = {
+  directFallback: "目前无法直连，两台设备已连接，可以照常使用。",
+  pasteWarning: "配对码只能用一次，请勿分享。",
+  cameraOpenSettings: "去系统设置",
+  cameraSettingsFailed: "打不开设置，请在安卓设置中打开 Pi Bot 的相机权限。",
+  pairInvalid: "这不是完整的 Pi Bot 配对码。请重新扫码，或复制电脑上显示的完整配对码。",
+  pairExpired: "这组配对码已过期。请在电脑上换一个，再试一次。",
+  pairNetwork: "手机连不上设备所用的转发服务。请检查手机能否上网，再试一次。",
+  pairWaiting: "没等到电脑回复。请保持电脑上的配对页面开启，再试一次。",
+  pairIdentityFailed: "未能确认电脑的身份。请在电脑上生成新的配对码，再试一次。",
+  pairTryAgain: "配对未完成。请检查电脑上的配对页面，再试一次。",
+  reconnectNow: "立即重连",
   deviceOnline: "在线",
   pathDirect: "直连",
   pathRelay: "经中继",
   pathLan: "直连 · 局域网",
-  pathTunnel: "直连 · 隧道",
-  pathDirectHint: "设备间直接传输，端到端加密",
-  pathTunnelHint: "不在同一网络，经互联网隧道直接传输，端到端加密",
-  pathRelayHint: "中继只看到密文；可直连时会自动切换",
-  directFailure_peer_vpn_active:
-    "手机开着 VPN，可能拦住了局域网直连。请在 VPN 应用里打开「绕过局域网」（或让 Pi Bot 不走 VPN）；当前继续经中继连接。",
-  directFailure_local_tun_proxy:
-    "电脑开着代理 / VPN 的 TUN 模式，可能拦住了局域网直连。请在代理软件里打开「绕过局域网」；当前继续经中继连接。",
-  directFailure_different_subnet:
-    "候选地址未发现共同子网，局域网发现可能不可用；当前继续经中继连接。",
-  directFailure_local_mdns_only: "一端只提供了 .local 候选，直连未完成；当前继续经中继连接。",
-  directFailure_ice_timeout:
-    "直连 ICE 建连超时，请检查 VPN、防火墙或网络隔离；当前继续经中继连接。",
-  directFailure_rtc_unavailable: "直连组件未能启动，当前继续经中继连接。",
-  directFailure_signaling_failed: "直连协商未完成，当前继续经中继连接。",
-  directFailure_negotiation_timeout:
-    "直连等待超时。请检查两端 VPN 的局域网访问和 Wi-Fi 客户端隔离；当前继续经中继连接。",
-  directFailure_no_candidates:
-    "未收集到两端可用的直连候选。请检查局域网权限、VPN 和网络设置；当前继续经中继连接。",
-  directFailure_ice_failed:
-    "直连网络连通检查失败。请检查 VPN、Wi-Fi 客户端隔离或防火墙；当前继续经中继连接。",
-  directFailure_channel_failed: "直连数据通道中断，已回落到中继。",
-  directFailure_noise_failed: "直连加密握手未完成，当前继续经中继连接。",
-  directFailure_switch_failed: "直连切换未完成，当前继续经中继连接。",
-  directFailure_probe_failed: "直连通道打开后没有应答，当前继续经中继连接，稍后会自动再试。",
-  directFailure_path_mtu:
-    "直连路径传不了较大的数据包（VPN 或代理隧道里常见），当前继续经中继连接，稍后会自动再试。",
-  room_empty: "电脑没有连到中继，请检查电脑上的 Pi Bot。",
+  pathTunnel: "直连 · 跨网络",
+  pathDirectHint: "设备之间直接传输，只有这些设备能解读内容。",
+  pathRelayHint: "已通过中继连接。中继负责转发加密数据，只有你的设备能解读内容。",
+  room_empty: "电脑还没连上。请检查电脑上的 Pi Bot 是否打开。",
   session_timeout: "连接等待超时，请检查电脑上的 Pi Bot。",
-  relay_unavailable: "中继不可达，可能需要代理或换自建中继。",
-  handshake_failed: "电脑身份握手失败，请重新连接或重新配对。",
+  relay_unavailable: "连不上设备所用的转发服务。请检查手机能否上网。",
+  handshake_failed: "无法确认电脑的身份。请重新连接或重新配对。",
   connection_failed: "连接失败，请检查电脑上的 Pi Bot。",
   deviceOffline: "离线",
   batteryRestrictedTitle: "电池设置为「受限」",
@@ -54,7 +41,7 @@ export const devicesZh = {
   keepConnectedHint:
     "切到后台或息屏后也和电脑保持连接，通知栏会常驻一条「远程控制已连接」。更耗电。",
   code: "安全码",
-  codeHint: "和电脑「设置 › 设备」里这台手机的数字对照",
+  codeHint: "在电脑上打开「设置 › 设备」，选择这台手机，再点「核对安全码」。",
   connectedComputer: "这台手机连接的电脑",
   relay: "中继",
   notifySection: "通知",
@@ -64,7 +51,7 @@ export const devicesZh = {
   pushNotSetUp: "这个版本还没设置远程推送：App 在后台超过 30 秒后收不到提醒，打开 App 时照常提醒",
   pushNoDevice: "模拟器收不到远程推送，打开 App 时照常提醒",
   pushOff: "通知已关闭，电脑不会再推送到这台手机",
-  pushOn: "已开启。App 不在前台时，电脑经中继推送通用提醒",
+  pushOn: "已开启。App 不在前台时，电脑通过转发服务推送通用提醒",
   pushPending: "连上电脑并允许通知后自动开启",
   channelApprovals: "审批",
   channelTasks: "回复和任务",
@@ -75,13 +62,16 @@ export const devicesZh = {
   noticeTaskDone: "任务完成了",
   noticeTaskFailed: "任务没有完成",
   androidPush: "没有 Google 服务的安卓手机收不到后台推送，打开 App 时照常提醒。",
-  faceSetting: "危险操作前验证面容 ID",
+  faceSetting: "危险操作前验证身份",
   faceSettingHint:
-    "允许危险审批、打开 YOLO、撤回改动、接管 Bot 浏览器、放宽 Bot 权限、删除记忆和移出群成员前都要先解锁，始终开启",
+    "允许危险审批、开启自动批准模式、撤回改动、接管 Bot 浏览器、放宽 Bot 权限、删除记忆和移出群成员前都要先通过指纹、面容或锁屏密码解锁，始终开启",
   connectionSection: "连接",
-  relayHint: "{host} · 只转发加密数据，看不到内容；只按天计连接次数",
+  devicePrivacy: "隐私详情",
+  relayHint:
+    "转发服务 {host} 能看到 IP 地址、连接时间、数据大小和设备是否在线。它转发加密数据，读不到其中的内容。",
   scopeTitle: "手机能做的事",
-  scopeHint: "对话、任务、审批和 Bot / 群设置。密钥、模型厂商和导入只能在电脑上",
+  scopeHint:
+    "可查看聊天、处理任务和审批，以及调整 Bot 和群设置。请在电脑上管理密钥、设置模型服务或导入对话。",
   otherComputers: "其他电脑",
   connect: "连接",
   unpair: "解除配对",
@@ -104,6 +94,9 @@ export const devicesZh = {
   updateCancel: "取消",
   updateRetry: "重试",
   updateCheck: "检查更新",
+  updateChecking: "正在检查…",
+  updateUpToDate: "已是最新版本",
+  updateCheckFailed: "检查更新失败，请稍后重试",
   updateInstall: "下载并安装",
   updateOpenSettings: "去设置",
   updateUnknownSources: "需要允许安装",
@@ -117,8 +110,8 @@ export const devicesZh = {
   pairScan: "扫码配对",
   pairHint: "在电脑上打开 Pi Bot，进入「设置 › 设备」，点「添加设备 › 手机（扫码）」后扫描二维码。",
   pairStep1: "二维码 10 分钟内有效，只能用一次",
-  pairStep2: "扫码后两边会显示同一组安全码",
-  pairStep3: "中继只转发加密数据，不需要注册账号",
+  pairStep2: "配对后两边会显示同一组安全码，请核对。",
+  pairStep3: "设备发送的内容经过加密，转发服务读不到其中的内容。",
   allowCamera: "允许使用相机扫码",
   cameraDenied: "相机权限被拒绝，请去系统设置里允许相机",
   pasteCode: "粘贴配对码",
@@ -127,55 +120,42 @@ export const devicesZh = {
   pairing: "正在配对…",
   checkTitle: "核对安全码",
   checkHint: "电脑「{name}」上显示的数字和下面一样吗？",
-  checkNote: "一样说明连接没有被别人截获。不一样就取消，重新扫码。",
+  checkNote: "核对安全码可以帮你确认电脑的身份。数字不同就取消，在电脑上移除这次配对后再试。",
   codeMatches: "一样，完成配对",
   codeMismatch: "不一样，取消",
   connectedToast: "已连接 {name}",
   phone: "我的手机",
 } as const;
 export const devicesEn: Record<keyof typeof devicesZh, string> = {
+  directFallback:
+    "A direct connection was unavailable. Your devices are connected and you can use them normally.",
+  pasteWarning: "Use this code once and keep it private.",
+  cameraOpenSettings: "Open system settings",
+  cameraSettingsFailed:
+    "Could not open settings. Allow camera access for Pi Bot in Android settings.",
+  pairInvalid:
+    "This is not a complete Pi Bot pairing code. Scan again or copy the full code from the computer.",
+  pairExpired: "This pairing code has expired. Get a new one on the computer and try again.",
+  pairNetwork:
+    "The phone cannot reach the service that links the devices. Check the phone’s internet connection, then try again.",
+  pairWaiting: "The computer did not reply in time. Keep its pairing screen open and try again.",
+  pairIdentityFailed:
+    "Could not confirm the computer’s identity. Generate a new code on the computer and try again.",
+  pairTryAgain: "Pairing did not finish. Check the pairing screen on the computer and try again.",
+  reconnectNow: "Reconnect now",
   deviceOnline: "Online",
   pathDirect: "Direct",
   pathRelay: "Via relay",
   pathLan: "Direct · LAN",
-  pathTunnel: "Direct · tunnel",
-  pathDirectHint: "Sent directly between devices, end-to-end encrypted",
-  pathTunnelHint:
-    "On different networks, sent directly through an internet tunnel, end-to-end encrypted",
-  pathRelayHint: "The relay sees only ciphertext; switches to direct when available",
-  directFailure_peer_vpn_active:
-    'A VPN on the phone may be blocking the LAN direct link. Turn on "Bypass LAN" in the VPN app (or exclude Pi Bot). Continuing via relay.',
-  directFailure_local_tun_proxy:
-    'A proxy or VPN in TUN mode on the computer may be blocking the LAN direct link. Turn on "Bypass LAN" in it. Continuing via relay.',
-  directFailure_different_subnet:
-    "No shared subnet was found among the candidates. LAN discovery may be unavailable. Continuing via relay.",
-  directFailure_local_mdns_only:
-    "One endpoint provided only .local candidates. Direct connection failed. Continuing via relay.",
-  directFailure_ice_timeout:
-    "ICE connection timed out. Check VPN, firewall, or network isolation. Continuing via relay.",
-  directFailure_rtc_unavailable:
-    "The direct connection component could not start. Continuing via relay.",
-  directFailure_signaling_failed:
-    "Direct connection negotiation did not complete. Continuing via relay.",
-  directFailure_negotiation_timeout:
-    "Direct connection timed out. Check LAN access in both VPNs and Wi-Fi client isolation. Continuing via relay.",
-  directFailure_no_candidates:
-    "No direct connection candidates were collected on one or both devices. Check local network permissions, VPN and network settings. Continuing via relay.",
-  directFailure_ice_failed:
-    "Direct connectivity checks failed. Check VPN, Wi-Fi client isolation or firewall settings. Continuing via relay.",
-  directFailure_channel_failed: "The direct data channel closed. Switched back to relay.",
-  directFailure_noise_failed:
-    "The direct encryption handshake did not complete. Continuing via relay.",
-  directFailure_switch_failed:
-    "The switch to a direct connection did not complete. Continuing via relay.",
-  directFailure_probe_failed:
-    "The direct channel opened but did not answer. Continuing via relay; it will try again shortly.",
-  directFailure_path_mtu:
-    "The direct route drops larger packets (common inside a VPN or proxy tunnel). Continuing via relay; it will try again shortly.",
-  room_empty: "The computer is not connected to the relay. Check Pi Bot on the computer.",
+  pathTunnel: "Direct · across networks",
+  pathDirectHint: "Sent directly between devices with end-to-end encryption.",
+  pathRelayHint:
+    "Connected through a relay that forwards encrypted data. Only your devices can read the contents.",
+  room_empty: "The computer hasn’t connected. Check that Pi Bot is open on the computer.",
   session_timeout: "The connection timed out. Check Pi Bot on the computer.",
-  relay_unavailable: "The relay is unreachable. You may need a proxy or another relay.",
-  handshake_failed: "The computer identity handshake failed. Reconnect or pair again.",
+  relay_unavailable:
+    "The service that links the devices is unreachable. Check the phone’s internet connection.",
+  handshake_failed: "Could not confirm the computer’s identity. Reconnect or pair again.",
   connection_failed: "Connection failed. Check Pi Bot on the computer.",
   deviceOffline: "Offline",
   batteryRestrictedTitle: "Battery is set to Restricted",
@@ -193,7 +173,8 @@ export const devicesEn: Record<keyof typeof devicesZh, string> = {
   keepConnectedHint:
     'Keep the link to your computer in the background and with the screen off. A "remote control connected" notification stays in the shade. Uses more battery.',
   code: "Safety code",
-  codeHint: "Compare with this phone in Settings › Devices on the computer",
+  codeHint:
+    "On the computer, go to Settings › Devices, select this phone, and choose Compare safety code.",
   connectedComputer: "Computer this phone connects to",
   relay: "Relay",
   notifySection: "Notifications",
@@ -205,7 +186,8 @@ export const devicesEn: Record<keyof typeof devicesZh, string> = {
     "Remote push is not set up in this build: no alerts once the app has been in the background for 30 seconds. Alerts still show while the app is open",
   pushNoDevice: "Simulators cannot receive remote push. Alerts still show while the app is open",
   pushOff: "Notifications are off; the computer no longer pushes to this phone",
-  pushOn: "On. When the app is not open, the computer sends generic alerts through the relay",
+  pushOn:
+    "On. When the app is not open, the computer sends generic alerts through the connection service",
   pushPending: "Turns on by itself once the computer is connected and notifications are allowed",
   channelApprovals: "Approvals",
   channelTasks: "Replies and tasks",
@@ -217,15 +199,16 @@ export const devicesEn: Record<keyof typeof devicesZh, string> = {
   noticeTaskFailed: "Task didn't finish",
   androidPush:
     "Android phones without Google services cannot receive background push. Alerts still show while the app is open.",
-  faceSetting: "Face ID before dangerous actions",
+  faceSetting: "Verify your identity for sensitive actions",
   faceSettingHint:
-    "Unlock before allowing dangerous approvals, turning on YOLO, restoring changes, taking over the Bot browser, loosening Bot permissions, deleting memories or removing group members. Always on",
+    "Unlock with your fingerprint, face or screen lock before allowing dangerous approvals, turning on Auto-approve, restoring changes, taking over the Bot browser, loosening Bot permissions, deleting memories or removing group members. Always on",
   connectionSection: "Connection",
+  devicePrivacy: "Privacy details",
   relayHint:
-    "{host} · forwards encrypted data only, cannot read it; only counts connections per day",
+    "The connection service at {host} sees IP addresses, connection times, message sizes and online status. It forwards encrypted data without reading its contents.",
   scopeTitle: "What the phone can do",
   scopeHint:
-    "Chats, tasks, approvals and Bot / group settings. Keys, model providers and imports stay on the computer",
+    "View chats, handle tasks and approvals, and manage Bot and group settings. Use the computer to manage keys, set up model providers, or import chats.",
   otherComputers: "Other computers",
   connect: "Connect",
   unpair: "Unpair",
@@ -251,6 +234,9 @@ export const devicesEn: Record<keyof typeof devicesZh, string> = {
   updateCancel: "Cancel",
   updateRetry: "Retry",
   updateCheck: "Check for updates",
+  updateChecking: "Checking…",
+  updateUpToDate: "You’re up to date",
+  updateCheckFailed: "Couldn’t check for updates. Try again later.",
   updateInstall: "Download and install",
   updateOpenSettings: "Open settings",
   updateUnknownSources: "Allow installation",
@@ -267,8 +253,9 @@ export const devicesEn: Record<keyof typeof devicesZh, string> = {
   pairHint:
     "Open Pi Bot on your computer, go to Settings › Devices, choose Add device › Phone (scan) and scan the QR code.",
   pairStep1: "The QR code works once, within 10 minutes",
-  pairStep2: "Both sides show the same safety code after scanning",
-  pairStep3: "The relay only forwards encrypted data; no account needed",
+  pairStep2: "Compare the safety code shown on both devices after pairing.",
+  pairStep3:
+    "Your devices encrypt what they send so the connection service cannot read the contents.",
   allowCamera: "Allow camera to scan",
   cameraDenied: "Camera access was denied. Allow it in system settings",
   pasteCode: "Paste pairing code",
@@ -277,7 +264,8 @@ export const devicesEn: Record<keyof typeof devicesZh, string> = {
   pairing: "Pairing…",
   checkTitle: "Check the safety code",
   checkHint: "Does the computer “{name}” show the same digits as below?",
-  checkNote: "If they match, nobody intercepted the connection. If not, cancel and scan again.",
+  checkNote:
+    "Comparing the codes helps you confirm the computer’s identity. If they differ, cancel and remove this pairing on the computer before trying again.",
   codeMatches: "They match, finish pairing",
   codeMismatch: "They differ, cancel",
   connectedToast: "Connected to {name}",

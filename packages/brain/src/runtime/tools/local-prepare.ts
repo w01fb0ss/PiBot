@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
-import { join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import type { LocalToolCall } from "@pibot/agent";
 import {
   boundFileDiff,
   canonicalPath,
+  commandHomePath,
   dockerArguments,
   ExecError,
   resolveDockerConnection,
@@ -22,8 +23,16 @@ import {
   REVEAL_CONFIRMATION_REASON,
   recordPolicyStep,
   secretWriteOutDenied,
+  skillInterpreterRuntime,
+  skillTokenScript,
+  windowsSkillScript,
 } from "@pibot/policy";
-import { CHAT_SEARCH_TARGET, RpcError, RpcErrorCodes } from "@pibot/protocol-base";
+import {
+  CHAT_SEARCH_TARGET,
+  type ResolvedWorkplace,
+  RpcError,
+  RpcErrorCodes,
+} from "@pibot/protocol-base";
 import {
   BotsRepo,
   ConversationsRepo,
@@ -75,7 +84,7 @@ import { gitEntriesFingerprint, prepareRunGitEntries } from "./git-entry-prepare
 import { gitHookFingerprint, prepareRunGitHook } from "./git-hook-prepare.ts";
 import { gitKnownFileAdapter, prepareWriteGitConfiguration } from "./git-known-file-prepare.ts";
 import { hostSshFingerprint, prepareRunHostSsh } from "./host-ssh-prepare.ts";
-import { memorySafetySnapshot, memoryWriteFacts } from "./memory-safety.ts";
+import { memoryApprovalFacts, memorySafetySnapshot, memoryWriteFacts } from "./memory-safety.ts";
 import { outsideSandboxFacts } from "./outside-sandbox.ts";
 import { protectedWriteRoots } from "./outside-write-protection.ts";
 import { preparePatch } from "./patch-prepare.ts";
@@ -131,7 +140,10 @@ export function toolFingerprint(prepared: PreparedTool, authorization = prepared
     prepared.login,
     prepared.connector,
     prepared.capabilityConnector,
+    prepared.capabilityPolicyBinding,
     prepared.secretUses,
+    prepared.commandSkill,
+    prepared.skillSecretUses,
     prepared.browserSecretUses,
     prepared.memorySafety,
     prepared.projectNotesWrite,
@@ -143,9 +155,12 @@ export function toolFingerprint(prepared: PreparedTool, authorization = prepared
     prepared.call.tool,
     createHash("sha256").update(JSON.stringify(prepared.call.input)).digest("hex"),
     result.facts,
+    result.analysis?.scriptPins,
     withoutPiLevels(prepared.settings),
     result.path?.path,
     result.command,
+    result.windowsReadProven,
+    result.windowsReadOnly,
     result.commandHome,
     result.commandNetwork,
     result.url,
@@ -172,6 +187,23 @@ export function prepareTool(
   return context.toolTiming?.(call.id)?.measure("policy", action) ?? action();
 }
 
+function verifiedPolicyWorkspacePaths(context: ToolRunContext, workplace: ResolvedWorkplace) {
+  const { boundary } = workplace;
+  // resolveRunWorkplace has just rechecked the selection, spellings and file identities.
+  // A missing identity cannot certify a cache entry.
+  const key = JSON.stringify([context.runId, workplace.cwd, workplace.home, boundary]);
+  if (context.policyWorkspacePaths?.key !== key) {
+    const paths = new Map<string, string>();
+    for (const root of boundary.roots) {
+      if (root.device === null || root.inode === null) continue;
+      paths.set(root.canonicalPath, root.canonicalPath);
+      if (!root.path.split(/[\\/]/).includes("..")) paths.set(root.path, root.canonicalPath);
+    }
+    context.policyWorkspacePaths = { key, paths };
+  }
+  return context.policyWorkspacePaths.paths;
+}
+
 async function prepareToolCurrent(
   local: LocalService,
   context: ToolRunContext,
@@ -187,13 +219,34 @@ async function prepareToolCurrent(
   await local.readyForContent(signal);
   await local.userSecrets.ready(signal);
   const input = parseTool(call, local.deps.capabilityTools);
-  const resolved = await resolveRunWorkplace(local, context, signal);
+  const resolved = await resolveRunWorkplace(local, context, signal).catch((error: unknown) => {
+    delete context.policyWorkspacePaths;
+    throw error;
+  });
+  const verifiedWorkspacePaths =
+    resolved.boundary.location?.target === "local" &&
+    resolved.boundary.location.platform === "win32" &&
+    !context.projectNotesChange &&
+    ["read_file", "list_dir", "write_file", "edit_file", "find_files", "search_text"].includes(
+      input.tool,
+    )
+      ? verifiedPolicyWorkspacePaths(context, resolved)
+      : undefined;
   // An external agent's request is judged with the HOME the agent really uses, so `~` on
   // its approval card names the user's folder, not the Bot's home inside Pi Bot's data.
   const workplace = context.delegatedHome ? { ...resolved, home: context.delegatedHome } : resolved;
-  // Every tool expands `~` against this home, as a command's HOME does: policy, the brain-side
-  // checks below and the UI then name the same place.
-  const policyWorkplace = { ...workplace.value, home: workplace.home };
+  const localCommandHome =
+    input.tool === "run_command" &&
+    workplace.boundary.location?.target === "local" &&
+    !context.delegatedHome
+      ? commandHomePath(workplace.home)
+      : undefined;
+  const windowsCommandHome =
+    workplace.boundary.location?.platform === "win32" ? localCommandHome : undefined;
+  const policyWorkplace = {
+    ...workplace.value,
+    home: windowsCommandHome ? workplace.home : (localCommandHome ?? workplace.home),
+  };
   if (input.tool === "run_command")
     assertCommandWritePaths(
       input.args,
@@ -228,6 +281,20 @@ async function prepareToolCurrent(
           workplace.boundary.location?.platform ?? local.deps.platform,
         )
       : undefined;
+  const projectNotesReview =
+    projectChange?.review && input.tool === "write_file"
+      ? {
+          reviewed: projectChange.review,
+          change: {
+            target: input.args.path,
+            diffHash: createHash("sha256").update(projectChange.diff).digest("hex"),
+            contentHash: createHash("sha256").update(input.args.content).digest("hex"),
+            beforeHash: projectChange.expectedHash,
+          },
+        }
+      : undefined;
+  if (projectChange && input.tool === "write_file" && input.args.path !== projectPath)
+    throw new RpcError(RpcErrorCodes.invalidParams, "project_notes_invalid");
   const backgroundInput =
     input.tool === "write_stdin" ? local.background.inputTarget(context, input.args.id) : undefined;
   const frozenRead =
@@ -499,17 +566,50 @@ async function prepareToolCurrent(
   const attachmentsRoot = remote
     ? undefined
     : join(local.deps.dataDir, "bots", context.botId, "attachments");
-  const commandEnvironment =
-    !remote && input.tool === "run_command" && !input.args.docker
-      ? await abortable(
-          Promise.resolve(
-            local.skills?.runtimeEnvironment?.(context.botId, runPermissionScope(local, context)),
-          ),
-          AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
-        )
+  const commandSkill =
+    !remote &&
+    (!workplace.boundary.location || workplace.boundary.location.target === "local") &&
+    input.tool === "run_command" &&
+    local.skills?.commandRuntime
+      ? await (() => {
+          const requested = input.args.cwd ? expandHome(input.args.cwd, workplace.home) : ".";
+          const cwd = resolve(workplace.cwd, requested);
+          const windows = local.deps.platform === "win32";
+          const windowsScript = windows ? windowsSkillScript(input.args.command) : undefined;
+          const analysis = windows ? undefined : policy.analyzeCommand(input.args.command);
+          const script = windowsScript?.path ?? skillTokenScript(analysis?.literalCommand);
+          // The literal operand stays available if the analyzer has no projected entry point.
+          // This lookup selects a runtime only. Authorization still uses the full policy result.
+          const scripts = analysis?.scriptEntryPoints?.length
+            ? analysis.scriptEntryPoints
+            : script
+              ? [script]
+              : [];
+          const runtime =
+            windowsScript?.runtime ??
+            skillInterpreterRuntime(
+              analysis?.literalCommand ? basename(analysis.literalCommand.program) : undefined,
+            );
+          return abortable(
+            local.skills.commandRuntime?.(
+              context.botId,
+              runPermissionScope(local, context),
+              scripts.map((path) => resolve(cwd, expandHome(path, workplace.home))),
+              runtime,
+            ) ?? Promise.resolve(undefined),
+            AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
+          );
+        })()
       : undefined;
+  const skillBinding = commandSkill?.secretBindings;
+  const skillRuntimeApplies =
+    input.tool === "run_command" && !input.args.docker && !input.args.outsideSandbox;
+  const commandEnvironment = skillRuntimeApplies ? commandSkill?.environment : undefined;
   signal.throwIfAborted();
   const policyInput = {
+    ...(skillBinding && skillRuntimeApplies
+      ? { boundSkillScript: { folder: skillBinding.folder, dataDir: local.deps.dataDir } }
+      : {}),
     ...(commandEnvironment
       ? {
           commandReadRoots: [
@@ -547,6 +647,9 @@ async function prepareToolCurrent(
     ...(groupOutputRoots ? { groupOutputRoots } : {}),
     ...(gitHook ? { gitHook: gitHook.facts } : {}),
     ...(gitEntries?.facts ? { gitEntries: gitEntries.facts } : {}),
+    ...(gitEntries?.plan?.windowsReadScopeVerified
+      ? { windowsGitReadScopeVerified: true as const }
+      : {}),
     ...(hostSsh ? { hostSsh: hostSsh.facts } : {}),
     ...(gitConfiguration ? { gitConfiguration: gitConfiguration.facts } : {}),
     ...(gitConfiguration?.facts.operation === "known-file" && input.tool === "write_file"
@@ -589,8 +692,10 @@ async function prepareToolCurrent(
     conversationWebDomains: local.approvals.webDomains(context),
     taskWebReadAllowed: local.approvals.taskWebAllowed(context),
     workplace: policyWorkplace,
+    ...(windowsCommandHome ? { commandHome: windowsCommandHome } : {}),
     boundary: workplace.boundary,
     cwd: workplace.cwd,
+    ...(verifiedWorkspacePaths ? { verifiedWorkspacePaths } : {}),
     ...(workplace.boundary.location?.target !== "local"
       ? {
           realpath: (path: string, current: AbortSignal) =>
@@ -627,8 +732,30 @@ async function prepareToolCurrent(
         request: capabilityConnectorPolicy(local, capabilityTarget),
       })
     : undefined;
-  let result: PolicyResult =
-    browserCall && settings.levels.web === "never"
+  const capability = await local.toolPolicies(context, call, input.tool, input.args, signal);
+  const strictness = { allow: 0, ask: 1, deny: 2 } as const;
+  const capabilityPolicy = (
+    await Promise.all(
+      capability.requests.map((request) =>
+        policy.evaluate({
+          ...policyInput,
+          request:
+            request.category === "settings_change"
+              ? withMainDirect(local, context, input.tool, call.input, request)
+              : request,
+        }),
+      ),
+    )
+  ).reduce<PolicyResult | undefined>(
+    (strictest, next) =>
+      !strictest || strictness[next.decision] > strictness[strictest.decision] ? next : strictest,
+    undefined,
+  );
+  let result: PolicyResult = capability.primary
+    ? capability.refusal
+      ? refused(capability.refusal)
+      : (capabilityPolicy ?? refused("permission_never"))
+    : browserCall && settings.levels.web === "never"
       ? refused("permission_never")
       : capabilityTarget?.capabilityId === "browser" && settings.levels.web === "never"
         ? refused("permission_never")
@@ -647,7 +774,12 @@ async function prepareToolCurrent(
                     browserCall,
                     remote,
                     (projectPath
-                      ? { category: "write_file" as const, path: projectPath, projectNotes: true }
+                      ? {
+                          category: "write_file" as const,
+                          path: projectPath,
+                          projectNotes: true,
+                          ...(projectNotesReview ? { projectNotesReview } : {}),
+                        }
                       : undefined) ??
                       (backgroundInput
                         ? {
@@ -684,6 +816,7 @@ async function prepareToolCurrent(
                                   local,
                                   context,
                                   input.tool,
+                                  input.args,
                                   policyRequest(
                                     input,
                                     local.deps.capabilityTools,
@@ -706,7 +839,9 @@ async function prepareToolCurrent(
                               : input.tool === "memory_update"
                                 ? ("update" as const)
                                 : ("remove" as const),
-                          ...memoryFacts,
+                          text: memoryFacts.text,
+                          scope: memoryFacts.scope,
+                          afterUntrusted: memoryFacts.afterUntrusted,
                         },
                       }
                     : {}),
@@ -723,29 +858,26 @@ async function prepareToolCurrent(
     )
   )
     result = refused("browser_local_file_unavailable");
-  // the stricter of the capability's own rule and the connection's rule wins, so a
-  // connection's "ask every time" is never skipped by an allowed built-in read.
-  const strictness = { allow: 0, ask: 1, deny: 2 } as const;
-  // A capability tool whose target is only known at call time (a knowledge search reaching
-  // several connections) hands its requests over here. Each is judged as its own connection call,
-  // so the connection's confirmation mode, audit and last-used record still apply; the strictest
-  // decision covers the call.
-  // A capability that judges per call may also return state for its own executor. It stays
-  // on this call's prepared data so nothing else can read it and no global map is needed.
-  const capability = local.toolPolicies(context, call, input.tool, input.args);
-  const capabilityPolicies = (
-    await Promise.all(
-      capability.requests.map((request) => policy.evaluate({ ...policyInput, request })),
-    )
-  ).reduce<PolicyResult | undefined>(
-    (strictest, next) =>
-      !strictest || strictness[next.decision] > strictness[strictest.decision] ? next : strictest,
-    undefined,
-  );
   if (connectorPolicy && strictness[connectorPolicy.decision] > strictness[result.decision])
     result = connectorPolicy;
-  if (capabilityPolicies && strictness[capabilityPolicies.decision] > strictness[result.decision])
-    result = capabilityPolicies;
+  if (capabilityPolicy && strictness[capabilityPolicy.decision] > strictness[result.decision])
+    result = capabilityPolicy;
+  const inspected = result.decision !== "deny" ? await capability.inspect?.() : undefined;
+  if (inspected?.refusal) result = { ...refused(inspected.refusal), category: result.category };
+  if (inspected?.facts) result.facts.push(...inspected.facts);
+  if (capability.confirmation && result.decision !== "deny") {
+    result = explainPolicyResult(
+      {
+        ...result,
+        decision: "ask",
+        reason: capability.confirmation,
+        canRemember: false,
+        grantScope: undefined,
+      },
+      "boundary",
+      capability.confirmation,
+    );
+  }
   result = explainRunScope(local, context, result);
   if (projectEdit && result.decision !== "deny") {
     if (result.path?.path !== projectPath || !result.path?.root)
@@ -753,6 +885,7 @@ async function prepareToolCurrent(
     else
       result.facts.push({
         kind: "write",
+        labelKey: "diff",
         value: boundFileDiff(local.deps.redactor.redact(projectEdit.diff)),
       });
   }
@@ -989,6 +1122,44 @@ async function prepareToolCurrent(
     (gitConfiguration || gitHook || gitEntries?.plan || hostSsh)
   )
     throw new RpcError(RpcErrorCodes.invalidParams, "secret_handle_refused");
+  let skillSecretUses: NonNullable<PreparedTool["skillSecretUses"]> | undefined;
+  if (commandSkill?.secretBindingsAmbiguous && result.decision !== "deny")
+    result = refused("skill_secret_run_unsupported");
+  if (input.tool === "run_command" && skillBinding && result.decision !== "deny") {
+    const script = skillTokenScript(result.analysis?.literalCommand);
+    const location = script ? resolve(cwd, script) : undefined;
+    if (
+      !location ||
+      !containsPath(skillBinding.folder, location, local.deps.platform) ||
+      input.args.background ||
+      input.args.env ||
+      !skillRuntimeApplies ||
+      result.facts.some(
+        (fact) =>
+          fact.kind === "warning" &&
+          ["sandbox_outside_auto", "outside_sandbox_login"].includes(fact.value),
+      ) ||
+      context.routineSource ||
+      gitConfiguration ||
+      gitHook ||
+      gitEntries ||
+      hostSsh ||
+      secretUses.length ||
+      !(await local.targetFor(workplace.boundary.location).isolationStatus(signal)).available
+    )
+      result = refused("skill_secret_run_unsupported");
+    else if (result.analysis?.boundSkillScriptPath !== location)
+      result = refused("skill_secret_script_unverified");
+    else if (!commandSkill?.missing) {
+      try {
+        local.userSecrets.assertUses(skillBinding.uses, context.botId);
+        skillSecretUses = skillBinding.uses;
+      } catch (error) {
+        if (!(error instanceof RpcError) || error.code !== RpcErrorCodes.secretStale) throw error;
+        result = refused("skill_secret_binding_stale");
+      }
+    }
+  }
   const finalResult = browserSecretPolicy(
     writeOut
       ? explainPolicyResult(
@@ -1004,16 +1175,31 @@ async function prepareToolCurrent(
           yolo,
           input.tool === "run_command" ? "command" : "connector_config",
         ),
-    browserSecretUses.length,
+    browserSecretUses.length + (skillSecretUses?.length ?? 0),
   );
+  if (memoryFacts && finalResult.decision === "ask")
+    finalResult.facts = [
+      ...memoryApprovalFacts(local, context.botId, memoryFacts),
+      ...finalResult.facts.filter((fact) => fact.value !== "memory_scope_user"),
+    ];
+  const capabilityBinding = inspected?.binding ?? capability.binding;
+  const refusalText = inspected?.refusalText ?? capability.refusalText;
   return {
+    ...(commandSkill && skillRuntimeApplies ? { commandSkill } : {}),
+    ...(skillSecretUses ? { skillSecretUses } : {}),
     ...(projectChange ? { projectNotesWrite: { expectedHash: projectChange.expectedHash } } : {}),
     ...(browserSecretUses.length ? { browserSecretUses } : {}),
     ...(gitConfiguration ? { gitConfiguration } : {}),
     ...(gitHook ? { gitHook } : {}),
     ...(gitEntries ? { gitEntries } : {}),
     ...(hostSsh ? { hostSsh } : {}),
-    ...(capability.prepared === undefined ? {} : { capabilityPolicyData: capability.prepared }),
+    ...((inspected?.prepared ?? capability.prepared) === undefined
+      ? {}
+      : { capabilityPolicyData: inspected?.prepared ?? capability.prepared }),
+    ...(capability.settingsAction ? { settingsAction: capability.settingsAction } : {}),
+    ...(refusalText ? { refusalText } : {}),
+    ...(capabilityBinding === undefined ? {} : { capabilityPolicyBinding: capabilityBinding }),
+    ...(capability.modelOptions ? { capabilityModelOptions: capability.modelOptions } : {}),
     ...(memoryFacts ? { memorySafety: memorySafetySnapshot(memoryFacts) } : {}),
     ...(secretUses.length ? { secretUses } : {}),
     ...(connector?.prepared ? { connector: connector.prepared, connectorPolicy: result } : {}),
@@ -1041,6 +1227,7 @@ async function prepareToolCurrent(
     home: workplace.home,
     authorization,
     boundary: workplace.boundary,
+    displayFolders: workplace.displayFolders ?? workplace.value.folders,
   };
 }
 
@@ -1207,16 +1394,58 @@ function withMainDirect(
   local: LocalService,
   context: ToolRunContext,
   tool: string,
+  input: Record<string, unknown>,
   request: PolicyRequest,
 ): PolicyRequest {
+  if (request.category === "settings_change")
+    return {
+      ...request,
+      mainDirect:
+        local.deps.capabilityTools.specs[tool]?.mainBotOnly === true &&
+        !context.executionDevice?.target.startsWith("runner:") &&
+        mainDirectRun(local, context),
+      unattended: !!(
+        context.routineRunId ||
+        context.routineSource ||
+        context.routineWorkplace ||
+        context.auditSource
+      ),
+    };
   if (!local.deps.capabilityTools.specs[tool]?.mainBotOnly) return request;
+  if (request.category === "pi_repair")
+    return {
+      ...request,
+      mainDirect: mainDirectRun(local, context),
+      ...(request.operation === "repair" ? { mustAsk: mustAsk(local, context, tool, input) } : {}),
+    };
   if (request.category !== "bot_management" && request.category !== "work_dispatch")
     throw new Error("Main-only tool without a Pi manager category");
   return { ...request, mainDirect: mainDirectRun(local, context) };
 }
 
 /**
- * The default Pi's two levels stay out of the "did authorization change while the card was open"
+ * Owner decision 2026-11-25: some repairs (stopping a run that still has a live worker, ending a
+ * plan, closing a task) show their card even with Pi's "always" level or YOLO. The capability says
+ * which calls those are from current state; an answer it cannot give counts as "ask".
+ */
+function mustAsk(
+  local: LocalService,
+  context: ToolRunContext,
+  tool: string,
+  input: Record<string, unknown>,
+): boolean {
+  const judge = local.toolMustAsk.get(tool);
+  if (!judge) return true;
+  try {
+    return judge(context, input) !== false;
+  } catch {
+    // Failing closed keeps the card; the call itself still re-checks its target when it runs.
+    return true;
+  }
+}
+
+/**
+ * The default Pi's own levels stay out of the "did authorization change while the card was open"
  * snapshot: the card's own "don't ask again" sets one of them, which must not void the very call
  * it approved. A level lowered to never is still caught: policy judges the call again on allow.
  */
@@ -1225,6 +1454,8 @@ function withoutPiLevels<T>(settings: T): T {
   const {
     bot_management: _manage,
     work_dispatch: _dispatch,
+    pi_repair: _repair,
+    settings_change: _settings,
     ...levels
   } = (settings as { levels: Record<string, unknown> }).levels;
   return { ...settings, levels } as T;

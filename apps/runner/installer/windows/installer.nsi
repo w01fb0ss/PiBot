@@ -8,13 +8,13 @@
 ;   PIBOT_ICON          图标文件（复用 apps/desktop/build/icon.ico，仓库里不放第二份）
 ;
 ; 行为：按用户安装、用户 PATH、开始菜单、
-; 可选登录自启（用户级计划任务）、卸载停进程并删任务与 PATH 项、默认保留数据。
+; 可选登录自启（当前用户的启动文件夹）、卸载停进程并删启动项与 PATH 项、默认保留数据。
 
 Unicode true
 SetCompressor /SOLID lzma
 
 !define PIBOT_NAME "Pi Bot Runner"
-; 计划任务名。安装时按这个名字建，卸载时按同一个名字删，改一处就得改两处。
+; 旧版的计划任务。升级时清理，确保托盘可以控制唯一的登录启动项。
 !define PIBOT_TASK "Pi Bot Runner"
 ; 执行端数据目录，与 apps/runner/src/data-dir.ts 在 Windows 上的选择一致。
 !define PIBOT_DATA_DIR "$LOCALAPPDATA\Pi Bot Runner"
@@ -22,13 +22,13 @@ SetCompressor /SOLID lzma
 
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
+!include "Sections.nsh"
 !include "WinMessages.nsh"
 !include "StrFunc.nsh"
 
 ; StrFunc 的函数必须先声明再调用；卸载器里用到的要另外声明 Un 版本。
 ${StrStr}
 ${UnStrStr}
-${StrRep}
 
 ; 这两条一般由 WinMessages.nsh 提供，缺了就在编译期补上，免得旧版本 NSIS 直接报错。
 !ifndef HWND_BROADCAST
@@ -87,8 +87,8 @@ LangString DetailShortcuts ${LANG_SIMPCHINESE} "创建开始菜单快捷方式�
 LangString DetailShortcuts ${LANG_ENGLISH} "Creating Start menu shortcuts..."
 LangString DetailPath ${LANG_SIMPCHINESE} "把 pibot 加入用户 PATH…"
 LangString DetailPath ${LANG_ENGLISH} "Adding pibot to the user PATH..."
-LangString MsgTaskFailed ${LANG_SIMPCHINESE} "无法创建「登录时自动启动」的计划任务。安装已完成，可以在「任务计划程序」里手动添加。"
-LangString MsgTaskFailed ${LANG_ENGLISH} "Could not create the start-at-sign-in scheduled task. The install is complete; you can add it manually in Task Scheduler."
+LangString MsgTaskFailed ${LANG_SIMPCHINESE} "无法创建登录启动项。安装已完成，可在执行端菜单中重试。"
+LangString MsgTaskFailed ${LANG_ENGLISH} "Could not set up start at sign-in. Installation is complete. Try again from the Runner tray."
 LangString MsgDeleteData ${LANG_SIMPCHINESE} "是否同时删除配对数据？$\r$\n$\r$\n删除后这台执行端需要重新配对。选「否」保留数据，以后重装可直接继续用。"
 LangString MsgDeleteData ${LANG_ENGLISH} "Delete the pairing data as well?$\r$\n$\r$\nThe runner would have to be paired again. Choose No to keep the data so a future install can reuse it."
 LangString MsgCredentialFailed ${LANG_SIMPCHINESE} "凭据管理器里的执行端条目没能删除（可能本来就不存在）。如果它还在，重装后可能沿用原来的设备身份；需要时请在「凭据管理器」里手动删除 secrets: 开头的条目。"
@@ -168,82 +168,13 @@ Function un.RemoveUserPathEntry
   WriteRegExpandStr HKCU "Environment" "Path" "$1"
 FunctionEnd
 
-; 2026-11-11（Windows VM 验收）：`schtasks /SC ONLOGON` 不带用户时是「任何用户登录」触发器，普通
-; （非提升）用户创建会 Access is denied，静默安装只留一行日志，执行端从不自启。改用 XML：登录触发器
-; 只对当前用户（SID），交互令牌、最低权限，无运行时限（启动器常驻做崩溃重启），不受电池设置影响。
-; SID 来自 whoami（不走 PowerShell）；拿不到或格式不对就返回非 0，按原来的「自启失败不致命」处理。
-Function WriteAutostartTask
-  nsExec::ExecToStack '"$SYSDIR\whoami.exe" /user /fo csv /nh'
-  Pop $0
-  Pop $1
-  ${If} $0 != "0"
-    Push "whoami"
-    Return
-  ${EndIf}
-  ; 输出形如 "domain\user","S-1-5-21-…"
-  ${StrStr} $2 $1 '"S-1-'
-  ${If} $2 == ""
-    Push "sid"
-    Return
-  ${EndIf}
-  StrCpy $2 $2 "" 1
-  StrCpy $3 0
-  StrCpy $4 ""
-  ${Do}
-    StrCpy $5 $2 1 $3
-    ${If} $5 == '"'
-    ${OrIf} $5 == ""
-      ${ExitDo}
-    ${EndIf}
-    ; SID 只能是 S、数字和连字符；别的字符说明输出不是预期格式，不写进 XML。
-    ${If} $5 != "S"
-    ${AndIf} $5 != "-"
-    ${AndIf} $5 != "0"
-    ${AndIf} $5 != "1"
-    ${AndIf} $5 != "2"
-    ${AndIf} $5 != "3"
-    ${AndIf} $5 != "4"
-    ${AndIf} $5 != "5"
-    ${AndIf} $5 != "6"
-    ${AndIf} $5 != "7"
-    ${AndIf} $5 != "8"
-    ${AndIf} $5 != "9"
-      Push "sid"
-      Return
-    ${EndIf}
-    StrCpy $4 "$4$5"
-    IntOp $3 $3 + 1
-  ${Loop}
-  ${If} $5 != '"'
-    Push "sid"
-    Return
-  ${EndIf}
-  ; 安装目录进 XML 文本前转义（& 先转）。
-  ${StrRep} $6 "$INSTDIR" "&" "&amp;"
-  ${StrRep} $6 $6 "<" "&lt;"
-  ${StrRep} $6 $6 ">" "&gt;"
-  InitPluginsDir
-  FileOpen $7 "$PLUGINSDIR\pibot-runner-task.xml" w
-  FileWriteWord $7 0xFEFF
-  FileWriteUTF16LE $7 '<?xml version="1.0" encoding="UTF-16"?>$\r$\n'
-  FileWriteUTF16LE $7 '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">$\r$\n'
-  FileWriteUTF16LE $7 '  <RegistrationInfo><Description>Pi Bot Runner</Description></RegistrationInfo>$\r$\n'
-  FileWriteUTF16LE $7 '  <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>$4</UserId></LogonTrigger></Triggers>$\r$\n'
-  FileWriteUTF16LE $7 '  <Principals><Principal id="Author"><UserId>$4</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>$\r$\n'
-  FileWriteUTF16LE $7 '  <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><Enabled>true</Enabled></Settings>$\r$\n'
-  FileWriteUTF16LE $7 '  <Actions Context="Author"><Exec><Command>wscript.exe</Command><Arguments>"$6\pibot-start.vbs"</Arguments></Exec></Actions>$\r$\n'
-  FileWriteUTF16LE $7 '</Task>$\r$\n'
-  FileClose $7
-  nsExec::ExecToLog 'schtasks.exe /Create /F /TN "${PIBOT_TASK}" /XML "$PLUGINSDIR\pibot-runner-task.xml"'
-  Pop $0
-  Delete "$PLUGINSDIR\pibot-runner-task.xml"
-  Push $0
-FunctionEnd
-
 Section "$(SecMain)" SEC_MAIN
   SectionIn RO
   SetShellVarContext current
   !insertmacro StopRunner
+  nsExec::ExecToLog 'schtasks.exe /Delete /F /TN "${PIBOT_TASK}"'
+  Pop $0
+  Delete "$SMSTARTUP\Pi Bot Runner.lnk"
 
   ; 目录内容就是 pnpm runner:package 的产物：内置 Node、app/dist、app/node_modules、启动脚本。
   ; 运行时行为不改，安装包只负责摆好文件和系统集成。
@@ -275,6 +206,7 @@ Section "$(SecMain)" SEC_MAIN
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
   WriteRegStr HKCU "Software\Pi Bot Runner" "InstallDir" "$INSTDIR"
+  WriteRegDWORD HKCU "Software\Pi Bot Runner" "StartupShortcut" 1
   WriteRegStr HKCU "${PIBOT_UNINSTALL_KEY}" "DisplayName" "${PIBOT_NAME}"
   WriteRegStr HKCU "${PIBOT_UNINSTALL_KEY}" "DisplayVersion" "${PIBOT_VERSION}"
   WriteRegStr HKCU "${PIBOT_UNINSTALL_KEY}" "DisplayIcon" "$INSTDIR\pibot-runner.ico"
@@ -304,26 +236,45 @@ Section "$(SecMain)" SEC_MAIN
   ${EndIf}
 SectionEnd
 
-; 默认勾选（不写成 /o）：静默安装 /S 也会建任务，真机验收只用一条命令就能验自启；
-; 不想要的用户在组件页取消勾选即可。
+; Fresh installs select this by default. An upgrade keeps the user's last choice.
 Section "$(SecAutoStart)" SEC_AUTOSTART
-  ; 当前用户的登录触发器计划任务，运行安装目录里的启动器（见 WriteAutostartTask）。
-  Call WriteAutostartTask
-  Pop $0
-  ${If} $0 != "0"
-    ; 自启只是便利，失败不该让一次已经完整的安装变成失败；静默安装时只留日志。
-    DetailPrint "$(MsgTaskFailed) (schtasks $0)"
+  ; The tray uses the same shortcut in this user's Startup folder.
+  ClearErrors
+  CreateShortCut "$SMSTARTUP\Pi Bot Runner.lnk" "$WINDIR\System32\wscript.exe" '"$INSTDIR\pibot-start.vbs"' "$INSTDIR\pibot-runner.ico" 0
+  ${If} ${Errors}
+    DetailPrint "$(MsgTaskFailed)"
     ${IfNot} ${Silent}
       MessageBox MB_ICONEXCLAMATION "$(MsgTaskFailed)"
     ${EndIf}
   ${EndIf}
 SectionEnd
 
+Function .onInit
+  SetShellVarContext current
+  ReadRegStr $0 HKCU "Software\Pi Bot Runner" "InstallDir"
+  ${If} $0 == ""
+    Return
+  ${EndIf}
+  ${If} ${FileExists} "$SMSTARTUP\Pi Bot Runner.lnk"
+    Return
+  ${EndIf}
+  ReadRegDWORD $0 HKCU "Software\Pi Bot Runner" "StartupShortcut"
+  ${If} $0 != 1
+    nsExec::ExecToLog 'schtasks.exe /Query /TN "${PIBOT_TASK}"'
+    Pop $0
+    ${If} $0 == "0"
+      Return
+    ${EndIf}
+  ${EndIf}
+  !insertmacro UnselectSection ${SEC_AUTOSTART}
+FunctionEnd
+
 Section "Uninstall"
   SetShellVarContext current
   !insertmacro StopRunner
 
-  ; 用户可能在组件页取消了自启，任务不存在也算正常，删不掉就继续。
+  Delete "$SMSTARTUP\Pi Bot Runner.lnk"
+  ; Clean up the old scheduled task when uninstalling an upgraded installation.
   nsExec::ExecToLog 'schtasks.exe /Delete /F /TN "${PIBOT_TASK}"'
   Pop $0
 

@@ -17,8 +17,9 @@ import {
 } from "@pibot/storage";
 import type { HandoffGate } from "./group-handoffs.ts";
 import { GroupPlanMerges } from "./group-plan-merges.ts";
+import { persistPlanOutputs, preparePlanOutputs } from "./group-plan-output-attachments.ts";
 import { stepMerged } from "./group-plan-step-workspaces.ts";
-import { planConclusionLines } from "./group-plan-summary.ts";
+import { planStepNames, planSummaryText } from "./group-plan-summary.ts";
 import type { GroupService } from "./group-service.ts";
 import { settlePlanWebConsent } from "./group-web-consent.ts";
 import { GroupWorkflowDecisions } from "./group-workflow-decisions.ts";
@@ -49,7 +50,6 @@ import {
   unresolvedVerdicts,
   verdictDependencyReady,
   verdictRepairReady,
-  verdictStepLabel,
 } from "./group-workflow-verdicts.ts";
 
 const DISPATCH_MS = 30_000;
@@ -284,6 +284,19 @@ export class GroupWorkflowScheduler implements WorkflowEngine {
       return;
     }
     const workflow = workflowOf(record);
+    const held = progressOf(record);
+    if (held.stoppedReason === "round_limit") {
+      const cycle = this.service.cycles.get(record.groupId);
+      const reason = this.progress.hardLimit(record);
+      if (
+        reason === "round_limit" &&
+        (!held.roundHold || held.roundHold.limitId === cycle.roundLimitId)
+      )
+        return;
+      // A new message, cancellation or topic change has superseded the paused cycle.
+      this.progress.stop(record, reason && reason !== "round_limit" ? reason : "cycle_limited");
+      return;
+    }
     // A manual gate can block before its member run ends. Refresh from durable run/task facts,
     // including after restart or a missed settled notification. A cardless block belongs to
     // automatic replanning; only explicit manual-block paths may create its first decision.
@@ -382,7 +395,8 @@ export class GroupWorkflowScheduler implements WorkflowEngine {
       if (definition) await this.dispatcher.dispatch(record, workflow, definition, item);
     }
     const states = this.repo.steps(id);
-    const latest = this.repo.get(id) ?? record;
+    const latest = this.repo.get(id);
+    if (!latest || !["running", "waiting"].includes(latest.status)) return;
     const review = progressOf(latest).review;
     if (
       review?.supplementStepId &&
@@ -444,78 +458,112 @@ export class GroupWorkflowScheduler implements WorkflowEngine {
         return;
       }
       const deliveryComplete = workflow.source.kind !== "dynamic" || deliveryReviewComplete(review);
-      const completed = transaction(this.service.deps.db, () => {
-        this.repo.updateRun(id, "passed");
-        const pauses = clearCompletedPlanPause(this.service, record);
-        this.audit(
-          record,
-          "group.workflow.completed",
-          "Group workflow completed / 群工作流已完成",
-          {
-            actor: "system",
-          },
-        );
-        const group = this.service.groups.get(record.groupId);
-        if (group) {
-          const zh = this.service.deps.chat.currentLanguage() === "zh";
-          const supplement = states.find((state) => state.stepId === review?.supplementStepId);
-          // The supplement's prose can contain self-reported coverage. Only show its check facts.
-          const ordinary = states.filter((state) => state !== supplement);
-          const stepLabel = (state: GroupWorkflowStepRecord) => {
-            const label = verdictStepLabel(progressOf(latest), state.stepId, zh);
-            if (label) return label;
-            return zh ? (state.status === "passed" ? "已通过" : "已跳过") : state.status;
-          };
-          new MessagesRepo(this.service.deps.db).create({
-            conversationId: group.conversationId,
-            botId: record.coordinatorBotId,
-            role: "assistant",
-            content: this.service.deps.redactor.redact(
-              [
-                !deliveryComplete
-                  ? zh
-                    ? `计划「${workflow.name}」步骤已结束；需求覆盖见下方。`
-                    : `Plan “${workflow.name}” steps ended; see coverage below.`
-                  : zh
-                    ? `计划「${workflow.name}」已完成。`
-                    : `Plan “${workflow.name}” completed.`,
-                ...(workflow.source.kind === "dynamic" ? reviewConclusion(review, zh) : []),
-                ...(supplement ? [supplementConclusion(this.service, record, supplement, zh)] : []),
-                ...planConclusionLines(ordinary).map((line) => `• ${line}`),
-                ...ordinary.map(
-                  (state) =>
-                    `${definitions.get(state.stepId)?.title ?? state.stepId}: ${stepLabel(state)}\n${state.deliverables.flatMap((item) => (item && typeof item === "object" && "path" in item && typeof item.path === "string" ? [item.path] : [])).join("\n")}`,
-                ),
-              ].join("\n\n"),
-            ),
-            status: "done",
-            usage: {
-              groupPlanConclusion: GroupPlanConclusionSchema.parse({
-                workflowRunId: record.id,
-                cycleId: record.cycleId,
-                outcome: deliveryComplete ? "completed" : "incomplete",
-              }),
-              groupExecution: {
-                kind: "plan",
-                ...(workflow.acceptanceRelaxed ? { acceptanceRelaxed: true } : {}),
-                ...(workflow.relaxationDetails ? { relaxations: workflow.relaxationDetails } : {}),
-                steps: this.repo.executionSummary(
-                  record.groupId,
-                  group.conversationId,
-                  record.cycleId,
-                ).steps,
-              },
-              // Only a dynamic plan whose every step passed (none skipped) can be saved.
-              ...(workflow.source.kind === "dynamic" &&
-              states.every((state) => state.status === "passed")
-                ? { groupPlanDone: { workflowRunId: record.id } }
-                : {}),
+      const outputs = await preparePlanOutputs(
+        this.service,
+        latest,
+        workflow,
+        states,
+        this.shutdownSignal,
+      );
+      const finish = () =>
+        transaction(this.service.deps.db, () => {
+          const current = this.repo.get(id);
+          if (
+            this.shutdownSignal.aborted ||
+            !current ||
+            !["running", "waiting"].includes(current.status)
+          )
+            return;
+          const group = this.service.groups.get(record.groupId);
+          const outputAllowed =
+            !!group?.members.some((member) => member.botId === record.coordinatorBotId) &&
+            !this.repo.workplaceRevoked(id);
+          const attachments = outputAllowed ? outputs.attachments : [];
+          this.repo.updateRun(id, "passed");
+          const pauses = clearCompletedPlanPause(this.service, record);
+          this.audit(
+            record,
+            "group.workflow.completed",
+            "Group workflow completed / 群工作流已完成",
+            {
+              actor: "system",
             },
-          });
-          return { todo: archiveCompletedPlan(this.service, record), pauses };
-        }
-        return { todo: undefined, pauses };
-      });
+          );
+          if (group) {
+            // Commit the line with the terminal state so recovery cannot miss or repeat it.
+            this.status.postFinished(
+              record,
+              group.conversationId,
+              workflow.name,
+              states.length,
+              deliveryComplete,
+            );
+            const language = this.service.deps.chat.currentLanguage();
+            const supplement = states.find((state) => state.stepId === review?.supplementStepId);
+            const message = new MessagesRepo(this.service.deps.db).create({
+              conversationId: group.conversationId,
+              botId: record.coordinatorBotId,
+              role: "assistant",
+              content: this.service.deps.redactor.redact(
+                planSummaryText(
+                  workflow,
+                  states,
+                  planStepNames(this.service, states),
+                  progressOf(latest),
+                  language,
+                  {
+                    coverage: reviewConclusion(review, latest, language),
+                    supplement:
+                      supplement &&
+                      supplementConclusion(this.service, latest, supplement, language),
+                    files: attachments.length,
+                    unavailable: outputAllowed ? outputs.unavailable : [],
+                  },
+                ),
+              ),
+              status: "done",
+              usage: {
+                groupPlanConclusion: GroupPlanConclusionSchema.parse({
+                  workflowRunId: record.id,
+                  cycleId: record.cycleId,
+                  outcome: deliveryComplete ? "completed" : "incomplete",
+                }),
+                groupExecution: {
+                  kind: "plan",
+                  ...(workflow.acceptanceRelaxed ? { acceptanceRelaxed: true } : {}),
+                  ...(workflow.relaxationDetails
+                    ? { relaxations: workflow.relaxationDetails }
+                    : {}),
+                  steps: this.repo.executionSummary(
+                    record.groupId,
+                    group.conversationId,
+                    record.cycleId,
+                  ).steps,
+                },
+                // Only a dynamic plan whose every step passed (none skipped) can be saved.
+                ...(workflow.source.kind === "dynamic" &&
+                states.every((state) => state.status === "passed")
+                  ? { groupPlanDone: { workflowRunId: record.id } }
+                  : {}),
+              },
+            });
+            persistPlanOutputs(this.service, record, message, attachments);
+            return {
+              attachmentsSaved: attachments.length > 0,
+              todo: archiveCompletedPlan(this.service, record),
+              pauses,
+            };
+          }
+          return { attachmentsSaved: false, todo: undefined, pauses };
+        });
+      let completed: ReturnType<typeof finish>;
+      try {
+        completed = finish();
+      } finally {
+        if (!completed?.attachmentsSaved)
+          await Promise.allSettled(outputs.attachments.map((batch) => batch.discard()));
+      }
+      if (!completed) return;
       const source = new MessagesRepo(this.service.deps.db).get(record.sourceMessageId);
       if (source) this.service.deps.local.memoryExtraction?.boundary(source.conversationId);
       this.merges.ended(record);
@@ -564,6 +612,14 @@ export class GroupWorkflowScheduler implements WorkflowEngine {
   /** A step transition becomes one program-written line per burst. */
   announce(record: GroupWorkflowRunRecord) {
     this.status.announce(record);
+  }
+
+  refreshStatus(record: GroupWorkflowRunRecord, decisionMessageId: string) {
+    try {
+      this.status.refreshAfter(record, decisionMessageId);
+    } catch {
+      // A status line is decoration: a failure here must never undo the user's decision.
+    }
   }
 
   /** A disposition turn that produced no replacement ends with the user's card. */

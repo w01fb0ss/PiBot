@@ -11,10 +11,12 @@ export function AutoMemoryNotice({
   proposal,
   controller,
   busy,
+  receipt,
 }: {
   proposal: MemoryProposal;
   controller: MemoryNoticesController;
   busy: boolean;
+  receipt: boolean;
 }) {
   const t = useT();
   const openMemory = useOpenMemory();
@@ -26,6 +28,7 @@ export function AutoMemoryNotice({
   const [focused, setFocused] = useState(false);
   const [fading, setFading] = useState(false);
   useEffect(() => {
+    if (receipt) return;
     const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
     let timer: ReturnType<typeof setTimeout> | undefined;
     const dismiss = () => controller.dismissNotice(proposal.id);
@@ -44,12 +47,12 @@ export function AutoMemoryNotice({
       clearTimeout(timer);
       motion.removeEventListener("change", reduced);
     };
-  }, [controller, proposal.id, hovered, focused, busy, fading]);
+  }, [controller, proposal.id, hovered, focused, busy, fading, receipt]);
   return (
     <fieldset
       aria-label={t("workspace.memory")}
       className={`${styles.item} ${styles.autoNotice}`}
-      data-fading={fading || undefined}
+      data-fading={(!receipt && fading) || undefined}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       onFocusCapture={() => setFocused(true)}
@@ -60,8 +63,10 @@ export function AutoMemoryNotice({
       <div className={styles.noticeHead}>
         <IconTile icon="star" tone="violet" size="sm" className={styles.noticeMark} />
         <strong>
-          {t(`workspace.memoryApplied.${proposal.action}`)} ·{" "}
-          {t(`workspace.category.${proposal.category ?? "other"}`)}
+          {t(
+            receipt ? "workspace.memoryApplied.add" : `workspace.memoryApplied.${proposal.action}`,
+          )}{" "}
+          · {t(`workspace.category.${proposal.category ?? "other"}`)}
         </strong>
         <MemoryScopeLabel scope={proposal.scope} />
       </div>

@@ -1,4 +1,5 @@
 // Defines the capability ports consumed by the brain without importing memory.
+import type { MemoryDraftQuote } from "@pibot/agent";
 import type { Bot, Memory, MemoryProposal, MemoryRecallSnapshot } from "@pibot/protocol-base";
 
 export interface MemoryPromptRequest {
@@ -23,7 +24,7 @@ export interface PersonalMemoryPort {
     scope?: Memory["scope"],
     groupId?: string,
     project?: string,
-  ): Pick<Memory, "text" | "scope"> | undefined;
+  ): Pick<Memory, "text" | "scope" | "updatedAt"> | undefined;
   prompt(botId: string, request?: MemoryPromptRequest): string;
   /** Explicit Agent sharing, user scope only; records the included notes once. */
   sharedUser?(botId: string, signal: AbortSignal): string;
@@ -76,6 +77,7 @@ export interface GroupMemoryPort {
 /** In-process producers carry trusted IDs; the capability decides whether a topic is eligible. */
 export interface MemoryExtractionPort {
   boundary(conversationId: string): void;
+  recordRunReceipt(botId: string, replyId: string): void;
   correction(conversationId: string, sourceMessageId: string): void;
   waitForCorrection(
     botId: string,
@@ -95,9 +97,15 @@ export interface MemoryPort {
 }
 
 export interface ImportDistillationPort {
-  estimate(botId: string): { modelId: string; maxTokens: number; costUsd: 0 } | undefined;
+  estimate(botId: string, signal: AbortSignal): Promise<MemoryDraftQuote | undefined>;
   run(
-    request: { importId: string; botId: string; modelId: string; text: string },
+    request: {
+      botId: string;
+      quote: MemoryDraftQuote;
+      text: string;
+      budget: { tokens: number; costUsd: number };
+      onUsage(usage: { tokens: number; costUsd?: number }): void;
+    },
     signal: AbortSignal,
   ): Promise<Array<{ text: string; category: NonNullable<Memory["category"]> }>>;
 }

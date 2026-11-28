@@ -1,6 +1,8 @@
 import {
   type Connector,
   type ConnectorAccess,
+  ConnectorAllowedSiteSchema,
+  connectorEndpointSite,
   type MethodResults,
   newConnectionDefaults,
 } from "@pibot/plugins-contract/full";
@@ -12,12 +14,13 @@ import {
   SettingsSection,
   useSettings,
 } from "@pibot/renderer-kit";
-import { Chip, Icon, IconTile, Switch } from "@pibot/ui";
+import { Chip, Icon, IconTile } from "@pibot/ui";
 import { useId } from "react";
 import { ConnectorAccessEditor } from "../page/ConnectorAccessEditor.tsx";
-import { DrawerField, DrawerHero, SecretInput } from "../page/connections/DrawerParts.tsx";
+import { DrawerHero } from "../page/connections/DrawerParts.tsx";
 import styles from "../page/connections/drawer.module.css";
 import { guideLinkKey, localText } from "../page/connections/local-text.ts";
+import { fieldVisible, PluginSettingField } from "../page/connections/PluginSettingField.tsx";
 
 type Preview = MethodResults["plugins.previewImport"];
 type ConfigValue = string | number | boolean;
@@ -29,21 +32,40 @@ export function previewSummary(value: Preview) {
     previewId: value.previewId,
     digest: value.digest,
     expiresAt: value.expiresAt,
+    fromBringOver: value.fromBringOver === true,
     declaredVersion: value.declaredVersion,
     name: value.manifest.name,
     description: value.manifest.description,
     plugin: value.plugin,
     commandWarnings: value.commandWarnings,
+    ignoredMcpMetadata: value.ignoredMcpMetadata,
+    requiredKeys: value.requiredKeys ?? [],
+    plainFields: value.plainFields ?? [],
     servers: value.manifest.servers.map((server) => ({
       id: server.id,
       transport: server.transport,
       auth: server.auth.kind,
       secrets: server.auth.secretNames,
-      domains: server.networkDomains,
+      savedKeys: value.savedKeys?.find(({ serverId }) => serverId === server.id)?.names ?? [],
+      fields: Object.keys(
+        server.transport === "stdio"
+          ? server.env
+          : server.transport === "http"
+            ? server.headers
+            : {},
+      ),
+      domains:
+        server.transport === "stdio"
+          ? server.networkDomains.filter(
+              (site) => ConnectorAllowedSiteSchema.safeParse(site).success,
+            )
+          : [],
+      endpoint:
+        server.transport === "http" ? connectorEndpointSite(new URL(server.url)) : undefined,
       cwd: server.transport === "stdio" ? server.cwd : undefined,
       startupTimeoutSec: server.startupTimeoutSec,
       command: server.transport === "stdio" ? server.command : undefined,
-      url: server.transport === "http" ? server.url : undefined,
+      args: server.transport === "stdio" ? server.args : [],
       bundledNode:
         !!value.plugin &&
         server.transport === "stdio" &&
@@ -53,16 +75,7 @@ export function previewSummary(value: Preview) {
 }
 export type PreviewSummary = ReturnType<typeof previewSummary>;
 
-/** Whether a field is shown under the current values (`visibleWhen`). */
-export function fieldVisible(
-  field: ConfigField,
-  fields: readonly ConfigField[],
-  config: Record<string, ConfigValue>,
-) {
-  if (!field.visibleWhen) return true;
-  const controlling = fields.find((candidate) => candidate.key === field.visibleWhen?.key);
-  return (config[field.visibleWhen.key] ?? controlling?.default) === field.visibleWhen.equals;
-}
+export { fieldVisible };
 
 /** The program name only; arguments can carry paths and are not something to read here. */
 function commandName(command: string) {
@@ -77,20 +90,30 @@ export function ImportPreview({
   preview,
   config,
   setValue,
+  plainFields,
+  setPlainFields,
+  useSavedKeys,
+  setUseSavedKeys,
   disabled,
   checking,
   settingsError,
   targets,
   setTargets,
+  targetRequired = false,
 }: {
   preview: PreviewSummary;
   config: Record<string, ConfigValue>;
   setValue(key: string, value: ConfigValue): void;
+  plainFields: string[];
+  setPlainFields(names: string[]): void;
+  useSavedKeys: boolean;
+  setUseSavedKeys(value: boolean): void;
   disabled: boolean;
   checking: boolean;
   settingsError?: string;
   targets: ConnectorAccess;
   setTargets(access: ConnectorAccess): void;
+  targetRequired?: boolean;
 }) {
   const { t, language } = useSettings();
   const inputId = useId();
@@ -100,29 +123,67 @@ export function ImportPreview({
   const help = mode?.help[language];
   const fields = preview.plugin?.config ?? [];
   const local = preview.servers.some((server) => server.transport === "stdio");
+  const windows = hostPlatform() === "win32";
   // Widened on purpose: the rows follow whatever the default becomes.
-  const confirmation = newConnectionDefaults.confirmationMode as Connector["confirmationMode"];
+  const confirmation: Connector["confirmationMode"] =
+    newConnectionDefaults.confirmationMode as Connector["confirmationMode"];
   // Imported secrets are stored as IMPORT_<installation>_<setting>; people read the setting's title.
   const titleOf = (name: string) => {
     const field = fields.find(
       (candidate) => candidate.key === name || name.endsWith(`_${candidate.key}`),
     );
-    return field ? localText(field.title, language) : name.replace(/^IMPORT_[0-9A-F]+_/, "");
+    return field
+      ? localText(field.title, language)
+      : name.replace(/^IMPORT_[0-9A-F]+_(?:S\d+_)?/, "");
   };
   const secretNames = [...new Set(preview.servers.flatMap((server) => server.secrets))];
-  const sites = [...new Set(preview.servers.flatMap((server) => server.domains))];
+  const pendingKeys = new Set(preview.requiredKeys.map(({ name }) => name));
+  const localSites = [...new Set(preview.servers.flatMap((server) => server.domains))];
+  const remoteSites = [
+    ...new Set(preview.servers.flatMap(({ endpoint }) => (endpoint ? [endpoint] : []))),
+  ];
+  const dangerousCommand = preview.commandWarnings?.includes("dangerous");
+  const showTrustWarning = !preview.plugin || preview.commandWarnings?.includes("unverified");
+  const trustWarning = showTrustWarning
+    ? [
+        t("connections.drawer.importTrust"),
+        t(
+          local && !windows
+            ? remoteSites.length
+              ? "connections.drawer.importTrust.mixed"
+              : "connections.drawer.importTrust.sandboxed"
+            : "connections.drawer.importTrust.trusted",
+        ),
+        remoteSites.length > 0 && t("connections.drawer.importTrust.remote"),
+      ]
+        .filter(Boolean)
+        .join(language === "zh" ? "" : " ")
+    : undefined;
+  const siteChips = (sites: string[]) => (
+    <span className={styles.siteChips}>
+      {sites.map((site) => (
+        <Chip key={site} className={styles.mono}>
+          {site}
+        </Chip>
+      ))}
+    </span>
+  );
   const skipped = (preview.plugin?.components ?? []).filter(
     (component) => component.status === "unsupported",
   );
+  const skippedCustomSkills = skipped.filter(
+    (component) =>
+      component.reason === "not-supported" &&
+      (component.name === "plugin.json skills" || component.name === "plugin.json commands"),
+  );
+  const skippedOther = skipped.filter((component) => !skippedCustomSkills.includes(component));
   const sandbox = t(
-    hostPlatform() === "win32"
-      ? "connections.drawer.run.unsandboxed"
-      : "connections.drawer.run.sandboxed",
+    windows ? "connections.drawer.run.unsandboxed" : "connections.drawer.run.sandboxed",
   );
   const runs = preview.servers.map((server) => {
     const base =
       server.transport === "http"
-        ? t("connections.drawer.run.remote", { url: server.url ?? "" })
+        ? t("connections.drawer.run.remote", { url: server.endpoint ?? "" })
         : server.transport === "stdio"
           ? `${
               server.bundledNode
@@ -142,83 +203,17 @@ export function ImportPreview({
       ? t("connections.drawer.run.extra", { id: server.id, detail })
       : detail;
   });
-  const field = (item: ConfigField) => {
-    if (!fieldVisible(item, fields, config)) return null;
-    const id = `${inputId}-${item.key}`;
-    const label = localText(item.title, language);
-    const value = config[item.key] ?? "";
-    const note = item.description && item.description !== item.key ? item.description : "";
-    const help = localText(
-      note || (item.sensitive ? t("connectors.generatedSecret") : t("connectors.generatedSetting")),
-      language,
-    );
-    if (item.type === "boolean")
-      return (
-        <SettingsRow key={item.key} label={label} note={help}>
-          <Switch
-            id={id}
-            label={label}
-            checked={value === true}
-            disabled={disabled}
-            onCheckedChange={(checked) => setValue(item.key, checked)}
-          />
-        </SettingsRow>
-      );
-    return (
-      <DrawerField
-        key={item.key}
-        id={id}
-        label={label}
-        required={item.required}
-        secret={item.sensitive}
-        note={help}
-        icon={item.sensitive ? "key" : item.type === "directory" ? "folder" : undefined}
-      >
-        {item.options?.length ? (
-          <select
-            id={id}
-            value={String(value)}
-            required={item.required}
-            disabled={disabled}
-            onChange={(event) => {
-              const selected = item.options?.find(
-                (option) => String(option.value) === event.currentTarget.value,
-              );
-              if (selected) setValue(item.key, selected.value);
-            }}
-          >
-            {item.options.map((option) => (
-              <option key={String(option.value)} value={String(option.value)}>
-                {localText(option.label, language)}
-              </option>
-            ))}
-          </select>
-        ) : item.sensitive ? (
-          <SecretInput
-            id={id}
-            label={label}
-            value={String(value)}
-            disabled={disabled}
-            onChange={(next) => setValue(item.key, next)}
-          />
-        ) : (
-          <input
-            id={id}
-            type={item.type === "number" ? "number" : "text"}
-            value={String(value)}
-            required={item.required}
-            disabled={disabled}
-            autoComplete="off"
-            spellCheck={false}
-            onChange={(event) => {
-              const raw = event.currentTarget.value;
-              setValue(item.key, item.type === "number" && raw !== "" ? Number(raw) : raw);
-            }}
-          />
-        )}
-      </DrawerField>
-    );
-  };
+  const field = (item: ConfigField) => (
+    <PluginSettingField
+      key={item.key}
+      field={item}
+      fields={fields}
+      config={config}
+      idPrefix={inputId}
+      disabled={disabled}
+      setValue={setValue}
+    />
+  );
   return (
     <div className={styles.drawer}>
       <DrawerHero
@@ -241,23 +236,22 @@ export function ImportPreview({
           </>
         }
       />
-      {(!!preview.commandWarnings?.length || (hostPlatform() === "win32" && local)) && (
+      {preview.ignoredMcpMetadata && (
+        <SettingsLine>{t("connectors.paste.ignoredMetadata")}</SettingsLine>
+      )}
+      {(trustWarning || dangerousCommand || (windows && local)) && (
         <div className={styles.lines}>
-          {preview.commandWarnings?.map((risk) => (
-            <SettingsLine
-              key={risk}
-              tone={risk === "dangerous" ? "danger" : undefined}
-              dot={risk === "dangerous" ? "danger" : "warn"}
-              role="alert"
-            >
-              {t(
-                risk === "dangerous"
-                  ? "connectors.commandDangerous"
-                  : "connectors.commandUnverified",
-              )}
+          {dangerousCommand && (
+            <SettingsLine tone="danger" dot="danger" role="alert">
+              {t("connectors.commandDangerous")}
             </SettingsLine>
-          ))}
-          {hostPlatform() === "win32" && local && (
+          )}
+          {trustWarning && (
+            <SettingsLine dot="warn" role="alert">
+              {trustWarning}
+            </SettingsLine>
+          )}
+          {windows && local && (
             <SettingsLine dot="warn" role="alert">
               {t("connectors.windowsWarning")}
             </SettingsLine>
@@ -283,6 +277,99 @@ export function ImportPreview({
               )}
             </div>
           </div>
+        </SettingsSection>
+      )}
+      {(remoteSites.length > 0 ||
+        secretNames.length > 0 ||
+        preview.servers.some((server) => server.fields.length > 0)) && (
+        <SettingsSection title={t("connectors.paste.recipients")}>
+          {preview.servers
+            .filter((server) => server.endpoint || server.secrets.length || server.fields.length)
+            .map((server) => {
+              const keys = server.secrets.filter((key) => !pendingKeys.has(key));
+              const shownFields = server.fields.map((field) =>
+                preview.plainFields.some(
+                  ({ name, label, serverId }) =>
+                    serverId === server.id && label === field && plainFields.includes(name),
+                )
+                  ? t("connectors.paste.plainField", { label: field })
+                  : field,
+              );
+              const joinNames = (names: string[]) => names.join(language === "zh" ? "、" : ", ");
+              const savedKeyNote =
+                server.savedKeys.length > 0 &&
+                (server.command
+                  ? t("connectors.paste.savedKeysForProgram", {
+                      names: joinNames(server.savedKeys),
+                      program: commandName(server.command),
+                    })
+                  : t("connectors.paste.savedKeys", { names: joinNames(server.savedKeys) }));
+              return (
+                <SettingsRow
+                  key={server.id}
+                  icon={server.endpoint ? "globe" : "key"}
+                  tone="blue"
+                  label={preview.servers.length > 1 ? server.id : name}
+                  note={
+                    savedKeyNote
+                      ? [
+                          savedKeyNote,
+                          shownFields.length > 0 &&
+                            t("connectors.paste.configurationFields", {
+                              names: joinNames(shownFields),
+                            }),
+                        ]
+                          .filter(Boolean)
+                          .join(language === "zh" ? "" : " ")
+                      : !preview.plugin && shownFields.length
+                        ? t("connectors.paste.protectedFields", { names: joinNames(shownFields) })
+                        : keys.length
+                          ? t("connections.drawer.secretsCount", {
+                              count: keys.length,
+                              names: keys.map(titleOf).join(language === "zh" ? "、" : ", "),
+                            })
+                          : undefined
+                  }
+                >
+                  {server.endpoint && siteChips([server.endpoint])}
+                </SettingsRow>
+              );
+            })}
+          {preview.servers.some((server) => server.savedKeys.length) && (
+            <label className={styles.inlineActions}>
+              <input
+                type="checkbox"
+                checked={useSavedKeys}
+                disabled={disabled || checking}
+                onChange={(event) => setUseSavedKeys(event.currentTarget.checked)}
+              />
+              {t("connectors.paste.useSavedKeys")}
+            </label>
+          )}
+        </SettingsSection>
+      )}
+      {preview.requiredKeys.length > 0 && (
+        <SettingsSection title={t("connectors.paste.fillKeys")}>
+          {preview.requiredKeys.map(({ name: keyName, label, serverId }) => (
+            <div key={keyName} className={styles.stackedControl}>
+              <label className={styles.stackedControl} htmlFor={`${inputId}-${keyName}`}>
+                {t("connectors.paste.fillKey", {
+                  label,
+                  service: preview.servers.length > 1 ? serverId : name,
+                })}
+                <input
+                  id={`${inputId}-${keyName}`}
+                  type="password"
+                  autoComplete="new-password"
+                  maxLength={4096}
+                  disabled={disabled}
+                  value={String(config[keyName] ?? "")}
+                  onChange={(event) => setValue(keyName, event.currentTarget.value)}
+                />
+              </label>
+            </div>
+          ))}
+          <SettingsLine>{t("connectors.paste.keyNote")}</SettingsLine>
         </SettingsSection>
       )}
       {fields.length > 0 && (
@@ -313,7 +400,11 @@ export function ImportPreview({
             icon="eye"
             tone="blue"
             label={t("connections.drawer.read")}
-            note={t("connections.drawer.readFree")}
+            note={t(
+              confirmation === "always_ask"
+                ? "connectors.paste.asksToUse"
+                : "connections.drawer.readFree",
+            )}
           >
             <Chip tone={confirmation === "always_ask" ? "orange" : "neutral"}>
               {t(
@@ -342,9 +433,11 @@ export function ImportPreview({
             </Chip>
           </SettingsRow>
           <SettingsLine>
-            {t("connections.drawer.accessDefault", {
-              access: t(`connectors.access.${newConnectionDefaults.accessMode}`),
-            })}
+            {preview.fromBringOver
+              ? t("connections.drawer.accessDefaultBringOver")
+              : t("connections.drawer.accessDefault", {
+                  access: t(`connectors.access.${newConnectionDefaults.accessMode}`),
+                })}
           </SettingsLine>
         </SettingsSection>
       )}
@@ -365,11 +458,33 @@ export function ImportPreview({
               />
             </SettingsSection>
           )}
-          <ConnectorAccessEditor access={targets} disabled={disabled} save={setTargets} />
+          <div className={targetRequired ? styles.targetRequired : undefined}>
+            <ConnectorAccessEditor access={targets} disabled={disabled} save={setTargets} />
+          </div>
           {!targets.bots.length && !targets.groups.length && (
-            <p className={styles.fieldNote}>{t("connectors.skillTargetRequired")}</p>
+            <p className={styles.fieldNote}>
+              {t(
+                targetRequired
+                  ? "connectors.skillOnlyTargetRequired"
+                  : "connectors.skillTargetRequired",
+              )}
+            </p>
           )}
         </>
+      )}
+      {skipped.length > 0 && (
+        <div className={styles.lines}>
+          {skippedCustomSkills.length > 0 && (
+            <SettingsLine dot="warn" role="status">
+              {t("connectors.skippedCustomSkills")}
+            </SettingsLine>
+          )}
+          {skippedOther.length > 0 && (
+            <SettingsLine dot="warn" role="status">
+              {t("connectors.skippedOtherNotice", { count: skippedOther.length })}
+            </SettingsLine>
+          )}
+        </div>
       )}
       <SettingsFold
         title={t("connections.drawer.tech")}
@@ -385,25 +500,46 @@ export function ImportPreview({
             note={runs.join(" · ")}
           />
         )}
-        {preview.servers.length > 0 && (
+        {preview.servers
+          .filter(({ args }) => args.length > 0)
+          .map((server) => (
+            <SettingsRow
+              key={server.id}
+              icon="terminal"
+              tone="blue"
+              label={t("connectors.paste.launchOptions", {
+                command: commandName(server.command ?? ""),
+              })}
+              note={
+                <code className={styles.mono}>
+                  {server.args
+                    .map((arg) => (/\s|^$/.test(arg) ? JSON.stringify(arg) : arg))
+                    .join(" ")}
+                </code>
+              }
+            />
+          ))}
+        {local && (
           <SettingsRow
             icon="globe"
             tone="blue"
             label={t("connections.drawer.sites")}
-            note={t(sites.length ? "connections.drawer.sitesNote" : "connections.drawer.sitesNone")}
+            note={t(windows ? "connectors.network.unisolated" : "connectors.network.requestNote")}
           >
-            {sites.length > 0 && (
-              <span className={styles.siteChips}>
-                {sites.map((site) => (
-                  <Chip key={site} className={styles.mono}>
-                    {site}
-                  </Chip>
-                ))}
-              </span>
-            )}
+            {!windows && localSites.length > 0 && siteChips(localSites)}
           </SettingsRow>
         )}
-        {preview.servers.length > 0 && (
+        {remoteSites.length > 0 && (
+          <SettingsRow
+            icon="globe"
+            tone="blue"
+            label={t("connectors.network.declared")}
+            note={t("connectors.network.remote")}
+          >
+            {siteChips(remoteSites)}
+          </SettingsRow>
+        )}
+        {preview.plugin && preview.servers.length > 0 && (
           <SettingsRow
             icon="key"
             tone="pink"
@@ -417,6 +553,28 @@ export function ImportPreview({
                 : t("connections.drawer.secretsNone")
             }
           />
+        )}
+        {preview.plainFields.length > 0 && (
+          <SettingsSection title={t("connectors.paste.plainFields")}>
+            <p className={styles.fieldNote}>{t("connectors.paste.plainFieldsNote")}</p>
+            {preview.plainFields.map(({ name: field, label, serverId }) => (
+              <label key={field}>
+                <input
+                  type="checkbox"
+                  checked={plainFields.includes(field)}
+                  disabled={disabled}
+                  onChange={(event) =>
+                    setPlainFields(
+                      event.currentTarget.checked
+                        ? [...plainFields, field]
+                        : plainFields.filter((name) => name !== field),
+                    )
+                  }
+                />{" "}
+                {preview.servers.length > 1 ? `${serverId} · ${label}` : label}
+              </label>
+            ))}
+          </SettingsSection>
         )}
         {skipped.length > 0 && (
           <SettingsRow
@@ -437,14 +595,19 @@ export function ImportPreview({
           tone="green"
           label={t("connections.drawer.source")}
           note={
-            <span className={styles.mono}>
-              {t(
-                preview.plugin
-                  ? "connections.drawer.source.plugin"
-                  : "connections.drawer.source.json",
-                { digest: preview.digest.slice(0, 8) },
-              )}
-            </span>
+            <>
+              <span>
+                {t(
+                  preview.plugin
+                    ? "connections.drawer.chip.pluginNoVersion"
+                    : "connections.drawer.chip.mcp",
+                )}
+              </span>
+              <br />
+              <code className={styles.mono}>
+                {t("connections.drawer.source.digest", { digest: preview.digest.slice(0, 8) })}
+              </code>
+            </>
           }
         />
       </SettingsFold>

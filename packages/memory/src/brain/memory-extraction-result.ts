@@ -1,4 +1,5 @@
 // Validates model candidates and keeps extraction writes in the memory service.
+import { AgentErrorCodeSchema } from "@pibot/protocol-base";
 import type { MemoryExtraction } from "@pibot/storage";
 import { type ExtractionCandidate, parseExtractionDraft } from "./memory-extraction.ts";
 import type { MemoryService } from "./memory-service.ts";
@@ -58,6 +59,18 @@ export function applyExtractionCandidates(
     // The Bot saved this note itself in the same turn and its receipt is already shown.
     if (candidate.action === "update" && candidate.id && receipt?.noted?.has(candidate.id)) {
       counts.reasons.candidate_duplicate = (counts.reasons.candidate_duplicate ?? 0) + 1;
+      continue;
+    }
+    const repeated = memory.extractionRepeats(
+      row.botId,
+      row.conversationId,
+      candidate.text,
+      candidate.id,
+      receipt?.replyId,
+    );
+    if (repeated) {
+      const code = repeated === "undone" ? "candidate_undone" : "candidate_duplicate";
+      counts.reasons[code] = (counts.reasons[code] ?? 0) + 1;
       continue;
     }
     try {
@@ -125,20 +138,8 @@ export function keepIdentifiers(text: string, source: string): string {
 export function extractionErrorCode(error: unknown): string {
   if (error instanceof Error && ["ZodError", "SyntaxError", "TypeError"].includes(error.name))
     return "draft_invalid";
-  const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
-  const allowed = new Set([
-    "no_model",
-    "auth_failed",
-    "output_limit",
-    "aborted",
-    "context_too_large",
-    "budget_exhausted",
-    "provider_error",
-    "rate_limited",
-    "timeout",
-    "network_error",
-  ]);
-  return allowed.has(code) ? code : "extraction_failed";
+  const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+  return AgentErrorCodeSchema.safeParse(code).data ?? "extraction_failed";
 }
 
 export function candidateErrorCode(error: unknown): string {

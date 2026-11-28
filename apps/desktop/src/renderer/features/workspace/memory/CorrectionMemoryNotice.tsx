@@ -13,5 +13,5 @@ export function CorrectionMemoryNotice({
   message: Message;
 }) {
   const notices = useMemoryNotices(peer, botId, message.conversationId);
-  return <MessageMemoryNotices notices={notices} messageId={message.id} />;
+  return <MessageMemoryNotices notices={notices} message={message} />;
 }

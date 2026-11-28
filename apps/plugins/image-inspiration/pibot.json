@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "id": "image-inspiration",
+  "order": 80,
+  "card": {
+    "name": {
+      "zh": "生图灵感库",
+      "en": "Image Inspiration Library"
+    },
+    "category": "local",
+    "platforms": ["darwin", "win32", "linux"],
+    "description": {
+      "zh": "在本地查找 MIT 图像风格与版式提示词模板",
+      "en": "Search bundled MIT-licensed image style and layout prompt templates"
+    },
+    "modes": [
+      {
+        "id": "local",
+        "auth": "none",
+        "capability": {
+          "zh": "模板保存在本地，检索无需插件密钥。非英文搜索词可能由你配置的模型翻译。使用在线模型时，搜索词会发送给模型提供商。",
+          "en": "The catalog is stored locally and needs no plugin key. Pi Bot may translate non-English queries with your configured model. An online model receives the search query."
+        },
+        "help": {
+          "zh": "内置 MIT 开源图像提示词与风格模板，启用后 Bot 可在生成风格化图片前检索参考版式、光线与构图。",
+          "en": "Bundles MIT-licensed image prompt templates. Enable it so Bots can search style, layout, and lighting references before generating stylised images."
+        },
+        "documentationUrl": "https://github.com/freestylefly/awesome-gpt-image-2"
+      }
+    ]
+  },
+  "mcp": {
+    "presets": {
+      "local": {
+        "id": "image-inspiration",
+        "transport": "stdio",
+        "fixedService": "image-inspiration",
+        "env": {},
+        "auth": {
+          "kind": "none"
+        },
+        "networkDomains": []
+      }
+    },
+    "readOnlyTools": ["inspiration_search", "inspiration_get"],
+    "disabledTools": [],
+    "draftBindings": [],
+    "trusted": {
+      "stdio": {}
+    },
+    "toolDescriptions": {
+      "inspiration_search": {
+        "zh": "按关键词、风格（style）、版式（layout）和主题（theme）检索本地图像提示词与风格模板库，返回候选列表与来源许可。",
+        "en": "Search the bundled image prompt and style-template library by query, style, layout, and theme filters; returns bounded matches with source provenance and license."
+      },
+      "inspiration_get": {
+        "zh": "按 id 读取一条图像提示词或风格模板的完整内容、使用指导与来源许可信息。",
+        "en": "Fetch the full prompt, guidance, and source provenance for one inspiration entry by id."
+      }
+    }
+  }
+}

@@ -6,6 +6,7 @@
  */
 import { rulesGuard, type UserBrowser } from "@pibot/browser/host";
 import { inboxTotal } from "@pibot/client-core";
+import { matchesFileIdentity } from "@pibot/execution/file-identity";
 import { createTranslator, resolveLanguage } from "@pibot/i18n";
 import { detectKnowledge, openKnowledgeNote } from "@pibot/plugins/host";
 import {
@@ -37,8 +38,10 @@ import {
 } from "electron";
 import { createUserBrowser } from "../browser-extension/user-browser.ts";
 import { registerHostRpc } from "../host/host-rpc.ts";
+import { trashKnowledgeNote } from "../host/knowledge-trash.ts";
+import { trashOnLinux } from "../host/linux-trash.ts";
 import { createLinkBridge } from "../link-bridge/index.ts";
-import { loginItemSyncEnabled } from "../window/login-item-scope.ts";
+import { desktopRegistrationSkipReason } from "../window/login-item-scope.ts";
 import { createBackgroundControl } from "./background-control.ts";
 import { forkBrainProcess } from "./brain-process.ts";
 import { createBrainWakeBridge } from "./brain-wake-bridge.ts";
@@ -116,10 +119,11 @@ export function startBrainHost(options: BrainHostOptions) {
   let userBrowser: Awaited<ReturnType<typeof createUserBrowser>> | undefined;
   const userBrowserReady = createUserBrowser({
     dataDir: options.dataDir,
-    // Same rule as login items: only the platform default folder acts for the whole account.
-    defaultDataDir: loginItemSyncEnabled({ dev: options.dev, env: options.originalEnv }),
+    registrationSkipReason: desktopRegistrationSkipReason({
+      dev: options.dev,
+      env: options.originalEnv,
+    }),
     executable: process.execPath,
-    ...(app.isPackaged ? {} : { entry: app.getAppPath() }),
     logger: options.logger,
     fallback: (botId, runId) =>
       void mainPeer?.call("browserExtension.fallback", { botId, runId }).catch(() => undefined),
@@ -371,6 +375,16 @@ export function startBrainHost(options: BrainHostOptions) {
       // The scan reads Obsidian's own vault list and checks the two apps' install
       // locations; it never opens a vault or Notion's data.
       knowledge: {
+        trashNote: (params, signal) =>
+          trashKnowledgeNote(
+            params,
+            signal,
+            (path) => shell.trashItem(path),
+            process.platform === "linux"
+              ? (path) =>
+                  trashOnLinux(path, app.getPath("home"), options.originalEnv.XDG_DATA_HOME, signal)
+              : undefined,
+          ),
         detect: () =>
           detectKnowledge({
             platform: process.platform,
@@ -387,8 +401,24 @@ export function startBrainHost(options: BrainHostOptions) {
             env: (name) => options.originalEnv[name],
             params,
             signal,
+            matchesFileIdentity,
             confirm: () => confirm(params.requestId),
             openExternal: (url) => shell.openExternal(url),
+            revealFile: async (path, revealSignal) => {
+              // The knowledge host has just proved this exact file. Keep the side effect a
+              // file reveal without a second lookup that could reclassify it as a folder.
+              revealSignal.throwIfAborted();
+              shell.showItemInFolder(path);
+            },
+            hasObsidianHandler: () => {
+              try {
+                return typeof app.getApplicationNameForProtocol === "function"
+                  ? app.getApplicationNameForProtocol("obsidian://open").trim().length > 0
+                  : true;
+              } catch {
+                return false;
+              }
+            },
           }),
       },
       routines: {
@@ -580,6 +610,7 @@ export function startBrainHost(options: BrainHostOptions) {
       processHandle.postMessage(
         {
           dataDir: options.dataDir,
+          dataDirDisplayPath: options.dataDirDisplayPath,
           resourcesDir: options.resourcesDir,
           version: app.getVersion(),
           platform: process.platform,
@@ -777,8 +808,7 @@ export function startBrainHost(options: BrainHostOptions) {
         }
       }
       stopped = true;
-      // Started now, awaited last: a separate copy removes its own native host manifests before
-      // it exits, without holding up the brain's retirement.
+      // Close the extension server alongside the brain's retirement.
       const browserClosed = userBrowserReady.then((value) => value?.close()).catch(() => undefined);
       if (!options.storage) storage.dispose();
       remotePower.end();

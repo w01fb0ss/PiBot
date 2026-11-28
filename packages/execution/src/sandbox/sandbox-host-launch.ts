@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { childNodeRuntime, unpackedPath } from "../runtime/child-node.ts";
 import { SANDBOX_HOST_DIR } from "./sandbox-config.ts";
+import { sandboxLauncherPath } from "./sandbox-environment.ts";
 import { SANDBOX_PAYLOAD_BYTES } from "./sandbox-host-payload.ts";
 
 /** Longest socket name SRT puts in the host's TMPDIR: `/claude-socks-<16 hex>.sock` (Linux). */
@@ -20,9 +21,9 @@ export interface SandboxHostPayload {
   command: string;
   commandId: string;
   cwd: string;
-  shell: string;
   env: NodeJS.ProcessEnv;
   foreground?: boolean;
+  isolationProbe?: true;
   waitForDispatch?: boolean;
   /** MCP stdio server: the command's stdin/stdout are pipe fds 4/5, not the job log. */
   stdioServer?: boolean;
@@ -49,7 +50,6 @@ function hostScript() {
 export async function prepareSandboxHost(options: {
   tempDir: string;
   systemHome: string;
-  commandEnv: NodeJS.ProcessEnv;
   /** Dev-probe seam: run this host script instead of the built-in sandbox host. */
   scriptPath?: string;
   args?: string[];
@@ -64,9 +64,10 @@ export async function prepareSandboxHost(options: {
       ? await mkdtemp(join(parent, "h"))
       : await mkdtemp(join(await realpath("/tmp"), "pibot-srt-"));
   const env: NodeJS.ProcessEnv = {
-    PATH: options.commandEnv.PATH,
+    PATH: sandboxLauncherPath(process.platform),
     HOME: options.systemHome,
-    LANG: options.commandEnv.LANG,
+    LANG: "C",
+    LC_ALL: "C",
     TMPDIR: dir,
   };
   return {

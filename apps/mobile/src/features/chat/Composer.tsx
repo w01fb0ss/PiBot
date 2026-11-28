@@ -1,6 +1,6 @@
 import type { Bot } from "@pibot/protocol";
 import type { ReactNode } from "react";
-import { Pressable, Text, TextInput, View } from "react-native";
+import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useText } from "../../runtime/context.tsx";
 import { usePageTint } from "../../theme/page-tint.tsx";
@@ -171,6 +171,13 @@ export function Composer({
     insets = useSafeAreaInsets(),
     tone = tintOf(colors, usePageTint());
   const empty = !text.trim() && !attached;
+  const suggestionPreview = !text && suggestion?.text;
+  const inputText = {
+    paddingHorizontal: 4,
+    paddingVertical: 8,
+    fontSize: 16,
+    lineHeight: 22,
+  };
   return (
     <View
       style={{
@@ -202,28 +209,30 @@ export function Composer({
         ]}
       >
         <Round label={t("moreActions")} icon="plus" onPress={onPlus} />
-        <TextInput
-          value={text}
-          onChangeText={onChangeText}
-          onSelectionChange={(event) => onCaret?.(event.nativeEvent.selection.end)}
-          multiline
-          maxLength={8000}
-          placeholder={suggestion?.text ?? placeholder}
-          placeholderTextColor={colors.text2}
-          accessibilityLabel={placeholder}
-          style={{
-            flex: 1,
-            minWidth: 0,
-            minHeight: 38,
-            maxHeight: 110,
-            paddingHorizontal: 4,
-            paddingTop: 8,
-            paddingBottom: 8,
-            color: colors.text,
-            fontSize: 16,
-            lineHeight: 22,
-          }}
-        />
+        <View style={{ flex: 1, minWidth: 0 }}>
+          {/* Android measures a multiline native hint as an empty input. Let the visible
+              suggestion size the field so partial lines cannot be cut off by the pill. */}
+          {!!suggestionPreview && (
+            <Text accessible={false} numberOfLines={3} style={[inputText, { color: colors.text2 }]}>
+              {suggestionPreview}
+            </Text>
+          )}
+          <TextInput
+            value={text}
+            onChangeText={onChangeText}
+            onSelectionChange={(event) => onCaret?.(event.nativeEvent.selection.end)}
+            multiline
+            maxLength={8000}
+            placeholder={suggestionPreview ? undefined : placeholder}
+            placeholderTextColor={colors.text2}
+            accessibilityLabel={placeholder}
+            style={[
+              inputText,
+              { minHeight: 38, maxHeight: 110, color: colors.text },
+              suggestionPreview ? StyleSheet.absoluteFill : undefined,
+            ]}
+          />
+        </View>
         {suggestion ? (
           <Pressable
             accessibilityRole="button"

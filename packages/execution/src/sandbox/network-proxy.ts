@@ -6,22 +6,68 @@ import {
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
-import type { AddressInfo, Socket } from "node:net";
+import { type AddressInfo, BlockList, isIP, type Socket } from "node:net";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
+import {
+  CONNECTOR_NETWORK_WAIT_MS,
+  type ConnectorNetworkFilter,
+  connectorNetworkRefusal,
+  connectorPrivateDnsAnswer,
+} from "./connector-network.ts";
 import { dialTarget } from "./network-dial.ts";
 import { checkedTarget, listedTarget, targetAllowed, targetUrl } from "./network-target.ts";
+
+function proxyBypass(value = "") {
+  const cidr = new BlockList();
+  const names: { host: string; port?: number }[] = [];
+  for (const rule of value
+    .toLowerCase()
+    .split(/[\s,]+/)
+    .filter(Boolean)) {
+    if (rule === "*") return () => true;
+    if (rule.includes("/")) {
+      const [host, bits, extra] = rule.split("/");
+      const address = host?.replace(/^\[|\]$/g, "") ?? "";
+      const family = isIP(address);
+      if (
+        family &&
+        bits &&
+        /^\d+$/.test(bits) &&
+        extra === undefined &&
+        Number(bits) <= (family === 6 ? 128 : 32)
+      )
+        cidr.addSubnet(address, Number(bits), family === 6 ? "ipv6" : "ipv4");
+      continue;
+    }
+    const match = /^(\[[^\]]+\]|[^:]+)(?::(\d+))?$/.exec(rule);
+    const host = (isIP(rule) ? rule : match?.[1])?.replace(/^\*?\.|^\[|\]$|\.$/g, "");
+    if (host) names.push({ host, ...(match?.[2] ? { port: Number(match[2]) } : {}) });
+  }
+  return (host: string, port: number, address = host) => {
+    const family = isIP(address);
+    return (
+      (family !== 0 && cidr.check(address, family === 6 ? "ipv6" : "ipv4")) ||
+      names.some(
+        (rule) =>
+          (rule.port === undefined || rule.port === port) &&
+          (host === rule.host || (!isIP(rule.host) && host.endsWith(`.${rule.host}`))),
+      )
+    );
+  };
+}
 
 /** One authenticated parent proxy per SRT host, including its SOCKS-to-HTTP tunnels. */
 export async function createSandboxNetwork(
   config: SandboxRuntimeConfig,
   privateNetworkHosts?: readonly string[],
+  connectorFilter?: ConnectorNetworkFilter,
 ) {
   const original = config.network.parentProxy;
-  const upstream = original?.http || original?.https || undefined;
+  const bypass = proxyBypass(original?.noProxy);
   const allowed = [...config.network.allowedDomains];
   // A command's website list grants public destinations only. Keep per-run private consent
   // separate; profiles outside the command runner retain their own domain semantics.
-  const privateHosts = [...(privateNetworkHosts ?? allowed)];
+  const privateHosts = connectorFilter ? [] : [...(privateNetworkHosts ?? allowed)];
   const authorization = Buffer.from(
     `Basic ${Buffer.from(`pibot:${randomBytes(32).toString("hex")}`).toString("base64")}`,
   );
@@ -40,25 +86,64 @@ export async function createSandboxNetwork(
     return value.length === authorization.length && timingSafeEqual(value, authorization);
   };
   const dial = async (value: string, tunnel: boolean, signal: AbortSignal) => {
-    const { url, host, port } = targetUrl(value, tunnel);
+    let target: ReturnType<typeof targetUrl>;
+    try {
+      target = targetUrl(value, tunnel);
+    } catch (error) {
+      if (connectorFilter && !tunnel) {
+        const url = new URL(value);
+        const host = url.hostname
+          .replace(/^\[|\]$/gu, "")
+          .toLowerCase()
+          .replace(/\.$/u, "");
+        if (host && url.protocol !== "http:" && url.protocol !== "https:")
+          await connectorFilter({ host, port: Number(url.port || 80), refusal: "scheme" }, signal);
+      }
+      throw error;
+    }
+    const { url, host, port } = target;
+    const parent = tunnel ? original?.https || original?.http : original?.http || original?.https;
+    const upstream = bypass(host, port) ? undefined : parent || undefined;
+    const refusal = connectorFilter && connectorNetworkRefusal(host);
+    if (refusal) {
+      await connectorFilter?.({ host, port, refusal }, signal);
+      throw new Error("private_address");
+    }
     const address = await checkedTarget(
       host,
       port,
       privateHosts,
       // Only a separately approved destination may rely on the user's proxy to resolve it.
-      !!upstream && (privateNetworkHosts === undefined || listedTarget(host, port, privateHosts)),
+      !connectorFilter &&
+        !!upstream &&
+        (privateNetworkHosts === undefined || listedTarget(host, port, privateHosts)),
       signal,
-    );
+      connectorFilter ? connectorPrivateDnsAnswer : undefined,
+    ).catch(async (error) => {
+      signal.throwIfAborted();
+      await connectorFilter?.(
+        {
+          host,
+          port,
+          refusal:
+            error instanceof Error && error.message === "private_address" ? "private" : "dns",
+        },
+        signal,
+      );
+      throw error;
+    });
+    if (connectorFilter && !(await connectorFilter({ host, port }, signal)))
+      throw new Error("connector_network_denied");
     signal.throwIfAborted();
     return {
       url,
       socket: await dialTarget({
         // Pin the checked address even through an upstream; a second DNS lookup could map a
         // saved public domain to a private address that was never approved for this run.
-        host: privateNetworkHosts === undefined ? host : address,
+        host: !connectorFilter && privateNetworkHosts === undefined ? host : address,
         address,
         port,
-        upstream,
+        upstream: bypass(host, port, address) ? undefined : upstream,
         signal,
         track,
       }),
@@ -71,6 +156,7 @@ export async function createSandboxNetwork(
       .finally(() => active.delete(pending));
     active.add(pending);
   };
+  const setupBudget = connectorFilter ? CONNECTOR_NETWORK_WAIT_MS : 20_000;
   const server = createServer((req, res) => {
     if (!authenticated(req)) {
       res.writeHead(407).end();
@@ -88,7 +174,7 @@ export async function createSandboxNetwork(
     const cancelled = new AbortController();
     const setup = new AbortController();
     const started = performance.now();
-    let timer = setTimeout(() => setup.abort(), 20_000);
+    let timer = setTimeout(() => setup.abort(), setupBudget);
     let receivedHeaders = false;
     const abort = () => cancelled.abort();
     res.once("close", abort);
@@ -98,7 +184,7 @@ export async function createSandboxNetwork(
       const target = await dial(req.url ?? "", false, signal);
       socket = target.socket;
       clearTimeout(timer);
-      const headerBudget = Math.max(0, 20_000 - (performance.now() - started));
+      const headerBudget = Math.max(0, setupBudget - (performance.now() - started));
       const headers: IncomingHttpHeaders = { ...req.headers, host: target.url.host };
       delete headers["proxy-authorization"];
       delete headers["proxy-connection"];
@@ -153,7 +239,7 @@ export async function createSandboxNetwork(
         const signal = AbortSignal.any([
           lifetime.signal,
           cancelled.signal,
-          AbortSignal.timeout(20_000),
+          AbortSignal.timeout(setupBudget),
         ]);
         try {
           const { socket } = await dial(req.url ?? "", true, signal);
@@ -217,6 +303,19 @@ export async function createSandboxNetwork(
           // canonical hosts. Normalize inet_aton, trailing dots and mapped IPv6 identically.
           const authority = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
           const target = targetUrl(`http://${authority}:${port}`);
+          if (connectorFilter) {
+            // SRT bypasses its parent proxy for loopback. Refuse local literals and names here;
+            // the authenticated parent is the decision point for every public request.
+            const refusal = connectorNetworkRefusal(target.host);
+            if (refusal) {
+              await connectorFilter(
+                { host: target.host, port: target.port, refusal },
+                AbortSignal.any([lifetime.signal, AbortSignal.timeout(1000)]),
+              );
+              return { allow: false as const, reason: "pibot_connector_network_denied" };
+            }
+            return !lifetime.signal.aborted;
+          }
           if (lifetime.signal.aborted || !targetAllowed(target.host, target.port, privateHosts))
             return false;
           if (!allowAll && !listedTarget(target.host, target.port, allowed))

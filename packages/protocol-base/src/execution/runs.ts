@@ -56,6 +56,8 @@ export const GroupCycleSchema = z.strictObject({
   cycleId: IdSchema.nullable(),
   rounds: z.number().int().nonnegative(),
   limited: z.boolean(),
+  /** Identifies one automatic round-limit stop, even if the same cycle later hits it again. */
+  roundLimitId: IdSchema.optional(),
   /** Structured hand-offs this cycle (their own cap, not the automatic rounds). */
   handoffs: z.number().int().nonnegative().optional(),
 });

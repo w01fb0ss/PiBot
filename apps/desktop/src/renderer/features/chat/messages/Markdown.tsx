@@ -1,6 +1,7 @@
 import type { TranslationKey } from "@pibot/i18n";
 import { RpcError } from "@pibot/protocol";
-import { useAction, useRpc, useT } from "@pibot/renderer-kit";
+import { useAction, useNavigation, useRpc, useT } from "@pibot/renderer-kit";
+import { useState } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useTopicReference } from "../../../app/topic-reference.tsx";
@@ -50,9 +51,20 @@ export function obsidianReference(href: string | undefined) {
     if (url.pathname !== "" && url.pathname !== "/") return undefined;
     if (url.username || url.password || url.port || url.hash) return undefined;
     const keys = [...url.searchParams.keys()];
-    if (keys.length !== 2 || !keys.includes("vault") || !keys.includes("file")) return undefined;
+    const vaultCount = keys.filter((key) => key === "vault").length;
+    const fileCount = keys.filter((key) => key === "file").length;
+    const sourceCount = keys.filter((key) => key === "source").length;
+    if (
+      vaultCount !== 1 ||
+      fileCount !== 1 ||
+      sourceCount > 1 ||
+      keys.length !== vaultCount + fileCount + sourceCount
+    )
+      return undefined;
     const vault = url.searchParams.get("vault");
     const file = url.searchParams.get("file");
+    const source = sourceCount === 1 ? url.searchParams.get("source") : undefined;
+    if (sourceCount === 1 && !source) return undefined;
     return vault && file ? { href } : undefined;
   } catch {
     return undefined;
@@ -172,8 +184,12 @@ function referenceError(error: unknown): TranslationKey {
       return "knowledge.error.reference_missing";
     case "knowledge_reference_invalid":
       return "knowledge.error.reference_invalid";
+    case "knowledge_reference_ambiguous":
+      return "knowledge.error.reference_ambiguous";
     case "knowledge_reference_changed":
       return "knowledge.error.reference_changed";
+    case "knowledge_vault_changed":
+      return "knowledge.error.vault_changed";
     case "knowledge_reference_reselect":
       return "knowledge.error.reference_reselect";
     case "knowledge_reference_unsupported":
@@ -203,7 +219,12 @@ function NoteReference({
 }) {
   const t = useT();
   const { peer } = useRpc();
+  const { openPage, navigate } = useNavigation();
   const action = useAction();
+  const [revealNote, setRevealNote] = useState<TranslationKey>();
+  const needsRepoint =
+    action.error === "knowledge.error.vault_changed" ||
+    action.error === "knowledge.error.reference_reselect";
   return (
     <>
       <button
@@ -213,15 +234,22 @@ function NoteReference({
         disabled={action.busy || !peer}
         onClick={() => {
           if (!peer) return;
-          void action.run(
-            (signal) =>
-              peer.call(
-                "knowledge.openReference",
-                { messageId, href },
-                { signal, timeoutMs: 30_000 },
-              ),
-            referenceError,
-          );
+          setRevealNote(undefined);
+          void action
+            .run(
+              (signal) =>
+                peer.call(
+                  "knowledge.openReference",
+                  { messageId, href },
+                  { signal, timeoutMs: 30_000 },
+                ),
+              referenceError,
+            )
+            .then((result) => {
+              if (result?.method === "revealed" && result.fallbackReason) {
+                setRevealNote(`knowledge.revealed.${result.fallbackReason}` as TranslationKey);
+              }
+            });
         }}
       >
         {children}
@@ -229,7 +257,39 @@ function NoteReference({
           {t(action.busy ? "knowledge.openingNote" : "knowledge.openNote")}
         </span>
       </button>
-      {action.error ? <span className={styles.noteError}>{t(action.error)}</span> : null}
+      {action.error ? (
+        <span className={styles.noteError}>
+          {t(action.error)}
+          {needsRepoint && peer && (
+            <>
+              {" "}
+              <button
+                type="button"
+                className={styles.noteReference}
+                disabled={action.busy}
+                onClick={() => {
+                  setRevealNote(undefined);
+                  void action
+                    .run(
+                      (signal) =>
+                        peer.call("knowledge.repointReference", { messageId, href }, { signal }),
+                      referenceError,
+                    )
+                    .then((result) => {
+                      if (!result) return;
+                      openPage("connectors");
+                      navigate({ name: "connectors", knowledgeSourceId: result.sourceId });
+                    });
+                }}
+              >
+                {t("knowledge.openKnowledge")}
+              </button>
+            </>
+          )}
+        </span>
+      ) : revealNote ? (
+        <span className={styles.noteAction}>{t(revealNote)}</span>
+      ) : null}
     </>
   );
 }

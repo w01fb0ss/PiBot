@@ -258,3 +258,12 @@
   font-size: 13px;
   overflow-wrap: anywhere;
 }
+
+.deviceDetails {
+  padding: 4px 16px 8px;
+  color: var(--text2);
+  font-size: 13px;
+}
+.deviceDetails summary {
+  cursor: pointer;
+}

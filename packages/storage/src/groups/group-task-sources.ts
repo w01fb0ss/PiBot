@@ -6,6 +6,7 @@ import {
   type KernelMethodResults,
 } from "@pibot/protocol-base";
 import { ConversationsRepo } from "../conversations/conversations.ts";
+import { modelOverrideProjection } from "../database/model-override.ts";
 import { GroupHandoffsRepo } from "./group-handoffs.ts";
 
 export class GroupTaskSourcesRepo {
@@ -30,7 +31,7 @@ export class GroupTaskSourcesRepo {
       WHERE t.id=?`)
       .run(messageId, taskId);
   }
-  decorate(row: Record<string, unknown>) {
+  decorate({ modelOverride, ...row }: Record<string, unknown>) {
     const source = this.db
       .prepare(`SELECT s.kind,s.message_id AS messageId,
       s.conversation_id AS conversationId,s.batch_message_id AS batchMessageId,
@@ -46,6 +47,7 @@ export class GroupTaskSourcesRepo {
     const handoff = new GroupHandoffsRepo(this.db).view(String(row.id));
     return GroupTaskSchema.parse({
       ...row,
+      ...modelOverrideProjection(modelOverride),
       ...(handoff ? { handoff } : {}),
       activity: this.activity(
         String(row.id),
@@ -129,6 +131,9 @@ export class GroupTaskSourcesRepo {
     )
       return { state: "paused" };
     if (run?.status === "queued") return { state: "waiting" };
+    // A request too large for the model's window reads like a full context, with the same retry.
+    if (open && run?.status === "error" && run.error_code === "context_too_large")
+      return this.contextFullStop(taskId);
     return run?.status === "error"
       ? {
           state: "error",
@@ -148,6 +153,12 @@ export class GroupTaskSourcesRepo {
         json_extract(usage,'$.executionPause.reads') AS reads FROM messages WHERE id=?`)
       .get(messageId);
     if (pause?.observation !== "compaction_no_progress") return { state: "open" };
+    return this.contextFullStop(
+      taskId,
+      typeof pause.reads === "string" && pause.reads ? pause.reads : undefined,
+    );
+  }
+  private contextFullStop(taskId: string, reads?: string) {
     const step = this.db
       .prepare(
         "SELECT workflow_run_id,step_id FROM group_workflow_steps WHERE task_id=? AND status='blocked' LIMIT 1",
@@ -157,9 +168,7 @@ export class GroupTaskSourcesRepo {
       state: "open",
       stop: {
         code: "context_full",
-        ...(typeof pause.reads === "string" && pause.reads
-          ? { reading: pause.reads.slice(0, 300) }
-          : {}),
+        ...(reads ? { reading: reads.slice(0, 300) } : {}),
         ...(step
           ? { workflowRunId: String(step.workflow_run_id), stepId: String(step.step_id) }
           : {}),
@@ -201,6 +210,25 @@ export class GroupTaskSourcesRepo {
       GROUP BY s.batch_message_id`)
           .all(params.groupId, ...ids)
       : [];
+    // A plan's line counts what its card counts: settled steps (passed or skipped) of the live
+    // plan in its chain against all its steps, not the tasks dispatched so far ("2 / 3" under
+    // a card reading 2/4). A replaced plan follows its newest replacement, as the card does.
+    const plans = ids.length
+      ? this.db
+          .prepare(`SELECT w.source_message_id AS messageId,COUNT(step.step_id) AS count,
+      COALESCE(SUM(step.status IN ('passed','skipped')),0) AS done FROM group_workflow_runs w
+      JOIN group_workflow_steps step ON step.workflow_run_id=COALESCE((
+        SELECT latest.id FROM group_workflow_runs latest WHERE w.status='cancelled'
+        AND latest.group_id=w.group_id AND latest.cycle_id=w.cycle_id
+        AND latest.budget_root_run_id=w.budget_root_run_id
+        AND json_extract(latest.workflow_json,'$.source.kind')='dynamic'
+        ORDER BY latest.rowid DESC LIMIT 1),w.id)
+      WHERE w.group_id=? AND json_extract(w.workflow_json,'$.source.kind')='dynamic'
+      AND w.source_message_id IN (${ids.map(() => "?").join(",")})
+      GROUP BY w.id`)
+          .all(params.groupId, ...ids)
+      : [];
+    const planCounts = new Map(plans.map((r) => [String(r.messageId), r]));
     const collaborations = ids.length
       ? this.db
           .prepare(`SELECT p.message_id AS messageId,
@@ -214,11 +242,14 @@ export class GroupTaskSourcesRepo {
     return {
       openCount: Number(counts?.openCount ?? 0),
       closedCount: Number(counts?.closedCount ?? 0),
-      batches: batches.map((r) => ({
-        messageId: String(r.messageId),
-        count: Number(r.count),
-        done: Number(r.done),
-      })),
+      batches: batches.map((r) => {
+        const plan = planCounts.get(String(r.messageId)) ?? r;
+        return {
+          messageId: String(r.messageId),
+          count: Number(plan.count),
+          done: Number(plan.done),
+        };
+      }),
       collaborations: collaborations.map((r) => ({
         messageId: String(r.messageId),
         targetBotId: String(r.targetBotId),

@@ -94,7 +94,7 @@ export class GroupTopicsRepo {
     this.db.prepare("DELETE FROM group_workspace WHERE group_id=?").run(groupId);
     this.db.prepare("DELETE FROM group_folders WHERE group_id=?").run(groupId);
     const insert = this.db.prepare(
-      "INSERT INTO group_folders(id,group_id,path,location,created_at,position) VALUES(?,?,?,?,?,?)",
+      "INSERT INTO group_folders(id,group_id,path,location,created_at,position,display_path) VALUES(?,?,?,?,?,?,?)",
     );
     target.folders.forEach((folder, index) => {
       insert.run(
@@ -104,6 +104,7 @@ export class GroupTopicsRepo {
         folder.location ?? "local",
         new Date().toISOString(),
         index,
+        folder.displayPath,
       );
     });
     this.db
@@ -163,14 +164,16 @@ export class GroupTopicsRepo {
   }
   setWorkspace(
     groupId: string,
-    folders: Pick<NonNullable<Group["folders"]>[number], "id" | "path" | "location">[],
+    folders: (Pick<NonNullable<Group["folders"]>[number], "id" | "path" | "location"> & {
+      displayPath?: string;
+    })[],
     primary: string | null,
     revision = 0,
   ) {
     this.db.prepare("DELETE FROM group_workspace WHERE group_id=?").run(groupId);
     this.db.prepare("DELETE FROM group_folders WHERE group_id=?").run(groupId);
     const insert = this.db.prepare(
-      "INSERT INTO group_folders(id,group_id,path,location,created_at,position) VALUES(?,?,?,?,?,?)",
+      "INSERT INTO group_folders(id,group_id,path,location,created_at,position,display_path) VALUES(?,?,?,?,?,?,?)",
     );
     folders.forEach((folder, index) => {
       insert.run(
@@ -180,6 +183,7 @@ export class GroupTopicsRepo {
         folder.location ?? "local",
         new Date().toISOString(),
         index,
+        folder.displayPath ?? null,
       );
     });
     this.db

@@ -11,7 +11,9 @@ import {
   type GitInitialization,
   gitDirectoryCreationCommand,
   gitInitArguments,
+  quoteGitInitWord,
 } from "./git-init-args.ts";
+import { findGit } from "./git-process.ts";
 
 interface Directory {
   path: string;
@@ -51,8 +53,11 @@ export async function prepareGitInitialization(
   options: ExecOptions,
   signal: AbortSignal,
 ) {
-  const parsed = gitInitArguments(request.argv, input.cwd, request.program);
+  const cwd = resolve(input.cwd, request.directory ?? ".");
+  const parsed = gitInitArguments(request.argv, cwd, request.program);
   if (!parsed) return undefined;
+  const executable = request.program === "git" ? await findGit(options) : request.program;
+  if (!executable) throw new ExecError("git_unavailable");
   if (options.platform !== "darwin" && options.platform !== "linux")
     throw new ExecError("isolation_unavailable");
   if (typeof request.assertAuthorized !== "function") throw new ExecError("invalid_input");
@@ -73,6 +78,9 @@ export async function prepareGitInitialization(
   await verifyWorkspace([primary], signal);
   const root = await checkedRoot(primary.canonicalPath);
   const writes = await Promise.all(input.writeRoots.map(checkedRoot));
+  const realExecutable = await realpath(executable);
+  if (writes.some((path) => within(path, executable) || within(path, realExecutable)))
+    throw new ExecError("outside_workplace");
   const target = parsed.target;
   const gitDir = join(target, ".git");
   const setupWriteRoot = writes
@@ -109,6 +117,15 @@ export async function prepareGitInitialization(
   if (!reads.permitsWriteRoot(target) || !reads.permitsWriteRoot(gitDir))
     throw new ExecError("outside_workplace");
   const held: Directory[] = [];
+  async function configExists() {
+    try {
+      await lstat(join(gitDir, "config"));
+      return true;
+    } catch (error) {
+      if (!missing(error)) throw error;
+      return false;
+    }
+  }
   async function check() {
     signal.throwIfAborted();
     request.assertAuthorized();
@@ -174,7 +191,10 @@ export async function prepareGitInitialization(
     }
     let ready = completed === paths.length;
     return {
-      ...parsed,
+      cwd,
+      command: `cd -- ${quoteGitInitWord(cwd)} && exec ${[realExecutable, ...parsed.argv].map(quoteGitInitWord).join(" ")}`,
+      remainder: request.remainder,
+      existingConfig: ready && (await configExists()),
       gitDir,
       setupWriteRoot,
       setupCommand: ready ? undefined : gitDirectoryCreationCommand(gitDir),
@@ -197,6 +217,9 @@ export async function prepareGitInitialization(
         signal.throwIfAborted();
         request.assertAuthorized();
         if (!ready) throw new ExecError("isolation_unavailable");
+      },
+      async checkFreshConfig() {
+        if (await configExists()) throw new ExecError("outside_workplace");
       },
     };
   } catch (error) {

@@ -1,6 +1,6 @@
 // Coordinates scheduled and owner-initiated organization without concurrent model calls.
 import type { DatabaseSync } from "node:sqlite";
-import type { MemoryDraftRequest } from "@pibot/agent";
+import type { MemoryDraftRequest, MemoryDraftResult } from "@pibot/agent";
 import type { BrainRedactor } from "@pibot/brain/kit";
 import { RpcError } from "@pibot/protocol-base";
 import { BotsRepo, MemoryOrganizationsRepo, memoryMaintenanceUsage } from "@pibot/storage";
@@ -20,11 +20,7 @@ export interface OrganizationDeps {
   statusChanged?(botId: string): void;
   isIdle(): boolean;
   automatic?(): boolean;
-  draftMemories?: (request: MemoryDraftRequest) => Promise<{
-    draft: unknown;
-    tokens: number;
-    costUsd?: number;
-  }>;
+  draftMemories?: (request: MemoryDraftRequest) => Promise<MemoryDraftResult>;
 }
 
 /** A Bot's notes are organized at most this often per day, failures included. */
@@ -146,9 +142,12 @@ export class MemoryOrganizationQueue {
       lastDoneAt: string | null;
       lastAttemptAt: string | null;
       lastChangedAt: string | null;
+      pendingCount: number;
     },
     now: number,
   ) {
+    // Unanswered suggestions for these notes are still on screen; another pass only repeats them.
+    if (reason.pendingCount > 0) return undefined;
     if (reason.lastAttemptAt && now - Date.parse(reason.lastAttemptAt) < RETRY_MS) return undefined;
     if (reason.lastDoneAt && now - Date.parse(reason.lastDoneAt) < WINDOW_MS) return undefined;
     if (reason.activeCount > ORGANIZE_COUNT) return "count" as const;
@@ -185,6 +184,7 @@ export class MemoryOrganizationQueue {
     this.controller = new AbortController();
     try {
       this.enqueueDue();
+      const deferred = new Set<string>();
       while (!this.stopped && this.deps.isIdle()) {
         const limit = this.attempt.limit();
         // Extraction and organization draw on the same day budget: whichever cap is reached first
@@ -193,11 +193,12 @@ export class MemoryOrganizationQueue {
         if (used.costUsd >= limit.costUsd || used.tokens >= limit.tokens) break;
         const counts = this.repo.todayByBot(dayStart());
         const full = [...counts].filter(([, n]) => n >= RUNS_PER_BOT_DAY).map(([id]) => id);
-        const next = this.repo.claim(full);
+        const next = this.repo.claim([...full, ...deferred]);
         if (!next) break;
         const start = performance.now();
         try {
-          await this.attempt.process(next, this.controller.signal);
+          const result = await this.attempt.process(next, this.controller.signal);
+          if (result === "deferred") deferred.add(next.botId);
         } finally {
           logMemoryAttempt(this.deps, "organization", next, start);
         }

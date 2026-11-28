@@ -34,6 +34,21 @@ export function emitStep(
     denialReason?: string;
   } = {},
 ): void {
+  if (phase === "end" && state.directRunSaveRequested) {
+    this.local.approvals.audit.append({
+      botId: this.context.botId,
+      runId: this.context.runId,
+      kind: "permissions.changed",
+      summary: "Direct-run permission was not saved / 未保存直接运行授权",
+      detail: {
+        actor: "system",
+        reasonCode: "sandbox_outside_remember_not_saved",
+        approvalId: state.directRunSaveRequested,
+        toolCallId: state.call.id,
+      },
+    });
+    state.directRunSaveRequested = undefined;
+  }
   if (phase === "end" && extra.status) logToolResult(this, state, extra.status);
   // Only a failure reads its exit code; a "done" step may legitimately exit 1 (a search
   // with no matches). Counting that as a failed step would punish the exact behaviour we want.
@@ -71,6 +86,8 @@ export function emitStep(
       state.result?.summary ??
       toolSummary(state.call, this.local.deps.redactor, this.local.deps.capabilityTools),
     ...(codeAnalysisOf(state.result) ? { codeAnalysis: codeAnalysisOf(state.result) } : {}),
+    ...(state.settingsAction ? { settingsAction: state.settingsAction } : {}),
+    ...(state.inputTranslation ? { inputTranslation: state.inputTranslation } : {}),
     ...(state.yolo ? { yolo: { risk: state.yolo } } : {}),
     ...extra,
   });
@@ -180,6 +197,7 @@ export function blockedStep(
       finishedAt: new Date().toISOString(),
       performance: state.timing.finish(),
       ...(status === "blocked" && reasonCode ? { denialReason: reasonCode } : {}),
+      ...(state.settingsAction ? { settingsAction: state.settingsAction } : {}),
     });
   });
   state.finished = true;
@@ -245,6 +263,7 @@ export function activityStep(this: LocalRunOperations, event: LocalToolActivity)
       return;
     }
     const details = state.result?.details;
+    if (details?.settingsAction) state.settingsAction = details.settingsAction;
     const status = this.context.signal.aborted
       ? "aborted"
       : details?.userRejected
@@ -260,6 +279,7 @@ export function activityStep(this: LocalRunOperations, event: LocalToolActivity)
       performance: measured,
       ...(state.result?.summary ? { summary: state.result.summary } : {}),
       ...(codeAnalysisOf(state.result) ? { codeAnalysis: codeAnalysisOf(state.result) } : {}),
+      ...(state.settingsAction ? { settingsAction: state.settingsAction } : {}),
       status,
       finishedAt: new Date().toISOString(),
       exitCode: details?.exitCode ?? null,

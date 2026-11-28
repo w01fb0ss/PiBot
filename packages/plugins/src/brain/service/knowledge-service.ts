@@ -2,20 +2,27 @@ import { randomUUID } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
 import { basename, isAbsolute } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { isDeepStrictEqual } from "node:util";
 import { abortable, type BrainHost, type RegisterRpc } from "@pibot/brain/kit";
 import { fileIdentity } from "@pibot/execution";
 import {
   type EventPayloads,
   type KnowledgeAccount,
+  type KnowledgeConfig,
+  type KnowledgeNotionWriteTools,
+  type KnowledgeSource,
   type KnowledgeTargets,
+  type NotionWriteAction,
   type PluginMethodParams,
   type PluginMethodResults,
   RpcError,
   RpcErrorCodes,
 } from "@pibot/plugins-contract/full";
+import { transaction } from "@pibot/storage";
 import type { KnowledgeRepo } from "../../store/index.ts";
 import { knowledgeMissing } from "../../store/knowledge.ts";
-import type { VaultAccess } from "../knowledge/obsidian.ts";
+import { inspectLocalFolder } from "../knowledge/local-index.ts";
+import { obsidianVault, type VaultAccess } from "../knowledge/obsidian.ts";
 import {
   type ReferenceScope,
   referenceCandidate,
@@ -30,6 +37,8 @@ import {
 } from "../knowledge/open-reference.ts";
 
 export type Emit = <K extends keyof EventPayloads>(event: K, payload: EventPayloads[K]) => void;
+type LocalConfig = Extract<KnowledgeConfig, { kind: "folder" | "obsidian" }>;
+type FolderPreview = NonNullable<PluginMethodResults["knowledge.repoint"]["preview"]>;
 
 /**
  * Knowledge sources: the person's Obsidian vaults and Notion workspaces, registered as
@@ -39,6 +48,14 @@ export type Emit = <K extends keyof EventPayloads>(event: K, payload: EventPaylo
 export class KnowledgeService {
   /** A second dialog would race the first one and could insert the same vault twice. */
   private picking = false;
+  private folderChoice?: {
+    token: string;
+    expires: number;
+    source: KnowledgeSource;
+    recipients: FolderPreview["recipients"];
+    origin: LocalConfig;
+    selected: LocalConfig;
+  };
 
   constructor(
     private readonly deps: {
@@ -57,6 +74,11 @@ export class KnowledgeService {
         scope: Pick<ReferenceScope, "botId" | "runId" | "conversationId" | "groupId">,
         signal: AbortSignal,
       ): Promise<VaultAccess>;
+      /**
+       * The same `read_file`/`list_dir` gate and protected-path boundary for `knowledge.inspect`,
+       * so denied files stay outside PDF content extraction.
+       */
+      inspectAccess(targets: KnowledgeTargets, signal: AbortSignal): Promise<VaultAccess>;
       /** One audit row per click and its fixed outcome; never the note, path or href. */
       audit(entry: {
         botId: string;
@@ -83,6 +105,13 @@ export class KnowledgeService {
           input: { sourceId: string; connectorId: string; targets: KnowledgeTargets },
           signal: AbortSignal,
         ): Promise<KnowledgeAccount>;
+        /** How many Notion write tools exist and how many are enabled on the managed connector. */
+        writeToolsState?(
+          connectorId: string,
+          confirmed: NotionWriteAction[],
+        ): KnowledgeNotionWriteTools | undefined;
+        /** Enable or disable Notion's write tools on the managed connector after explicit user action. */
+        setWriteToolsEnabled?(connectorId: string, actions: NotionWriteAction[]): void;
       };
     },
   ) {}
@@ -105,13 +134,42 @@ export class KnowledgeService {
   get(params: PluginMethodParams["knowledge.get"]): PluginMethodResults["knowledge.get"] {
     const source = this.deps.repo.get(params.id);
     if (!source) knowledgeMissing();
-    return { source, origin: this.deps.repo.origin(params.id) };
+    const origin = this.deps.repo.origin(params.id);
+    const notionWriteTools =
+      origin.kind === "notion"
+        ? this.deps.notion.writeToolsState?.(origin.connectorId, origin.writeActions ?? [])
+        : undefined;
+    return {
+      source,
+      origin,
+      ...(notionWriteTools ? { notionWriteTools } : {}),
+    };
   }
 
   /**
-   * The Notion account of a source. A stored answer is returned as is; a read happens when
-   * none is stored or the person asked again (after sign-in, 重试). Answers that made no remote
-   * call (not signed in, no Bot given the source) are not kept, so the next open tries again.
+   * Read-only summary of a local source's folder identity and recognized/unsupported files.
+   * Returns null for non-local sources (Notion).
+   */
+  async inspect(
+    params: PluginMethodParams["knowledge.inspect"],
+    signal?: AbortSignal,
+  ): Promise<PluginMethodResults["knowledge.inspect"]> {
+    const source = this.deps.repo.get(params.id);
+    if (!source) knowledgeMissing();
+    const origin = this.deps.repo.origin(params.id);
+    if (origin.kind !== "obsidian" && origin.kind !== "folder") return { summary: null };
+    const operation = lifetime(this.deps.shutdown, signal);
+    const access = await this.deps.inspectAccess(source.targets, operation);
+    const summary = await inspectLocalFolder(obsidianVault(origin), access, {
+      db: this.deps.db,
+      sourceId: source.id,
+    });
+    return { summary };
+  }
+
+  /**
+   * Cache successful account details only. Every unavailable result may change after an
+   * assignment, policy or catalog change, including results cached by earlier versions.
    */
   async account(
     params: PluginMethodParams["knowledge.account"],
@@ -123,13 +181,20 @@ export class KnowledgeService {
     const origin = repo.origin(params.id);
     if (origin.kind !== "notion") return { account: null };
     const stored = repo.account(params.id);
-    if (stored && !params.refresh) return { account: stored };
+    if (stored?.status === "ok" && !params.refresh) return { account: stored };
+    const accountRevision = repo.accountRevision;
+    const operation = lifetime(this.deps.shutdown, signal);
     const account = await notion.account(
       { sourceId: source.id, connectorId: origin.connectorId, targets: source.targets },
-      lifetime(this.deps.shutdown, signal),
+      operation,
     );
-    if (account.reason !== "signin" && account.reason !== "no_bot")
-      repo.setAccount(source.id, account);
+    operation.throwIfAborted();
+    if (accountRevision !== repo.accountRevision) return { account: null };
+    if (repo.get(source.id)?.updatedAt === source.updatedAt) {
+      const currentOrigin = repo.origin(source.id);
+      if (currentOrigin.kind === "notion" && currentOrigin.connectorId === origin.connectorId)
+        repo.setAccount(source.id, account.status === "ok" ? account : null);
+    }
     return { account };
   }
 
@@ -192,38 +257,29 @@ export class KnowledgeService {
       // The host is a separate process; validate what it returns before treating it as a path.
       if (!isAbsolute(picked) || /[\p{Cc}\p{Cf}]/u.test(picked)) throw vaultInvalid();
       const vault = await vaultFolder(picked, pick);
-      // Picking the same vault again returns the existing record instead of a duplicate. If the
-      // folder was restored from a backup or replaced by a sync tool, its identity changed while
-      // the path stayed the same; refresh the stored identity instead of returning a record that
-      // every later read rejects as `knowledge_vault_changed`.
+      const localKind =
+        params.detectedPath !== undefined ? "obsidian" : (params.kind ?? "obsidian");
+      // A repeat Add opens the existing record so the person can review its grants before
+      // changing access or accepting a restored folder under those grants.
       const existing = repo.findObsidian(vault.path);
-      if (existing) {
-        const config = repo.origin(existing.id);
-        if (
-          config.kind === "obsidian" &&
-          config.device === vault.identity.device &&
-          config.inode === vault.identity.inode
-        )
-          return { source: existing };
-        const updated = repo.repoint(existing.id, {
-          kind: "obsidian",
-          path: vault.path,
-          device: vault.identity.device,
-          inode: vault.identity.inode,
-        });
-        this.deps.emit("knowledge.changed", { id: updated.id, reason: "updated" });
-        return { source: updated };
-      }
+      if (existing) return { source: existing, alreadyAdded: true };
+      const initialTargets: KnowledgeTargets = params.targets
+        ? {
+            all: params.targets.all ?? false,
+            bots: params.targets.bots,
+            groups: params.targets.groups,
+          }
+        : { all: false, bots: [], groups: [] };
       const source = repo.create({
-        kind: "obsidian",
+        kind: localKind,
         name: basename(vault.path) || vault.path,
         config: {
-          kind: "obsidian",
+          kind: localKind,
           path: vault.path,
           device: vault.identity.device,
           inode: vault.identity.inode,
         },
-        targets: { all: false, bots: [], groups: [] },
+        targets: initialTargets,
       });
       this.deps.emit("knowledge.changed", { id: source.id, reason: "added" });
       return { source };
@@ -233,12 +289,109 @@ export class KnowledgeService {
   }
 
   /**
+   * The picker stages one exact folder. A second user action confirms transferring the displayed
+   * assignments and edit setting to that folder.
+   */
+  async repoint(
+    params: PluginMethodParams["knowledge.repoint"],
+    signal?: AbortSignal,
+  ): Promise<PluginMethodResults["knowledge.repoint"]> {
+    if (params.confirmationToken)
+      return this.confirmFolder(params.id, params.confirmationToken, signal);
+    const { host, repo } = this.deps;
+    const source = repo.get(params.id);
+    if (!source) knowledgeMissing();
+    const origin = repo.origin(params.id);
+    if (origin.kind !== "obsidian" && origin.kind !== "folder") throw vaultInvalid();
+    const picker = host.pickFolder;
+    if (!picker) throw new RpcError(RpcErrorCodes.unsupported, "knowledge_picker_unavailable");
+    if (this.picking) throw new RpcError(RpcErrorCodes.busy, "knowledge_busy");
+    this.folderChoice = undefined;
+    this.picking = true;
+    try {
+      const lifetimeSignal = lifetime(this.deps.shutdown, signal);
+      const pick = AbortSignal.any([lifetimeSignal, AbortSignal.timeout(630_000)]);
+      const picked = await abortable(picker(pick, { create: false }), pick);
+      pick.throwIfAborted();
+      if (!picked) return { source: null };
+      if (!isAbsolute(picked) || /[\p{Cc}\p{Cf}]/u.test(picked)) throw vaultInvalid();
+      const vault = await vaultFolder(picked, pick);
+      const existing = repo.findObsidian(vault.path);
+      if (existing && existing.id !== source.id)
+        return { source: null, conflict: { id: existing.id, name: existing.name } };
+      const token = randomUUID();
+      const current = this.folderSource(source, origin);
+      const recipients = current.targets.all ? [] : repo.repointRecipients(current.id);
+      this.folderChoice = {
+        token,
+        expires: Date.now() + 5 * 60_000,
+        source: current,
+        recipients,
+        origin,
+        selected: { kind: origin.kind, path: vault.path, ...vault.identity },
+      };
+      return { source: null, preview: { token, path: vault.path, source: current, recipients } };
+    } finally {
+      this.picking = false;
+    }
+  }
+
+  private folderSource(source: KnowledgeSource, origin: LocalConfig): KnowledgeSource {
+    const current = this.deps.repo.get(source.id);
+    if (
+      !current ||
+      current.name !== source.name ||
+      current.writable !== source.writable ||
+      !isDeepStrictEqual(current.targets, source.targets) ||
+      !isDeepStrictEqual(this.deps.repo.origin(source.id), origin)
+    )
+      throw new RpcError(RpcErrorCodes.invalidParams, "knowledge_repoint_stale");
+    return current;
+  }
+
+  private async confirmFolder(id: string, token: string, signal?: AbortSignal) {
+    const choice = this.folderChoice;
+    if (
+      !choice ||
+      choice.source.id !== id ||
+      choice.token !== token ||
+      Date.now() >= choice.expires
+    )
+      throw new RpcError(RpcErrorCodes.invalidParams, "knowledge_repoint_stale");
+    this.folderChoice = undefined;
+    const operation = AbortSignal.any([
+      lifetime(this.deps.shutdown, signal),
+      AbortSignal.timeout(20_000),
+    ]);
+    const vault = await vaultFolder(choice.selected.path, operation);
+    operation.throwIfAborted();
+    if (
+      vault.path !== choice.selected.path ||
+      vault.identity.device !== choice.selected.device ||
+      vault.identity.inode !== choice.selected.inode
+    )
+      throw new RpcError(RpcErrorCodes.invalidParams, "knowledge_repoint_stale");
+    this.folderSource(choice.source, choice.origin);
+    if (
+      !choice.source.targets.all &&
+      !isDeepStrictEqual(this.deps.repo.repointRecipients(id), choice.recipients)
+    )
+      throw new RpcError(RpcErrorCodes.invalidParams, "knowledge_repoint_stale");
+    const existing = this.deps.repo.findObsidian(vault.path);
+    if (existing && existing.id !== id)
+      return { source: null, conflict: { id: existing.id, name: existing.name } };
+    const source = this.deps.repo.repoint(id, choice.selected);
+    this.deps.emit("knowledge.changed", { id, reason: "updated" });
+    return { source };
+  }
+
+  /**
    * Creates the remote MCP connection the source will read through and returns it, so the UI can
    * run `connectors.authorize` next. The connection is installed disabled like any other import:
    * enabling it is exactly what the OAuth grant does.
    */
   addNotion(
-    _params: PluginMethodParams["knowledge.addNotion"],
+    params: PluginMethodParams["knowledge.addNotion"],
   ): PluginMethodResults["knowledge.addNotion"] {
     const { repo, notion } = this.deps;
     const existing = repo.findNotion();
@@ -250,13 +403,20 @@ export class KnowledgeService {
     }
     const connectorId = notion.create();
     const config = { kind: "notion" as const, connectorId };
+    const initialTargets: KnowledgeTargets = params.targets
+      ? {
+          all: params.targets.all ?? false,
+          bots: params.targets.bots,
+          groups: params.targets.groups,
+        }
+      : { all: false, bots: [], groups: [] };
     const source = existing
       ? repo.repoint(existing.source.id, config)
       : repo.create({
           kind: "notion",
           name: "Notion",
           config,
-          targets: { all: false, bots: [], groups: [] },
+          targets: initialTargets,
         });
     this.deps.emit("knowledge.changed", {
       id: source.id,
@@ -267,12 +427,52 @@ export class KnowledgeService {
   }
 
   update(params: PluginMethodParams["knowledge.update"]): PluginMethodResults["knowledge.update"] {
-    const source = this.deps.repo.update({
-      ...params,
-      targets: { ...params.targets, all: params.targets.all ?? false },
+    const origin = this.deps.repo.origin(params.id);
+    const targets = { ...params.targets, all: params.targets.all ?? false };
+    const source = transaction(this.deps.db, () => {
+      let config: KnowledgeConfig | undefined;
+      if (params.writable === true && origin.kind === "notion") {
+        const writeState = this.deps.notion.writeToolsState?.(
+          origin.connectorId,
+          origin.writeActions ?? [],
+        );
+        if (writeState?.readOnlyMode) {
+          throw new RpcError(RpcErrorCodes.unsupported, "knowledge_notion_read_only");
+        }
+        if (
+          !writeState ||
+          writeState.availableWrites.length === 0 ||
+          !this.deps.notion.setWriteToolsEnabled
+        ) {
+          throw new RpcError(RpcErrorCodes.unsupported, "knowledge_notion_write_tools_missing");
+        }
+        if (!writeState.readAvailable)
+          throw new RpcError(RpcErrorCodes.unsupported, "knowledge_notion_read_tool_missing");
+        const actions = params.notionWriteActions;
+        if (
+          !actions ||
+          params.notionConnectorRevision !== writeState.revision ||
+          !isDeepStrictEqual(actions, writeState.availableWrites) ||
+          !isDeepStrictEqual(targets, this.deps.repo.get(params.id)?.targets)
+        )
+          throw new RpcError(
+            RpcErrorCodes.connectorStale,
+            "knowledge_notion_write_consent_changed",
+          );
+        this.deps.notion.setWriteToolsEnabled(origin.connectorId, actions);
+        config = { ...origin, writeActions: actions };
+      } else if (params.writable === false && origin.kind === "notion") {
+        config = { kind: "notion", connectorId: origin.connectorId };
+        this.deps.notion.setWriteToolsEnabled?.(origin.connectorId, []);
+      }
+      const source = this.deps.repo.update({
+        ...params,
+        targets,
+        config,
+      });
+      this.deps.notion.sync(source.id);
+      return source;
     });
-    // The source's "who can use it" and the connection's access row are the same decision.
-    this.deps.notion.sync(source.id);
     this.deps.emit("knowledge.changed", { id: source.id, reason: "updated" });
     return source;
   }
@@ -285,6 +485,21 @@ export class KnowledgeService {
     this.deps.repo.remove(params.id);
     this.deps.emit("knowledge.changed", { id: params.id, reason: "removed" });
     return { ok: true };
+  }
+
+  /**
+   * Opens the library's settings for a chat citation. Derives the source strictly from the
+   * stored reply and current assignment.
+   */
+  async repointReference(
+    params: PluginMethodParams["knowledge.repointReference"],
+  ): Promise<PluginMethodResults["knowledge.repointReference"]> {
+    const scope: ReferenceScope = referenceScope(this.deps.db, params.messageId);
+    if (!(await referenceInMessage(scope.content, params.href))) throw referenceInvalid();
+    const candidate = referenceCandidate(this.deps.repo, scope, params.href, {
+      allowMissingIdentity: true,
+    });
+    return { sourceId: candidate.sourceId };
   }
 
   /**
@@ -305,8 +520,9 @@ export class KnowledgeService {
     // The request is recorded before the host starts reading configuration: a click that hangs or
     // dies in the host still happened, and the record names only the source and the run.
     this.deps.audit({ ...auditScope(verified), status: "requested" });
+    let outcome: Awaited<ReturnType<typeof openNote>>;
     try {
-      await openNote(
+      outcome = await openNote(
         {
           requestId: randomUUID(),
           sourceId: verified.sourceId,
@@ -320,6 +536,7 @@ export class KnowledgeService {
             device: verified.noteIdentity.device,
             inode: verified.noteIdentity.inode,
           },
+          preferReveal: verified.kind === "folder" || !/\.md$/i.test(verified.notePath),
         },
         operation,
         // Reading Obsidian's own configuration takes seconds, and the person may revoke the source
@@ -342,7 +559,7 @@ export class KnowledgeService {
     }
     // The system open returned; the row records completion for the same source and run.
     this.deps.audit({ ...auditScope(verified), status: "opened" });
-    return { opened: true };
+    return outcome;
   }
 
   private async verifyOpen(
@@ -415,6 +632,7 @@ function unknownOutcome(error: unknown): boolean {
   return error instanceof RpcError && error.message === "knowledge_reference_unknown";
 }
 
+/** Only durable answers are cached; policy denials and transient failures always re-check. */
 /** The operation ends when the caller gives up or the brain shuts down, whichever comes first. */
 function lifetime(shutdown: AbortSignal, signal?: AbortSignal): AbortSignal {
   return signal ? AbortSignal.any([signal, shutdown]) : shutdown;
@@ -470,10 +688,13 @@ export function registerKnowledgeRpc(handle: RegisterRpc, service: KnowledgeServ
   handle("knowledge.detect", (params, context) => service.detect(params, context?.signal));
   handle("knowledge.list", (params) => Promise.resolve(service.list(params)));
   handle("knowledge.get", (params) => Promise.resolve(service.get(params)));
+  handle("knowledge.inspect", (params, context) => service.inspect(params, context?.signal));
   handle("knowledge.account", (params, context) => service.account(params, context?.signal));
   handle("knowledge.addObsidian", (params, context) =>
     service.addObsidian(params, context?.signal),
   );
+  handle("knowledge.repoint", (params, context) => service.repoint(params, context?.signal));
+  handle("knowledge.repointReference", (params) => service.repointReference(params));
   handle("knowledge.addNotion", (params) => Promise.resolve(service.addNotion(params)));
   handle("knowledge.update", (params) => Promise.resolve(service.update(params)));
   handle("knowledge.remove", (params) => Promise.resolve(service.remove(params)));

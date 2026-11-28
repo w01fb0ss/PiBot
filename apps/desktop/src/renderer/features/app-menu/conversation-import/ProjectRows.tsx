@@ -93,7 +93,7 @@ export function ProjectRows({
                 )}
               </div>
             )}
-            {choice.on && choice.open && choice.diff && (
+            {choice.on && choice.open && choice.diff && choice.diff.lines > 0 && (
               <DiffPanel
                 choice={choice}
                 confirm={() => draft.setProject(project.key, { confirmed: true, open: false })}
@@ -127,6 +127,8 @@ function AgentsLine({ choice, toggle }: { choice: ProjectChoice; toggle(): void 
         )}
       </span>
     );
+  if (diff.lines === 0)
+    return <span className={styles.meta}>{t("conversationImport.agentsUnchanged")}</span>;
   const created = !!diff.create;
   return (
     <>

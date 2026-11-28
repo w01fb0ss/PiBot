@@ -242,20 +242,23 @@
   min-width: 0;
 }
 
+/* One label column and one control column, so every switch starts and ends at the same place. */
 .prefs {
   display: grid;
-  gap: 6px;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  column-gap: 12px;
+  row-gap: 6px;
   padding: 6px 8px 8px;
 }
+/* Contents boxes still pass inherited text styles to the label and the control. */
 .pref {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  display: contents;
   font-size: 13px;
   color: var(--text2);
 }
 .pref fieldset {
+  width: 100%;
   font-size: 12.5px;
 }
 
@@ -323,6 +326,24 @@
     color-mix(in srgb, var(--avatar-orange) 14%, transparent),
     transparent 240px
   );
+}
+.dialog.dialog[open][data-app-dialog="conversation-import"] {
+  display: flex;
+  flex-direction: column;
+}
+.dialog[data-app-dialog="conversation-import"] .header {
+  flex: none;
+}
+.dialog[data-app-dialog="conversation-import"] .content {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+.dialog[data-app-dialog="conversation-import"] .content:has(> [data-dialog-body="split"]) {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
 }
 .dialog.dialog[data-app-dialog="about-you"] {
   width: min(500px, calc(100vw - 32px));
@@ -429,39 +450,39 @@
   }
 }
 
-.dreamCard.dreamCard {
+.dreamSettings {
+  --settings-row-text-basis: 160px;
   margin-bottom: 10px;
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--avatar-violet) 12%, var(--card)),
-    var(--card)
-  );
 }
 
-.dreamOptions {
-  margin-top: 8px;
-  color: var(--muted);
+.dreamCurrency {
+  position: relative;
+  width: 100px;
 }
 
-.dreamOptions label,
-.dreamSwitch,
-.dreamOptions form {
+.dreamCurrency input {
+  padding-inline-start: 28px;
+  font-variant-numeric: tabular-nums;
+}
+
+.dreamCurrencyUnit {
+  position: absolute;
+  inset-block-start: 10px;
+  inset-inline-start: 14px;
+  color: var(--text2);
+  pointer-events: none;
+}
+
+.dreamActions {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
-.dreamSwitch,
-.dreamChanges li {
-  padding: 4px 0;
-}
-
-.dreamOptions input[type="number"] {
-  max-width: 6em;
-  color: var(--ink);
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 3px 5px;
+.dreamChanges {
+  margin: 0;
+  padding: 8px 16px 10px 32px;
+  color: var(--text2);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
 }

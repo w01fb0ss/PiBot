@@ -2,6 +2,7 @@ import { McpServer, ProtocolError, type Tool } from "@modelcontextprotocol/serve
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import {
   CONNECTOR_AUTH_REQUIRED_META,
+  CONNECTOR_INPUT_LANGUAGE,
   CONNECTOR_NATIVE_DIAGNOSTICS_META,
   CONNECTOR_NATIVE_FAILURE_META,
   ConnectorAuthenticationError,
@@ -241,6 +242,9 @@ export async function serveStdio(input: {
           // Zod emits a JSON object; MCP's narrower recursive JSON type cannot express it.
           inputSchema: {
             ...z.toJSONSchema(inputSchema(definition)),
+            ...(definition.inputLanguage
+              ? { [CONNECTOR_INPUT_LANGUAGE]: definition.inputLanguage }
+              : {}),
             type: "object",
           } as unknown as Tool["inputSchema"],
           annotations: {

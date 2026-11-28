@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createNavigationCheck, type UserBrowser } from "@pibot/browser/host";
 import { browserPlatform as botBrowserPlatform } from "../browser-adapter/platform.ts";
+import type { DesktopRegistrationSkipReason } from "../window/login-item-scope.ts";
 import { type BrowserDetection, detectDefaultBrowser } from "./browser-detection.ts";
 import { startExtensionServer } from "./extension-server.ts";
 import {
@@ -32,15 +33,8 @@ const DETECT_MS = 60_000;
  */
 export async function createUserBrowser(options: {
   dataDir: string;
-  /**
-   * The platform default data folder. Only that install registers the native host on its own;
-   * a test or second copy on its own folder registers only when the user asks it to, so it can
-   * never silently take the user's extension away from the main install.
-   */
-  defaultDataDir: boolean;
+  registrationSkipReason: DesktopRegistrationSkipReason | undefined;
   executable: string;
-  /** Development: the app's entry for the launcher; packaged builds start the app itself. */
-  entry?: string;
   logger: { info(message: string): void; warn(message: string): void };
   /** Tell brain about a fallback (one grey line in the run's topic). */
   fallback(botId: string, runId: string): void;
@@ -136,7 +130,16 @@ export async function createUserBrowser(options: {
     return !!server?.host;
   };
   let registered = false;
-  let registration: "separate_data_dir" | "other_instance" | undefined;
+  let registration: "separate_data_dir" | "other_instance" | "registration_failed" | undefined =
+    options.registrationSkipReason ? "separate_data_dir" : undefined;
+  if (options.registrationSkipReason)
+    options.logger.info(
+      JSON.stringify({
+        module: "browser-extension",
+        event: "register_skipped",
+        reason: options.registrationSkipReason,
+      }),
+    );
   const home = homedir();
   const log = (event: string, browser: NativeBrowser, reason: string) =>
     options.logger.info(JSON.stringify({ module: "browser-extension", event, browser, reason }));
@@ -158,6 +161,65 @@ export async function createUserBrowser(options: {
         log("revoked", browser, reason);
     }
   };
+  const register = async (
+    enabled: boolean,
+    request: { explicit?: boolean; takeOver?: boolean },
+  ) => {
+    // Enable, takeover and disable all touch the account's browser host registrations.
+    if (options.registrationSkipReason) return;
+    ownLauncher ??= await platform.createLauncher({
+      dataDir: options.dataDir,
+      executable: options.executable,
+    });
+    if (!enabled) {
+      await revokeOwn("preference_off");
+      registered = false;
+      registration = undefined;
+      return;
+    }
+    let other = false;
+    for (const browser of BROWSERS) {
+      // Only browsers this user has (their profile folder exists); Windows reads the registry.
+      const root = browserProfileRoot(process.platform, home, browser);
+      if (
+        root &&
+        !(await stat(root).then(
+          (info) => info.isDirectory(),
+          () => false,
+        ))
+      )
+        continue;
+      const current = await launcherFor(browser);
+      // Another Pi Bot whose launcher still exists keeps its manifest unless the user confirms.
+      if (current && current !== ownLauncher && (await exists(current)) && !request.takeOver) {
+        other = true;
+        log("register_kept_other", browser, "other_instance");
+        continue;
+      }
+      if (
+        await registerNativeManifest({
+          platform: process.platform,
+          home,
+          browser,
+          launcher: ownLauncher,
+        })
+      )
+        log(
+          "registered",
+          browser,
+          request.takeOver
+            ? "user_takeover"
+            : current && current !== ownLauncher
+              ? "stale_manifest"
+              : request.explicit
+                ? "user_enabled"
+                : "default_install",
+        );
+    }
+    registered = true;
+    registration = other ? "other_instance" : undefined;
+  };
+  let registrationWork = Promise.resolve();
   return {
     extension: () => {
       const host = server?.host;
@@ -196,80 +258,23 @@ export async function createUserBrowser(options: {
               : "unsupported",
       };
     },
-    async register(enabled, request = {}) {
-      ownLauncher ??= await platform.createLauncher({
-        dataDir: options.dataDir,
-        executable: options.executable,
-        ...(options.entry ? { entry: options.entry } : {}),
-      });
-      if (!enabled) {
-        await revokeOwn("preference_off");
-        registered = false;
-        registration = undefined;
-        return;
-      }
-      if (!options.defaultDataDir && !request.explicit && !request.takeOver) {
-        registered = false;
-        registration = "separate_data_dir";
-        options.logger.info(
-          JSON.stringify({
-            module: "browser-extension",
-            event: "register_skipped",
-            reason: "separate_data_dir",
-          }),
-        );
-        return;
-      }
-      let other = false;
-      for (const browser of BROWSERS) {
-        // Only browsers this user has (their profile folder exists); Windows reads the registry.
-        const root = browserProfileRoot(process.platform, home, browser);
-        if (
-          root &&
-          !(await stat(root).then(
-            (info) => info.isDirectory(),
-            () => false,
-          ))
-        )
-          continue;
-        const current = await launcherFor(browser);
-        // Another Pi Bot whose launcher still exists keeps its manifest unless the user confirms.
-        if (current && current !== ownLauncher && (await exists(current)) && !request.takeOver) {
-          other = true;
-          log("register_kept_other", browser, "other_instance");
-          continue;
-        }
-        if (
-          await registerNativeManifest({
-            platform: process.platform,
-            home,
-            browser,
-            launcher: ownLauncher,
-          })
-        )
-          log(
-            "registered",
-            browser,
-            request.takeOver
-              ? "user_takeover"
-              : current && current !== ownLauncher
-                ? "stale_manifest"
-                : request.explicit
-                  ? "user_enabled"
-                  : "default_install",
+    register(enabled, request = {}) {
+      const work = registrationWork
+        .then(() => register(enabled, request))
+        .catch((error: unknown) => {
+          if (!enabled) throw error;
+          registered = false;
+          registration = "registration_failed";
+          options.logger.warn(
+            JSON.stringify({ module: "browser-extension", event: "register_failed" }),
           );
-      }
-      registered = true;
-      registration = other ? "other_instance" : undefined;
+        });
+      registrationWork = work.catch(() => {
+        // A failed disable is reported by its caller. Later requests can still retry.
+      });
+      return work;
     },
     close: async () => {
-      // A separate copy hands the extension back when it quits; the main install keeps it.
-      if (!options.defaultDataDir && registered)
-        await revokeOwn("instance_quit").catch(() =>
-          options.logger.warn(
-            JSON.stringify({ module: "browser-extension", event: "revoke_failed" }),
-          ),
-        );
       await server?.close();
     },
   };

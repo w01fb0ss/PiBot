@@ -1,9 +1,9 @@
-// Explicit import extracts only additive Bot notes under the shared maintenance budget.
+import { setTimeout as wait } from "node:timers/promises";
+import { AgentError } from "@pibot/agent";
 import type { CapabilityContext } from "@pibot/brain/kit";
-import { RpcError } from "@pibot/protocol-base";
-import { BotsRepo, memoryMaintenanceUsage, SettingsRepo, transaction } from "@pibot/storage";
+import { BotsRepo } from "@pibot/storage";
 import { parseExtractionDraft } from "./memory-extraction.ts";
-import { dayStart } from "./memory-extraction-attempt.ts";
+import { memoryModelRoute } from "./memory-organization-model.ts";
 
 const MAX_TOKENS = 9216;
 type ImportPort = NonNullable<
@@ -15,65 +15,54 @@ export function createImportDistillation(
   workersIdle: () => boolean,
 ): ImportPort & { idle(): boolean } {
   let busy = false;
-
-  function estimate(botId: string) {
-    const bot = new BotsRepo(db).get(botId);
-    const modelId = bot?.modelId;
-    if (
-      !agent.draftMemories ||
-      !bot ||
-      bot.archivedAt ||
-      bot.modelProvider !== "ollama" ||
-      !modelId ||
-      /cloud/i.test(modelId)
-    )
-      return undefined;
-    return { modelId, maxTokens: MAX_TOKENS, costUsd: 0 as const };
-  }
-
-  function reserve(importId: string) {
-    transaction(db, () => {
-      const settings = new SettingsRepo(db).get();
-      const used = memoryMaintenanceUsage(db, dayStart()).tokens;
-      if (used + MAX_TOKENS > (settings.memoryExtractionDailyTokens ?? 2_000_000))
-        throw new RpcError(-32602, "import_distillation_budget");
-      db.prepare("INSERT INTO import_memory_usage(import_id,at,tokens) VALUES(?,?,?)").run(
-        importId,
-        new Date().toISOString(),
-        MAX_TOKENS,
-      );
-    });
-  }
+  const bots = new BotsRepo(db);
 
   return {
     idle: () => !busy,
-    estimate,
-    async run({ importId, botId, modelId, text }, signal) {
-      if (busy || !workersIdle()) throw new RpcError(-32602, "import_distillation_busy");
-      if (estimate(botId)?.modelId !== modelId || !agent.draftMemories)
-        throw new RpcError(-32602, "import_distillation_unavailable");
+    async estimate(botId, signal) {
+      const bot = bots.get(botId);
+      if (!agent.draftMemories || !bot || bot.archivedAt) return undefined;
+      const route = memoryModelRoute(db, bots.getMain()?.id ?? botId);
+      return agent.quoteMemoryDraft?.({
+        models: route?.modelChoices ?? [],
+        localModelChoices: [
+          ...(bot.modelProvider && bot.modelId
+            ? [{ provider: bot.modelProvider, id: bot.modelId }]
+            : []),
+          ...(route?.modelChoices ?? []),
+        ],
+        maxTokens: MAX_TOKENS,
+        signal,
+      });
+    },
+    async run({ botId, quote, text, budget, onUsage }, signal) {
+      // Give an in-flight chat or maintenance operation time to release its lease.
+      for (const delay of [1000, 2000]) {
+        if (!busy && workersIdle()) break;
+        await wait(delay, undefined, { signal });
+      }
       signal.throwIfAborted();
+      if (busy || !workersIdle()) throw new AgentError("provider_overloaded");
+      const bot = bots.get(botId);
+      if (!bot || bot.archivedAt || !agent.draftMemories) throw new AgentError("no_model");
       busy = true;
-      let reserved = false;
-      let dispatched = false;
       try {
-        reserve(importId);
-        reserved = true;
+        let reported = false;
         const result = await agent.draftMemories({
-          text,
-          model: { provider: "ollama", id: modelId },
-          useLocalOllama: true,
+          text: redactor.redact(text),
+          model: quote.model,
+          ...(quote.local
+            ? { useLocalOllama: true }
+            : { importRoute: { key: quote.routeKey, maxTextBytes: quote.maxTextBytes } }),
           signal,
-          budget: { tokens: MAX_TOKENS, costUsd: 0 },
-          onUsage: () => {
-            dispatched = true;
+          budget,
+          onUsage(usage) {
+            reported = true;
+            onUsage(usage);
           },
         });
+        if (!reported) onUsage(result);
         signal.throwIfAborted();
-        db.prepare("UPDATE import_memory_usage SET tokens=? WHERE import_id=?").run(
-          result.tokens || MAX_TOKENS,
-          importId,
-        );
         return parseExtractionDraft(result.draft)
           .candidates.filter(({ action }) => action === "add")
           .map(({ text, category }) => ({
@@ -82,8 +71,6 @@ export function createImportDistillation(
           }));
       } finally {
         busy = false;
-        if (reserved && !dispatched)
-          db.prepare("DELETE FROM import_memory_usage WHERE import_id=?").run(importId);
       }
     },
   };

@@ -1,7 +1,7 @@
-import { lstatSync, realpathSync } from "node:fs";
+import { lstatSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { dirname } from "node:path";
-import { fileIdentity } from "@pibot/execution";
+import { canonicalExistingPathSync, fileIdentity, samePathSpelling } from "@pibot/execution";
 import { OUTSIDE_WRITE_REASON } from "@pibot/policy";
 import { RpcError } from "@pibot/protocol-base";
 import { BotsRepo, ConversationsRepo, RunsRepo, TopicFoldersRepo } from "@pibot/storage";
@@ -124,7 +124,7 @@ export function approvalFolderChange(
             if (
               !info.isDirectory() ||
               info.isSymbolicLink() ||
-              realpathSync(root.path) !== root.canonicalPath ||
+              !samePathSpelling(canonicalExistingPathSync(root.path), root.canonicalPath) ||
               identity.device !== root.device ||
               identity.inode !== root.inode
             )

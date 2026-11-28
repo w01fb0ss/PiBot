@@ -6,7 +6,14 @@
  */
 import { z } from "zod";
 
-export const ExternalAgentIdSchema = z.enum(["codex", "claude", "cursor", "opencode", "custom"]);
+export const ExternalAgentIdSchema = z.enum([
+  "codex",
+  "claude",
+  "cursor",
+  "opencode",
+  "antigravity",
+  "custom",
+]);
 export type ExternalAgentId = z.infer<typeof ExternalAgentIdSchema>;
 export type KnownAgentId = Exclude<ExternalAgentId, "custom">;
 
@@ -26,6 +33,12 @@ export interface AgentAllowances {
    * server). This also lets code in the sandbox reach any port on this computer's loopback.
    */
   localBinding?: boolean;
+  /**
+   * macOS: it runs every command in a pseudo-terminal (Antigravity). Seatbelt then allows
+   * `/dev/ptmx` and every `/dev/ttys*`, so code in the sandbox can also open this user's other
+   * terminal devices.
+   */
+  pty?: boolean;
 }
 
 export interface AdapterPackage {
@@ -58,6 +71,11 @@ export interface AgentDescriptor {
    * sandbox has no setting that asks per command; maintainers 2026-11-14 option A). Pi Bot says so.
    */
   noPerCommandAsk?: boolean;
+  /**
+   * Protected folders (home-relative) the agent lists at every turn without needing them: their
+   * refusal stays in force but is not shown in the chat as if something had gone wrong.
+   */
+  quietDenials?: readonly string[];
 }
 
 const keychain = "Library/Keychains/login.keychain-db";
@@ -83,6 +101,26 @@ const opencodeNetwork = [
   "openrouter.ai",
   "api.deepseek.com",
 ] as const;
+
+/**
+ * Antigravity's own service, from the sandbox's proxy refusals in agy's log over real signed-in
+ * turns (2026-11-25): its Cloud Code API (models and turns), its config service (polled every
+ * minute), the signed-in user's info, and Google's token endpoint for the hourly refresh. Its
+ * usage reporting is switched off at launch; the avatar host stays refused.
+ */
+const antigravityNetwork = [
+  "daily-cloudcode-pa.googleapis.com",
+  "aicode.googleapis.com",
+  "www.googleapis.com",
+  "oauth2.googleapis.com",
+] as const;
+/**
+ * `~/.gemini/antigravity-cli` holds its sessions, logs and caches. `~/.gemini/config` is its
+ * global customization root (hooks.json, mcp_config.json, plugins, skills, config.json with the
+ * enabled plugins): read only, because anything written there runs later outside any sandbox.
+ */
+const antigravityState = ".gemini/antigravity-cli";
+const antigravityConfig = ".gemini/config";
 
 const posix = (allowances: AgentAllowances) => ({
   darwin: allowances,
@@ -244,6 +282,48 @@ export const AGENTS: readonly AgentDescriptor[] = [
         machLookup: [],
         unixSockets: [],
         network: opencodeNetwork,
+      },
+    },
+  },
+  {
+    id: "antigravity",
+    name: "Antigravity",
+    vendor: "Google",
+    commands: ["agy"],
+    // Its usage reporting (play.googleapis.com) stays off rather than refused at every turn.
+    launch: { kind: "native", args: ["acp", "--disable-telemetry"] },
+    installUrl: "https://antigravity.google/docs/getting-started",
+    // Its interactive start signs in with Google when no saved login is found.
+    loginCommand: "agy",
+    // It lists ~/.gemini (Gemini CLI's folder, login included) at every prompt and works without.
+    quietDenials: [".gemini"],
+    allowances: {
+      darwin: {
+        readWrite: [antigravityState],
+        // Its login lives in the OS keyring (the login keychain on macOS).
+        readOnly: [antigravityConfig, keychain],
+        machLookup: trustd,
+        unixSockets: [],
+        network: antigravityNetwork,
+        // 2026-11-25: session/new fails "language server failed to start: listen tcp [::1]:0:
+        // bind: operation not permitted" without it (its ACP server talks to its own local one).
+        localBinding: true,
+        // 2026-11-25: every command it runs failed "failed to create PTY: operation not permitted".
+        pty: true,
+      },
+      linux: {
+        readWrite: [antigravityState],
+        readOnly: [antigravityConfig],
+        machLookup: [],
+        unixSockets: [],
+        network: antigravityNetwork,
+      },
+      win32: {
+        readWrite: [antigravityState],
+        readOnly: [antigravityConfig],
+        machLookup: [],
+        unixSockets: [],
+        network: antigravityNetwork,
       },
     },
   },

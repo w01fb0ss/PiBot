@@ -1,7 +1,8 @@
 // Emits one content-free receipt when a claimed maintenance attempt settles.
 import type { DatabaseSync } from "node:sqlite";
-import { AgentErrorCodeSchema } from "@pibot/protocol-base";
-import { memoryAttemptReceipt } from "@pibot/storage";
+import type { BrainRedactor } from "@pibot/brain/kit";
+import { AgentErrorCodeSchema, type MemoryModelFallback } from "@pibot/protocol-base";
+import { AuditRepo, memoryAttemptReceipt } from "@pibot/storage";
 
 type Task = "extraction" | "organization";
 type Attempt = { id: string; botId: string; conversationId?: string };
@@ -65,4 +66,22 @@ export function logMemoryAttempt(deps: Deps, task: Task, attempt: Attempt, start
     // A disconnected peer can still read the durable result when it reconnects.
     deps.logger.warn(JSON.stringify({ module: "memory", reasonCode: "status_notify_failed" }));
   }
+}
+
+export function logMemoryFallback(deps: Deps & { redactor: BrainRedactor }, botId: string) {
+  return ({ from, to }: MemoryModelFallback) => {
+    const entry = new AuditRepo(deps.db, deps.redactor).append({
+      botId,
+      kind: "memory.changed",
+      summary: "Memory switched model provider / 记忆维护已切换模型厂商",
+      detail: {
+        reasonCode: "memory_model_fallback",
+        previousModelId: from.id.slice(0, 200),
+        modelId: to.id.slice(0, 200),
+      },
+    });
+    deps.logger.info?.(
+      JSON.stringify({ module: "memory", event: "memory_model_fallback", ...entry.detail }),
+    );
+  };
 }

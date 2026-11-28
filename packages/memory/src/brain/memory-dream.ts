@@ -1,12 +1,21 @@
-import { type MemoryDreamSummary, RpcError, RpcErrorCodes } from "@pibot/protocol-base";
+import {
+  type MemoryDreamSummary,
+  type MemoryFailureReason,
+  memoryFailureReason,
+  RpcError,
+  RpcErrorCodes,
+} from "@pibot/protocol-base";
 import {
   BotsRepo,
   DEFAULT_SETTINGS,
   type DreamRun,
   MemoryDreamRepo,
+  memoryMaintenanceUsage,
+  SettingsRepo,
   transaction,
 } from "@pibot/storage";
-import { draftDreamOwner, dreamConflict } from "./memory-dream-plan.ts";
+import { DreamDailyBudgetError, draftDreamOwner, dreamConflict } from "./memory-dream-plan.ts";
+import { dayStart } from "./memory-extraction-attempt.ts";
 import { organizationErrorDetails } from "./memory-organization-errors.ts";
 import type { OrganizationDeps } from "./memory-organization-queue.ts";
 
@@ -79,8 +88,6 @@ export class MemoryDream {
   private async tick() {
     try {
       if (!this.enabled() || this.stopped || !this.idle() || !this.deps.isIdle()) return;
-      const last = this.repo.last();
-      if (last && last.day >= localDay()) return;
       await this.run(false, this.closing.signal);
     } catch (error) {
       if (
@@ -97,8 +104,26 @@ export class MemoryDream {
   }
 
   private summary(run: DreamRun): MemoryDreamSummary {
-    const { day: _day, cursor: _cursor, receipts, undone, ...summary } = run;
-    return { ...summary, undoable: run.status !== "running" && !undone && receipts.length > 0 };
+    const { day: _day, cursor: _cursor, receipts, undone, budgetUpdate, ...summary } = run;
+    return {
+      ...summary,
+      ...(budgetUpdate && { budgetUpdated: true as const }),
+      undoable: run.status !== "running" && !undone && receipts.length > 0,
+    };
+  }
+
+  private canResume(run: DreamRun, manual: boolean) {
+    if (run.undone) return false;
+    if (run.status === "failed" || run.status === "interrupted") return manual;
+    if (run.status !== "limited") return false;
+    if (run.budgetUpdate === "continue") return manual;
+    if (run.budgetUpdate !== "retry") return false;
+    const used = memoryMaintenanceUsage(this.deps.db, dayStart());
+    const settings = new SettingsRepo(this.deps.db).get();
+    return (
+      used.costUsd < (settings.memoryExtractionDailyCostUsd ?? 0.5) &&
+      used.tokens < (settings.memoryExtractionDailyTokens ?? 2_000_000)
+    );
   }
 
   async run(manual: true, requestSignal: AbortSignal): Promise<MemoryDreamSummary>;
@@ -108,11 +133,7 @@ export class MemoryDream {
       throw new RpcError(RpcErrorCodes.busy, "memory_dream_busy");
     const day = localDay();
     const previous = this.repo.last();
-    const resume =
-      manual &&
-      previous?.day === day &&
-      !previous.undone &&
-      (previous.status === "failed" || previous.status === "interrupted");
+    const resume = previous?.day === day && this.canResume(previous, manual);
     if (previous && previous.day >= day && !resume) return this.summary(previous);
     const controller = new AbortController();
     const signal = AbortSignal.any([
@@ -185,6 +206,7 @@ export class MemoryDream {
     const id =
       resume && previous ? previous.id : this.repo.start(day, new Date().toISOString(), cursor);
     if (resume) this.repo.resume(id);
+    let failureReason: MemoryFailureReason | undefined;
     let status: Exclude<DreamRun["status"], "running"> = "done";
     try {
       const main = this.bots.getMain();
@@ -214,9 +236,17 @@ export class MemoryDream {
         : reason === "budget_exhausted"
           ? "limited"
           : "failed";
-      if (status === "failed") this.warn("memory_dream_run_failed", error);
+      if (status === "failed") {
+        failureReason = memoryFailureReason(
+          reason,
+          new SettingsRepo(this.deps.db).get().memoryDreamLocalOnly === true,
+        );
+        this.warn("memory_dream_run_failed", error);
+      } else if (status === "limited" && error instanceof DreamDailyBudgetError) {
+        failureReason = "budget_exhausted";
+      }
     } finally {
-      this.repo.finish(id, status, new Date().toISOString());
+      this.repo.finish(id, status, new Date().toISOString(), failureReason);
     }
     const result = this.summary(this.read(id));
     this.repo.prune(new Date(Date.now() - 35 * 86_400_000).toISOString());
@@ -295,7 +325,7 @@ export class MemoryDream {
           if (!dreamConflict(error)) this.warn("memory_dream_project_suggestion_failed", error);
         }
       }
-      const result = { receipts, merged, retired, proposed };
+      const result = { receipts, merged, retired, proposed, fallback: plan.fallback };
       this.repo.checkpoint(
         run.id,
         cursor,

@@ -58,6 +58,7 @@ export function Button({
   size = "small",
   icon,
   disabled,
+  wrapTitle = false,
   style,
 }: {
   title: string;
@@ -67,6 +68,7 @@ export function Button({
   size?: keyof typeof heights;
   icon?: IconName;
   disabled?: boolean;
+  wrapTitle?: boolean;
   style?: StyleProp<ViewStyle>;
 }) {
   const colors = useColors(),
@@ -104,10 +106,11 @@ export function Button({
           <PressTint pressed={pressed && !disabled} />
           {icon && <Icon name={icon} color={tone.fg} size={lg ? 18 : 15} />}
           <Text
-            numberOfLines={1}
+            numberOfLines={wrapTitle ? undefined : 1}
             style={[
               lg ? type.button : type.pill,
               { color: tone.fg, fontWeight: strong ? "600" : "500" },
+              wrapTitle && { flexShrink: 1, textAlign: "center" },
             ]}
           >
             {title}
@@ -144,12 +147,14 @@ export function Chip({
   return (
     <Pressable
       accessibilityRole="button"
+      accessibilityLabel={label}
       accessibilityState={{ disabled: !!disabled }}
       disabled={disabled}
       onPress={onPress}
       hitSlop={slopFor(32)}
       style={{
         height: 32,
+        flexShrink: 0,
         paddingHorizontal: 12,
         borderRadius: radius.pill,
         backgroundColor: bg,
@@ -164,7 +169,10 @@ export function Chip({
         <>
           <PressTint pressed={pressed} />
           {icon && <Icon name={icon} color={fg} size={15} />}
-          <Text style={[type.chip, { color: fg, fontWeight: hot || live ? "600" : "400" }]}>
+          <Text
+            numberOfLines={1}
+            style={[type.chip, { color: fg, fontWeight: hot || live ? "600" : "400" }]}
+          >
             {label}
           </Text>
           {trailing && <Icon name={trailing} color={fg} size={13} />}

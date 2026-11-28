@@ -1,8 +1,10 @@
-import { type ExecutionTopic, nextReply } from "@pibot/client-core";
+import { type ExecutionTopic, nextReply, readGroupApprovals } from "@pibot/client-core";
+import { RpcError, RpcErrorCodes } from "@pibot/protocol";
 import { useEffect, useMemo, useState } from "react";
-import { useLinkState } from "../../runtime/context.tsx";
+import { useLinkState, useRuntime } from "../../runtime/context.tsx";
 import { useApprovals } from "../approvals/approvals-context.tsx";
 import { useConversations } from "../conversations/conversations-context.tsx";
+import { botLook } from "../conversations/model.ts";
 import { type ChatScope, scopeKey, scopeTarget } from "./controls/scope.ts";
 import { useBrowser } from "./controls/use-browser.ts";
 import { useChanges } from "./controls/use-changes.ts";
@@ -10,6 +12,7 @@ import { useCompact } from "./controls/use-compact.ts";
 import { useGroupPlan, useGroupThreads } from "./controls/use-group-plan.ts";
 import { usePlan } from "./controls/use-plan.ts";
 import { useQuestion } from "./controls/use-question.ts";
+import { useRemoteValue } from "./controls/use-remote-value.ts";
 import { useRetry } from "./controls/use-retry.ts";
 import { useRunInfo } from "./controls/use-run-info.ts";
 import { useSendMode } from "./controls/use-send-mode.ts";
@@ -22,6 +25,7 @@ import { useComposer } from "./use-composer.ts";
 /** Everything one chat page shows and controls, composed from the per-control hooks. */
 export function useChatPage(kind: ChatScope["kind"], id: string, opened?: string) {
   const mobile = useLinkState(),
+    runtime = useRuntime(),
     conversations = useConversations(),
     approvals = useApprovals();
   const entry = conversations.find(kind, id);
@@ -36,9 +40,9 @@ export function useChatPage(kind: ChatScope["kind"], id: string, opened?: string
   const workplace = useWorkplace(scope),
     plan = usePlan(scope),
     groupPlan = useGroupPlan(scope),
-    threads = useGroupThreads(scope),
+    groupTasks = useGroupThreads(scope),
     changes = useChanges(scope),
-    yolo = useYolo(scope),
+    yolo = useYolo(scope, workplace.value?.folderId),
     mode = useSendMode(scope),
     retry = useRetry(scope),
     question = useQuestion(scope),
@@ -57,6 +61,28 @@ export function useChatPage(kind: ChatScope["kind"], id: string, opened?: string
   const [stopNotice, setStopNotice] = useState(false);
   const [dismissed, setDismissed] = useState<string>();
   const key = scopeKey(scope);
+  const groupTopicId = scope?.kind === "group" ? scope.topicId : undefined;
+  const since = chat.messages[0]?.createdAt;
+  const groupApprovals = useRemoteValue(
+    groupTopicId ? `group-approvals:${groupTopicId}:${since ?? ""}` : undefined,
+    async (signal) => {
+      if (!groupTopicId) return null;
+      try {
+        const items = await readGroupApprovals(
+          (params, signal) => runtime.call("approvals.groupTimeline", params, signal),
+          { groupId: id, topicId: groupTopicId, since },
+          signal,
+        );
+        return { topicId: groupTopicId, items };
+      } catch (error) {
+        if (error instanceof RpcError && error.code === RpcErrorCodes.methodNotFound) return null;
+        throw error;
+      }
+    },
+    ["approval.requested", "approval.resolved"],
+  );
+  const timeline = groupApprovals.value;
+  const timelineApprovals = timeline?.topicId === groupTopicId ? timeline?.items : undefined;
   // biome-ignore lint/correctness/useExhaustiveDependencies: page-local notices belong to one topic.
   useEffect(() => {
     setStopNotice(false);
@@ -71,7 +97,8 @@ export function useChatPage(kind: ChatScope["kind"], id: string, opened?: string
     (a) =>
       !!scope &&
       !!a.conversationId &&
-      (a.conversationId === scope.topicId || threads.has(a.conversationId)),
+      (a.conversationId === scope.topicId ||
+        groupTasks.some((task) => task.threadConversationId === a.conversationId)),
   );
   const executionTopics: ExecutionTopic[] =
     kind === "bot" && entry
@@ -107,6 +134,7 @@ export function useChatPage(kind: ChatScope["kind"], id: string, opened?: string
     compact.action.error,
     compact.cancelAction.error,
     approvals.action.error,
+    groupApprovals.action.error,
   ].find(Boolean);
   return {
     kind,
@@ -131,7 +159,11 @@ export function useChatPage(kind: ChatScope["kind"], id: string, opened?: string
     browser,
     composer,
     approvals,
-    pending,
+    pending: timelineApprovals ? [] : pending,
+    timelineApprovals,
+    groupApprovalsReady: timeline === null || timelineApprovals !== undefined,
+    groupTasks,
+    refreshGroupApprovals: groupApprovals.load,
     error,
     stopNotice,
     setStopNotice,
@@ -140,9 +172,7 @@ export function useChatPage(kind: ChatScope["kind"], id: string, opened?: string
     lookFor: (botId: string | null | undefined) => {
       if (kind === "bot") return entry?.looks[0];
       const bot = botId ? conversations.bots.get(botId) : undefined;
-      return bot
-        ? { name: bot.name, shape: bot.avatarShape, color: bot.avatarColor, eyes: bot.avatarEyes }
-        : undefined;
+      return bot ? botLook(bot) : undefined;
     },
   };
 }

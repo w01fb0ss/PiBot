@@ -84,9 +84,10 @@ export const PIBOT_WEBSITE_URL = "https://pibot.space";
 export const AppAboutSchema = z.strictObject({
   version: z.string().min(1).max(60),
   phoneCompat: z.number().int().min(0).max(1_000_000),
+  platform: z.enum(["darwin", "win32", "linux"]).optional(),
 });
 export const AppProfileMethods = {
-  /** Version handshake the phone reads on connect; nothing about this computer beyond it. */
+  /** Version handshake and desktop OS for the phone's permission explanations. */
   "app.about": { params: z.undefined(), result: AppAboutSchema },
   "app.openFeedback": {
     params: z.strictObject({

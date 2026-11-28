@@ -2,6 +2,7 @@ import type { Logger } from "@pibot/observability";
 import type { UiNavigation } from "@pibot/protocol";
 import { app } from "electron";
 import { z } from "zod";
+import type { DesktopRegistrationSkipReason } from "./login-item-scope.ts";
 
 /**
  * `pibot://` links only bring Pi Bot's window to the front, e.g. from the subscription
@@ -38,10 +39,18 @@ export function isAppUrl(value: string): boolean {
 /**
  * macOS gets the scheme from Info.plist and Linux packages from the desktop file (both written by
  * electron-builder `protocols`); the Windows installer writes nothing, so the app registers itself.
- * An unpacked dev run would register the bare Electron binary, so it is left out.
+ * Account-wide registrations belong to the packaged app using the default data root.
+ * The handler persists across quit so links can open Pi Bot when it is stopped.
  */
-export function registerAppUrlScheme(dev: boolean, logger: Logger): void {
-  if (dev || process.platform === "darwin") return;
+export function registerAppUrlScheme(
+  reason: DesktopRegistrationSkipReason | undefined,
+  logger: Logger,
+): void {
+  if (reason) {
+    logger.info(JSON.stringify({ module: "app-url", event: "register_skipped", reason }));
+    return;
+  }
+  if (process.platform === "darwin") return;
   // Not fatal: the sign-in page still says it can be closed; only its "back to Pi Bot" link fails.
   if (!app.setAsDefaultProtocolClient(APP_URL_SCHEME))
     logger.warn("pibot:// link registration unavailable");

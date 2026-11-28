@@ -11,10 +11,10 @@ export const policyExplanationZh = {
   "policy.reason.write_path_alias": "写入路径指向别名，未通过写入检查",
   "policy.reason.write_path_protected": "写入目标在受保护范围内",
   "policy.reason.write_path_hardlink": "写入目标还有其他硬链接",
-  "policy.reason.write_path_outside_root": "写入目标不在获准的可写根内",
-  "policy.reason.workspace_root_alias": "工作位置的根路径指向别名",
-  "policy.reason.workspace_identity_missing": "执行端没有可核验的工作位置标识",
-  "policy.reason.workspace_identity_changed": "工作位置已改变或不是可核验的目录",
+  "policy.reason.write_path_outside_root": "写入目标不在获准的可写文件夹内",
+  "policy.reason.workspace_root_alias": "工作文件夹的路径指向别名",
+  "policy.reason.workspace_identity_missing": "执行端没有可核验的工作文件夹标识",
+  "policy.reason.workspace_identity_changed": "工作文件夹已改变或不是可核验的文件夹",
   "policy.reason.tool_not_loaded": "当前未加载此工具",
   "policy.reason.background_input_unavailable": "当前运行没有可写入的后台进程",
   "policy.reason.browser_resource_busy": "浏览器资源正在使用",
@@ -25,7 +25,7 @@ export const policyExplanationZh = {
   "policy.reason.authorization_execution_check_failed":
     "授权所需的执行端检查未完成；本次工具调用未获授权",
   "policy.reason.execution_command_failed": "命令未完成；没有确认具体失败项",
-  "policy.reason.execution_outside_workplace": "执行端的工作位置或路径边界检查未通过",
+  "policy.reason.execution_outside_workplace": "执行端的工作文件夹或路径边界检查未通过",
   "policy.reason.execution_file_sensitive": "执行端拒绝访问受保护的文件",
   "policy.reason.execution_file_access_denied": "执行端文件权限检查未通过",
   "policy.reason.execution_file_not_found": "执行端找不到检查所需的文件或目录",
@@ -48,17 +48,25 @@ export const policyExplanationZh = {
   "policy.reason.profile_managed_python": "命令隔离配置拒绝了托管 Python 目录检查",
   "policy.reason.profile_uv_cache": "命令隔离配置拒绝了 uv 缓存目录检查",
   "policy.reason.profile_uv_binary": "命令隔离配置拒绝了 uv 程序路径检查",
-  "policy.reason.profile_write_root": "命令隔离配置拒绝了可写根检查",
-  "policy.reason.profile_temp_root": "命令隔离配置拒绝了临时根检查",
-  "policy.reason.profile_read_root": "命令隔离配置拒绝了只读根检查",
+  "policy.reason.profile_write_root": "命令隔离配置拒绝了可写文件夹检查",
+  "policy.reason.profile_temp_root": "命令隔离配置拒绝了临时文件夹检查",
+  "policy.reason.profile_read_root": "命令隔离配置拒绝了只读文件夹检查",
   "policy.reason.profile_temp_namespace": "命令隔离配置拒绝了临时隔离目录检查",
   "facts.value.unknown_command_directory":
     "写入位置无法确定，且本次命令不在已确认的隔离沙箱内，需要逐次确认",
   "facts.value.unknown_command_directory_sandboxed":
-    "写入位置无法确定，由隔离沙箱限制在工作位置内；本次确认不能记住或用于例行预授权",
+    "写入位置无法确定，由安全隔离限制在工作文件夹内；本次确认不能记住或用于例行预授权",
+  "policy.reason.knowledge_write_confirmation": "此知识库操作需要逐次确认",
+  "policy.reason.dispatch_model_confirmation": "派发到其他模型服务商需要当次确认",
+  "policy.reason.dispatch_folder_confirmation": "在派发的话题中使用指定目录需要当次确认",
   "policy.reason.project_notes_confirmation": "更新项目说明需要逐次确认（含新建文件）",
+  "policy.reason.project_notes_reviewed": "已在导入预览中确认这份项目说明的差异",
+  "policy.reason.project_notes_review_changed": "项目说明的目标或内容已变化，需要重新查看差异",
   "policy.reason.consent_scope_narrowed": "本次授权仅限当前操作，不能扩大记住范围",
   "policy.reason.readonly_isolation_required": "只读参考目录需要可用的命令隔离",
+  "policy.reason.skill_script_unverified": "无法确认要运行的是哪个技能的脚本",
+  "policy.reason.skill_runtime_required": "请在技能详情中准备运行环境，再重试",
+  "policy.reason.skill_runtime_invocation_required": "请让 Bot 单独重新运行这个技能",
   "policy.reason.browser_sensitive_confirmation": "浏览器写请求或原值揭示需要逐次确认",
   "policy.reason.read_ai_config_once": "读取其他 AI 配置需要逐次确认",
   "policy.reason.bot_skill": "读取当前 Bot 自己的技能目录",
@@ -95,7 +103,7 @@ export const policyExplanationZh = {
   "policy.reason.invalid_image_recipient": "图片服务目标与当前配置不一致",
   "policy.reason.configured_image_service": "使用已配置的图片服务",
   "policy.reason.paid_generation_confirmation":
-    "每次生成图片都会收费，需要你确认（YOLO 也不会自动放行）；可以选「这个 Bot 用这个模型不再问」",
+    "每次生成图片都会收费，需要你确认（自动批准模式也不会自动放行）；可以选「这个 Bot 用这个模型不再问」",
   "policy.reason.configured_search_endpoint": "使用用户明确配置的搜索服务",
   "policy.reason.own_local_service": "仅访问本 Bot 当前运行的本机服务",
   "policy.reason.private_network_confirmation":
@@ -105,30 +113,32 @@ export const policyExplanationZh = {
   "policy.reason.network_state_read": "只读取本机的网卡、路由、DNS 和 Wi-Fi 状态，不改任何设置",
   "policy.reason.dangerous_operation": "操作包含危险步骤，需要本次确认",
   "policy.reason.command_network_confirmation":
-    "命令将访问包仓库以外的网络或未知目标，需要本次确认",
+    "命令将访问常用软件源以外的网络或未知目标，需要本次确认",
   "policy.reason.command_install_confirmation": "命令将安装或更新软件依赖，需要本次确认",
   "policy.reason.command_background_confirmation": "命令将在后台持续运行，需要本次确认",
-  "policy.reason.sandboxed_command": "命令在隔离环境内运行，仅开放包仓库网络和已有写入范围",
+  "policy.reason.sandboxed_command": "命令在安全隔离环境内运行，仅开放常用软件源网络和已有写入范围",
   "policy.reason.privilege_escalation_denied": "不能提升系统权限",
   "policy.reason.incomplete_analysis": "命令无法完整分析，需要逐次确认",
   "policy.reason.windows_requires_approval": "当前 Windows 命令需要逐次确认",
   "policy.reason.windows_ordinary_command":
-    "普通 Windows 命令仍需确认，除非已开启 YOLO 并同意无隔离执行",
+    "普通 Windows 命令仍需确认，除非已开启自动批准模式并同意直接运行",
   "policy.reason.windows_read_only": "已检查 Windows 命令的只读操作和读取范围",
+  "policy.reason.windows_file_read_confirmation": "读取工作文件夹外的文件需要你确认",
   "policy.reason.command_home_unavailable": "无法确认目标终端的主目录，请使用绝对路径",
   "policy.reason.windows_unisolated": "命令没有系统隔离，需要单独确认",
-  "policy.reason.outside_sandbox_once": "这条命令刚被沙箱拦截，要在沙箱外运行一次，需要你当场确认",
-  "policy.reason.outside_sandbox_strict": "已开启严格沙箱，不能在沙箱外运行命令",
+  "policy.reason.outside_sandbox_once": "直接运行不受安全隔离限制，需要你确认。",
+  "policy.reason.outside_sandbox_strict": "已开启严格安全隔离，不能绕过安全隔离运行命令",
   "policy.reason.sandbox_outside_command":
-    "这条命令在你设置的「固定在沙箱外运行」清单里，每次运行都需要你确认",
-  "policy.reason.outside_sandbox_no_block": "只有同一条命令刚被沙箱拦截后，才能请求在沙箱外运行",
+    "这条命令在你设置的「固定直接运行（不经安全隔离）」清单里，每次运行都需要你确认",
+  "policy.reason.outside_sandbox_no_block":
+    "只有同一条命令刚被安全隔离拦下后，才能请求直接运行一次",
   "policy.reason.local_service": "需要连接本机服务；只允许指定文件夹、程序和端口",
   "policy.reason.local_service_once":
-    "允许这个程序连接本机服务；只放行卡片上列出的端口或套接字，其他端口和外网仍拦",
+    "这次会额外放行卡片上列出的本机服务地址；其他未授权的本机服务仍受安全隔离限制，原有网络设置保持不变",
   "policy.reason.outside_sandbox_unsupported":
-    "这里不支持在沙箱外运行（远端、Docker、后台命令、只读参考文件夹或受控配方）",
+    "这里不支持绕过安全隔离运行（远端、Docker、后台命令、只读参考文件夹或受控配方）",
   "policy.reason.runner_command_protection_unavailable":
-    "无法读取远端设备的命令保护信息，请确认连接并更新 runner 后重试",
+    "无法读取远端设备的命令保护信息，请确认连接并更新执行端后重试",
   "policy.reason.acp_editor_terminal_unisolated":
     "命令由编辑器终端直接执行，Pi Bot 无法证明其系统隔离，需要单独确认",
   "policy.reason.isolation_unavailable": "系统隔离不可用，不能执行命令",
@@ -137,14 +147,15 @@ export const policyExplanationZh = {
   "policy.reason.grant_unavailable": "这次操作不能使用已记住授权",
   "policy.reason.confirmation_required": "本次操作需要确认",
   "policy.reason.current_policy_decision": "保留当前权限判定",
-  "policy.reason.yolo": "当前对话的 YOLO 自动允许本次询问",
-  "policy.reason.secret_yolo": "当前对话的 YOLO 允许本次密钥使用，不记住授权",
+  "policy.reason.yolo": "当前对话的自动批准模式已放行本次询问",
+  "policy.reason.secret_yolo": "当前对话的自动批准模式允许本次密钥使用，不记住授权",
   "policy.reason.secret_grant_required": "本次密钥使用还没有获得授权",
   "policy.reason.secret_grant_matched": "所需密钥已有有效使用授权",
   "policy.reason.secret_connector_config": "这个连接配置里的令牌随连接一起使用，不再单独授权",
   "policy.reason.secret_write_out": "内容含密钥，不能写出或发送",
   "policy.reason.connector_unavailable": "当前连接不可用",
   "policy.reason.connector_tool_denied": "当前连接工具不可调用",
+  "policy.reason.connector_network_confirmation": "允许此连接访问新网站需要你的确认",
   "policy.reason.connector_confirmation_required": "这个连接要求每次确认，不能记住或自动放行",
   "policy.reason.connector_read_only_mode": "这个连接设为只读，写操作不会执行",
   "policy.reason.connector_access": "当前连接访问已获准",
@@ -157,7 +168,7 @@ export const policyExplanationZh = {
   "policy.reason.search_provider_disclosure_required": "这个搜索提供商尚未获得发送查询词的同意",
   "policy.reason.search_disclosed": "已同意向当前搜索服务发送查询词",
   "policy.reason.browser_no_page": "当前没有可操作的页面",
-  "policy.reason.browser_local_file_unavailable": "只能打开工作位置内的 HTML / 图片 / PDF",
+  "policy.reason.browser_local_file_unavailable": "只能打开工作文件夹内的 HTML / 图片 / PDF",
   "policy.reason.browser_login_no_account": "当前网站没有可用的已保存账号",
   "policy.reason.browser_login_first": "首次在此网站自动登录需要确认",
   "policy.reason.browser_login_choose": "有多个账号，需要你选择",
@@ -194,6 +205,7 @@ export const policyExplanationZh = {
   "policy.reason.approval_user_allowed": "你允许了这次操作",
   "policy.reason.approval_task_web_allowed": "本任务内已允许读取公开网页",
   "policy.reason.approval_user_denied": "你拒绝了这次操作",
+  "policy.reason.pi_dispatch_model_unavailable": "所选模型不可用或无法执行此任务",
   "policy.reason.approval_expired": "审批已过期，操作未获准",
   "policy.reason.approval_cancelled": "审批已取消，操作未获准",
   "policy.reason.remember_secret_checked": "记住前已复核密钥版本和授权范围",
@@ -216,10 +228,10 @@ export const policyExplanationZh = {
   "policy.reason.memory_after_untrusted": "本轮读过网页、文件或其他不可信内容，保存记忆需要你确认",
   "policy.reason.memory_sensitive": "这条记忆可能包含密钥、证件号码或健康信息，需要你确认",
   "policy.reason.own_background_commands": "只管理本 Bot 自己的后台命令",
-  "policy.reason.readonly_command": "工作位置里的只读命令，不联网、不改文件",
+  "policy.reason.readonly_command": "工作文件夹里的只读命令，不联网、不改文件",
   "policy.reason.editor_terminal_readonly":
     "编辑器终端里的只读命令，只涉及本会话的工作文件夹，按「运行命令」权限直接运行",
-  "policy.reason.editor_session_allowed": "你已在本次 ACP 会话里允许过同样的程序和参数",
+  "policy.reason.editor_session_allowed": "你已在本次编辑器会话里允许过同样的程序和参数",
   "policy.reason.editor_session_command": "你选择了本次会话都允许这类命令",
   "policy.reason.public_web_read": "这个 Bot 已一直允许读取公开网页",
   "policy.reason.run_grant_matched": "这次回复里你已允许过这个文件夹",
@@ -252,12 +264,15 @@ export const policyExplanationZh = {
   "policy.effect.deny": "拒绝",
   "policy.axis.category": "确认操作类别",
   "policy.axis.boundary": "核验安全边界",
+  "policy.reason.external_agent_request": "这是外部 Agent 请求的操作，需要你确认后才能继续。",
+  "policy.reason.external_agent_explicit_always_required":
+    "此外部 Agent 对此操作只提供永久授权。若要继续，请在该 Agent 中明确选择「以后都允许」。",
   "policy.axis.grant": "核验授权范围",
   "policy.axis.level": "核验权限设置",
   "policy.axis.danger": "核验操作风险",
   "policy.axis.connector": "核验连接权限",
   "policy.axis.secret": "核验密钥权限",
-  "policy.axis.yolo": "核验对话 YOLO 状态",
+  "policy.axis.yolo": "核验对话自动批准状态",
   "policy.axis.intrinsic": "核验自有资源范围",
 } as const;
 
@@ -338,23 +353,35 @@ export const policyExplanationEn: Record<keyof typeof policyExplanationZh, strin
   "policy.reason.profile_uv_binary":
     "The command isolation profile rejected the uv executable path check",
   "policy.reason.profile_write_root":
-    "The command isolation profile rejected the writable root check",
+    "The command isolation profile rejected the writable folder check",
   "policy.reason.profile_temp_root":
-    "The command isolation profile rejected the temporary root check",
+    "The command isolation profile rejected the temporary folder check",
   "policy.reason.profile_read_root":
-    "The command isolation profile rejected the read-only root check",
+    "The command isolation profile rejected the read-only folder check",
   "policy.reason.profile_temp_namespace":
     "The command isolation profile rejected the private temporary directory check",
   "facts.value.unknown_command_directory":
     "The write location is unknown and this command has no confirmed sandbox; approve this call individually",
   "facts.value.unknown_command_directory_sandboxed":
     "The write location is unknown; the sandbox restricts writes to the working folders. This approval cannot be remembered or used for routine preauthorization",
+  "policy.reason.knowledge_write_confirmation": "This library action needs individual approval",
+  "policy.reason.dispatch_model_confirmation":
+    "This dispatch needs approval to use another model provider",
+  "policy.reason.dispatch_folder_confirmation":
+    "Using the specified folder in the dispatched topic requires confirmation",
   "policy.reason.project_notes_confirmation":
     "Project instructions require confirmation for every write, including creation",
+  "policy.reason.project_notes_reviewed":
+    "This project instructions diff was confirmed in the import preview",
+  "policy.reason.project_notes_review_changed":
+    "The project instructions target or content changed. Review the diff again.",
   "policy.reason.consent_scope_narrowed":
     "Consent is limited to this operation and cannot widen remembered access",
   "policy.reason.readonly_isolation_required":
     "Readonly reference folders require command isolation",
+  "policy.reason.skill_script_unverified": "Pi Bot couldn’t identify the skill’s script",
+  "policy.reason.skill_runtime_required": "Prepare the runtime in the skill details, then retry",
+  "policy.reason.skill_runtime_invocation_required": "Ask the Bot to run this skill separately",
   "policy.reason.browser_sensitive_confirmation":
     "Browser writes and secret reveals require confirmation each time",
   "policy.reason.read_ai_config_once":
@@ -402,7 +429,7 @@ export const policyExplanationEn: Record<keyof typeof policyExplanationZh, strin
     "The image service target does not match its configuration",
   "policy.reason.configured_image_service": "Use the configured image service",
   "policy.reason.paid_generation_confirmation":
-    "Every image generation is billed, so it needs your confirmation (YOLO doesn’t skip it); you can choose “Don’t ask again for this Bot with this model”",
+    "Every image generation is billed, so it needs your confirmation (Auto-approve doesn’t skip it); you can choose “Don’t ask again for this Bot with this model”",
   "policy.reason.configured_search_endpoint": "Use the explicitly configured search service",
   "policy.reason.own_local_service": "Access only this Bot's live local service",
   "policy.reason.private_network_confirmation":
@@ -425,14 +452,16 @@ export const policyExplanationEn: Record<keyof typeof policyExplanationZh, strin
   "policy.reason.incomplete_analysis": "The command cannot be fully analyzed and needs approval",
   "policy.reason.windows_requires_approval": "This Windows command needs approval",
   "policy.reason.windows_ordinary_command":
-    "This Windows command needs approval unless YOLO and consent to unisolated commands are both enabled",
+    "This Windows command needs approval unless Auto-approve and consent to direct commands are both enabled",
   "policy.reason.windows_read_only":
     "Windows command checked for read-only operations and file access",
+  "policy.reason.windows_file_read_confirmation":
+    "Reading outside the working folders needs your approval",
   "policy.reason.command_home_unavailable":
     "Target terminal home is unverified; use an absolute path",
   "policy.reason.windows_unisolated": "The command is not isolated and needs separate consent",
   "policy.reason.outside_sandbox_once":
-    "This command was just blocked by the sandbox; running it once outside the sandbox needs your confirmation now",
+    "Running this command directly skips safety isolation and requires your confirmation.",
   "policy.reason.outside_sandbox_strict":
     "Strict sandbox is on; commands cannot run outside the sandbox",
   "policy.reason.sandbox_outside_command":
@@ -442,7 +471,7 @@ export const policyExplanationEn: Record<keyof typeof policyExplanationZh, strin
   "policy.reason.local_service":
     "A local service connection is required; only the specified folder, program and port are allowed",
   "policy.reason.local_service_once":
-    "Allow this program to connect to a local service; only the port or socket listed on the card opens, other ports and the internet stay blocked",
+    "Additionally opens the local service address listed on the card for this program; other unauthorized local services stay blocked by isolation, and existing network settings remain unchanged",
   "policy.reason.outside_sandbox_unsupported":
     "Running outside the sandbox is unavailable here (remote, Docker, background, read-only reference folders or a controlled recipe)",
   "policy.reason.runner_command_protection_unavailable":
@@ -455,8 +484,9 @@ export const policyExplanationEn: Record<keyof typeof policyExplanationZh, strin
   "policy.reason.grant_unavailable": "Remembered permission is unavailable for this operation",
   "policy.reason.confirmation_required": "This operation requires confirmation",
   "policy.reason.current_policy_decision": "Keep the current permission decision",
-  "policy.reason.yolo": "YOLO in this conversation automatically allows this approval",
-  "policy.reason.secret_yolo": "YOLO permits this secret use without remembering permission",
+  "policy.reason.yolo": "Auto-approve in this conversation automatically allows this approval",
+  "policy.reason.secret_yolo":
+    "Auto-approve permits this secret use without remembering permission",
   "policy.reason.secret_grant_required": "This secret use has not been authorized",
   "policy.reason.secret_grant_matched": "Valid permission covers the required secret use",
   "policy.reason.secret_connector_config":
@@ -464,6 +494,8 @@ export const policyExplanationEn: Record<keyof typeof policyExplanationZh, strin
   "policy.reason.secret_write_out": "Content contains a secret and cannot be written or sent",
   "policy.reason.connector_unavailable": "The connection is unavailable",
   "policy.reason.connector_tool_denied": "The connection tool is unavailable",
+  "policy.reason.connector_network_confirmation":
+    "You must confirm access to a new website for this connection",
   "policy.reason.connector_confirmation_required":
     "This connection requires confirmation every time; automatic approval is disabled",
   "policy.reason.connector_read_only_mode":
@@ -531,6 +563,8 @@ export const policyExplanationEn: Record<keyof typeof policyExplanationZh, strin
   "policy.reason.approval_user_allowed": "You approved this operation",
   "policy.reason.approval_task_web_allowed": "Public web reads are already allowed for this task",
   "policy.reason.approval_user_denied": "You denied this operation",
+  "policy.reason.pi_dispatch_model_unavailable":
+    "The selected model is unavailable or cannot run this task",
   "policy.reason.approval_expired": "Approval expired; the operation was not authorized",
   "policy.reason.approval_cancelled": "Approval was cancelled; the operation was not authorized",
   "policy.reason.remember_secret_checked":
@@ -602,11 +636,15 @@ export const policyExplanationEn: Record<keyof typeof policyExplanationZh, strin
   "policy.effect.deny": "Refused",
   "policy.axis.category": "Check the operation category",
   "policy.axis.boundary": "Check safety boundaries",
+  "policy.reason.external_agent_request":
+    "The external agent needs your approval before performing this action.",
+  "policy.reason.external_agent_explicit_always_required":
+    "This external agent only offers permanent permission for this action. To continue, explicitly choose “Always allow” in that agent.",
   "policy.axis.grant": "Check permission scope",
   "policy.axis.level": "Check permission settings",
   "policy.axis.danger": "Check operation risk",
   "policy.axis.connector": "Check connection permission",
   "policy.axis.secret": "Check secret permission",
-  "policy.axis.yolo": "Check conversation YOLO state",
+  "policy.axis.yolo": "Check conversation Auto-approve state",
   "policy.axis.intrinsic": "Check owned resources",
 };

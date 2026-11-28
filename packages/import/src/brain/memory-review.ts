@@ -144,13 +144,18 @@ export async function reviewPlan(input: {
   let instructions: string | undefined;
   let omitted = 0;
   const anyBot = input.bots[0];
-  if ((source === "chatgpt" || source === "claude") && anyBot) {
+  const supplementStream = input.input.batch?.supplements
+    ? input.input.batch.supplements(input.signal)
+    : source === "chatgpt" || source === "claude"
+      ? exportItems(source, input.input, input.signal)
+      : undefined;
+  if (supplementStream && anyBot) {
     const inspectors = new Map<Target, ReturnType<ImportMemories["inspection"]>>([
       ["user", input.memories.inspection(anyBot, "user")],
       ...input.bots.map((bot) => [bot, input.memories.inspection(bot, "bot")] as const),
     ]);
     const seen = new Set<string>();
-    for await (const item of exportItems(source, input.input, input.signal)) {
+    for await (const item of supplementStream) {
       input.signal.throwIfAborted();
       if (item.kind === "customInstructions") {
         instructions ??= redactImportText(input.redactor, item.text).trim().slice(0, 300);
@@ -163,7 +168,8 @@ export async function reviewPlan(input: {
         continue;
       }
       seen.add(normalized(text.data));
-      const kind = item.project ? ("method" as const) : ("preference" as const);
+      const kind =
+        item.memoryKind ?? (item.project ? ("method" as const) : ("preference" as const));
       const candidate = {
         id: randomUUID(),
         text: text.data,

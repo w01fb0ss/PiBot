@@ -4,6 +4,8 @@ import type {
   ConnectionTarget,
   Connector,
   ConnectorAccess,
+  ConnectorCommand,
+  ConnectorNetworkApproval,
   ConnectorTool,
   PluginInstallation,
 } from "@pibot/protocol-base";
@@ -20,6 +22,11 @@ import type {
  * Connector entities stay in protocol-base for the same reason.
  */
 export interface ConnectorsPort {
+  /** Include unavailable names so a longer, inaccessible command cannot select a shorter one. */
+  commandCandidates?(target: ConnectionTarget): {
+    command: Omit<ConnectorCommand, "token">;
+    available: boolean;
+  }[];
   availability?(
     target: ConnectionTarget,
     connection: string,
@@ -58,6 +65,7 @@ export interface ConnectorsPort {
     approved: PreparedConnector,
     signal: AbortSignal,
     authorize: () => void,
+    networkApproval?: ConnectorNetworkApproval,
   ): Promise<unknown>;
   /** Dispatch a trusted, read-only capability adapter operation rather than a raw connector call. */
   dispatchCapability(
@@ -66,6 +74,7 @@ export interface ConnectorsPort {
     approved: PreparedConnector,
     signal: AbortSignal,
     authorize: () => void,
+    networkApproval?: ConnectorNetworkApproval,
   ): Promise<unknown>;
   dispatchDraft(
     approvalId: string,
@@ -74,5 +83,6 @@ export interface ConnectorsPort {
     approved: PreparedConnector,
     signal: AbortSignal,
     authorize: () => void,
+    networkApproval?: ConnectorNetworkApproval,
   ): Promise<unknown>;
 }

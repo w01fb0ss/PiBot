@@ -7,7 +7,7 @@ export const executionZh = {
   "execution.completedChildren": "已结束的子任务",
   "execution.groupPermissions": "群权限",
   "execution.groupPermissionsNote":
-    "统一用于本群所有成员及任务线程。未单独设置的项跟随全局默认；不读取或修改成员单聊设置。群 YOLO 仅作用于本群，禁止项和安全边界仍有效。",
+    "统一用于本群所有成员及任务线程。未单独设置的项跟随全局默认；不读取或修改成员单聊设置。群自动批准模式仅作用于本群，禁止项和安全边界仍有效。",
   "execution.questionTitle": "需要你决定",
   "execution.questionChoose": "请选择一个方案，或补充你的想法",
   "execution.questionRecommended": "推荐",
@@ -126,7 +126,7 @@ export const executionZh = {
   "execution.unknown": "状态未知",
   "execution.execute": "执行",
   "execution.plan": "只规划",
-  "execution.planHint": "只分析和维护计划，不执行操作；YOLO 也不会扩大此权限。",
+  "execution.planHint": "只分析和维护计划，不执行操作；自动批准模式也不会扩大此权限。",
   "execution.progress": "计划 · {done}/{total}",
   "execution.progressRunning": "计划 · {current}/{total} 进行中",
   "execution.stepActions": "{title}的操作",
@@ -157,7 +157,7 @@ export const executionEn: Record<keyof typeof executionZh, string> = {
   "execution.completedChildren": "Finished subtasks",
   "execution.groupPermissions": "Group permissions",
   "execution.groupPermissionsNote":
-    "Shared by all members and task threads in this group. Unset items follow global defaults; members' direct-chat settings are independent. Group YOLO applies only here; denied actions and safety boundaries still apply.",
+    "Shared by all members and task threads in this group. Unset items follow global defaults; members' direct-chat settings are independent. Group Auto-approve applies only here; denied actions and safety boundaries still apply.",
   "execution.questionTitle": "Your decision is needed",
   "execution.questionChoose": "Choose an option or add your own answer",
   "execution.questionRecommended": "Recommended",
@@ -297,7 +297,7 @@ export const executionEn: Record<keyof typeof executionZh, string> = {
   "execution.execute": "Execute",
   "execution.plan": "Plan only",
   "execution.planHint":
-    "Analyze and maintain the plan without taking action. YOLO does not override this limit.",
+    "Analyze and maintain the plan without taking action. Auto-approve does not override this limit.",
   "execution.progress": "Plan · {done}/{total}",
   "execution.progressRunning": "Plan · {current}/{total} in progress",
   "execution.stepActions": "Actions for {title}",

@@ -20,6 +20,7 @@ const known = new Set([
   "skill_import_unsupported",
   "skill_import_too_large",
   "skill_import_file_too_large",
+  "skill_attachment_too_large",
   "skill_import_too_many_files",
   "skill_import_unsafe",
   "skill_import_unreadable",
@@ -32,8 +33,12 @@ const known = new Set([
   "skill_proposal_unavailable",
   "skill_files_invalid",
   "skill_upload_expired",
+  "skill_upload_batch_too_large",
+  "skill_upload_full",
   "skill_upload_empty",
   "skill_upload_skill_file",
+  "skill_secret_invalid",
+  "skill_secret_windows",
 ]);
 /** Brain sends stable codes as the RPC message; anything else is shown as a generic failure. */
 export function skillError(error: unknown): TranslationKey {

@@ -1,6 +1,7 @@
+import { runErrorText } from "@pibot/client-core";
 import type { ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
-import { useStatusText, useText } from "../../runtime/context.tsx";
+import { useSharedText, useStatusText, useText } from "../../runtime/context.tsx";
 import { space, type } from "../../theme/scale.ts";
 import { useColors } from "../../theme/use-theme.ts";
 import { type AvatarLook, type AvatarState, BotAvatar } from "../../ui/avatar.tsx";
@@ -138,6 +139,7 @@ export function RunRow({
   onApprove: () => void;
 }) {
   const t = useText(),
+    shared = useSharedText(),
     status = useStatusText(),
     time = useTimeText();
   const finished = run.finishedAt && run.startedAt;
@@ -172,7 +174,14 @@ export function RunRow({
       }
       title={title}
       state={state}
-      meta={[who, when, run.errorCode].filter(Boolean).join(" · ")}
+      meta={[
+        who,
+        when,
+        runErrorText(run.errorCode, shared) ??
+          (run.status === "error" ? shared("errors.genericFailure") : undefined),
+      ]
+        .filter(Boolean)
+        .join(" · ")}
       action={action}
       onPress={onOpen}
     />

@@ -216,6 +216,15 @@ export class RunsRepo {
       return changed;
     });
   }
+  setRunnerDevice(id: string, deviceId: string | null): boolean {
+    return (
+      this.db
+        .prepare(
+          "UPDATE runs SET runner_device_id=? WHERE id=? AND status='running' AND runner_device_id IS NOT ?",
+        )
+        .run(deviceId, id, deviceId).changes > 0
+    );
+  }
   session(id: string, file: string) {
     this.db.prepare("UPDATE runs SET session_file=? WHERE id=? AND status='running'").run(file, id);
   }

@@ -10,7 +10,10 @@ import {
 } from "./network-proxy.ts";
 
 /** One brain owns every dispatcher until its response is consumed, cancelled or shutdown. */
-export function createNetworkFetch(proxy: () => NetworkProxy | undefined) {
+export function createNetworkFetch(
+  proxy: () => NetworkProxy | undefined,
+  { responseTimeoutMs }: { responseTimeoutMs?: number } = {},
+) {
   const lifetime = new AbortController();
   const owners = new Map<Dispatcher, Promise<void>>();
   const completions = new Set<Promise<void>>();
@@ -26,7 +29,10 @@ export function createNetworkFetch(proxy: () => NetworkProxy | undefined) {
       AbortSignal.timeout(1_200_000),
     ]);
     const selected = proxy();
-    const agent = selected ? proxyAgent(selected) : new Agent({ connect: { timeout: 20_000 } });
+    const timeouts = { headersTimeout: responseTimeoutMs, bodyTimeout: responseTimeoutMs };
+    const agent = selected
+      ? proxyAgent(selected, timeouts)
+      : new Agent({ ...timeouts, connect: { timeout: 20_000 } });
     let complete = () => {};
     const completion = new Promise<void>((resolve) => {
       complete = resolve;

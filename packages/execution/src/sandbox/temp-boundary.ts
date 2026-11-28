@@ -49,7 +49,9 @@ export async function commandTempBoundary(
     for (const parent of parents)
       if (
         within(parent, root) &&
-        /^pibot-(?:run|job)-/.test(relative(parent, root).split(/[\\/]/)[0] ?? "") &&
+        /^(?:pibot-(?:run|job)-|office-convert-[A-Za-z0-9]{6}$)/.test(
+          relative(parent, root).split(/[\\/]/)[0] ?? "",
+        ) &&
         !(own && within(own, root))
       )
         throw new ExecError("outside_workplace", "profile_temp_namespace");

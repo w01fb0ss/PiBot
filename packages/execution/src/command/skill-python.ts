@@ -10,6 +10,18 @@ export const SKILL_PYTHON_DOMAINS = [
   "files.pythonhosted.org",
 ] as const;
 
+export const SKILL_PYTHON_MIRROR = "releases.astral.sh";
+export function skillPythonDomains(useMirror?: true) {
+  return useMirror ? [...SKILL_PYTHON_DOMAINS, SKILL_PYTHON_MIRROR] : [...SKILL_PYTHON_DOMAINS];
+}
+
+export const SKILL_NODE_DOMAINS = ["registry.npmjs.org"] as const;
+
+export function skillNodeDirectory(dataDir: string, envId: string) {
+  if (!/^[a-f0-9]{16}$/.test(envId)) throw new ExecError("invalid_input");
+  return join(dataDir, "skill-envs", envId);
+}
+
 export function skillPythonPaths(
   dataDir: string,
   plan: NonNullable<RunCommandOptions["skillPythonPreparation"]>,

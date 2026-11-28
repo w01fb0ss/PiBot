@@ -23,6 +23,7 @@ export type RuntimeHealth = z.infer<typeof RuntimeHealthSchema>;
  */
 export const CommandPauseSchema = z.strictObject({
   paused: z.enum(["retrying", "stuck"]).nullable(),
+  cleanupUnconfirmed: z.literal(true).optional(),
 });
 export type CommandPause = z.infer<typeof CommandPauseSchema>;
 export const RuntimeMethods = {

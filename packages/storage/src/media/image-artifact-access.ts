@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { MAX_GENERATED_IMAGES } from "@pibot/protocol-base";
 import { BotsRepo } from "../bots/bots.ts";
 import { AttachmentsRepo } from "../conversations/attachments.ts";
 import { ConversationsRepo } from "../conversations/conversations.ts";
@@ -131,7 +132,11 @@ export function resolveArtifactSource(
     throw new TypeError("image_artifact_not_visible");
   const metadata = message.attachments?.filter((item) => item.kind === "image") ?? [];
   const requested = ids ?? metadata.map((item) => item.id);
-  if (!requested.length || requested.length > 5 || new Set(requested).size !== requested.length)
+  if (
+    !requested.length ||
+    requested.length > MAX_GENERATED_IMAGES ||
+    new Set(requested).size !== requested.length
+  )
     throw new TypeError("image_artifact_attachments_invalid");
   const attachments = requested.map((id) => {
     const attachment = new AttachmentsRepo(db).get(id);

@@ -1,7 +1,8 @@
+import { runErrorText } from "@pibot/client-core";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import type { ReactNode } from "react";
 import { ScrollView, Text, View } from "react-native";
-import { useStatusText, useText } from "../../../runtime/context.tsx";
+import { useSharedText, useStatusText, useText } from "../../../runtime/context.tsx";
 import { radius, type } from "../../../theme/scale.ts";
 import { GROUP_TINT, TAB_TINT } from "../../../theme/tint.ts";
 import { useColors } from "../../../theme/use-theme.ts";
@@ -54,6 +55,7 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 function TaskDetail({ item }: { item: TaskItemRef }) {
   const router = useRouter(),
     t = useText(),
+    shared = useSharedText(),
     colors = useColors(),
     status = useStatusText(),
     time = useTimeText(),
@@ -87,6 +89,14 @@ function TaskDetail({ item }: { item: TaskItemRef }) {
     started && finished ? time.duration(Date.parse(finished) - Date.parse(started)) : undefined;
   const { request, reply } = detail.messages.value ?? { request: null, reply: null };
   const files = detail.changes.value?.files.length ?? 0;
+  const failed =
+    record.kind === "run"
+      ? record.run.status === "error"
+      : record.run.status === "failed" || record.run.status === "timeout";
+  const reason =
+    runErrorText(record.run.errorCode, shared) ??
+    (failed ? shared("errors.genericFailure") : undefined);
+  const meta = [group ? bot?.name : undefined, reason].filter(Boolean);
   const lookState =
     state.kind === "run"
       ? "working"
@@ -129,13 +139,8 @@ function TaskDetail({ item }: { item: TaskItemRef }) {
             </Text>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
               <StateTag kind={state.kind} label={state.label} />
-              {!!(group ? bot?.name : record.run.errorCode) && (
-                <Text style={[type.caption, { color: colors.text2 }]}>
-                  ·{" "}
-                  {[group ? bot?.name : undefined, record.run.errorCode]
-                    .filter(Boolean)
-                    .join(" · ")}
-                </Text>
+              {meta.length > 0 && (
+                <Text style={[type.caption, { color: colors.text2 }]}>· {meta.join(" · ")}</Text>
               )}
             </View>
           </View>
@@ -199,6 +204,18 @@ function TaskDetail({ item }: { item: TaskItemRef }) {
               <Attachments messageId={reply.id} items={reply.attachments} />
             )}
           </Section>
+        )}
+        {(failed || !!record.run.errorCode) && (
+          <View style={{ paddingTop: 12 }}>
+            <ListCard>
+              <OptionRow
+                title={t("records")}
+                lead={<Icon name="audit" color={colors.text} size={18} />}
+                right={<Icon name="chevronRight" color={colors.text2} size={16} />}
+                onPress={() => router.push("/records")}
+              />
+            </ListCard>
+          </View>
         )}
         {files > 0 && detail.run && (
           <View style={{ paddingTop: 16 }}>

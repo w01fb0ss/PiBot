@@ -24,6 +24,7 @@ export class ChatReplies {
   private replyTo?: string;
   private dirty = false;
   private modelReplyPending = true;
+  private replying = false;
   private newReply = false;
   private progressTextStart = 0;
   /** The pending segment is a new model reply after visible text, not an addition. */
@@ -49,6 +50,7 @@ export class ChatReplies {
     ) => void = () => {},
     /** Each model reply after visible text becomes its own message (chat runs only). */
     private readonly splitTurns = false,
+    private readonly onReplying?: (replying: boolean) => void,
   ) {
     this.messages = new MessagesRepo(db);
     this.additions = new ChatAdditionsRepo(db);
@@ -101,8 +103,14 @@ export class ChatReplies {
     });
     this.newReply = false;
   }
+  private setReplying(next: boolean) {
+    if (this.replying === next) return;
+    this.replying = next;
+    this.onReplying?.(next);
+  }
   event(event: SessionEvent) {
     if (event.type === "activity") {
+      this.setReplying(false);
       // a waiting hint alone must not create a bubble, so only a real tool step
       // (or the first text below) opens a deferred continuation segment.
       // A turn segment waits for words; tool steps of a text-less reply stay on the
@@ -115,6 +123,7 @@ export class ChatReplies {
     } else if (event.type === "delta") {
       // Leading blank lines of a new turn would otherwise trail the previous message.
       if (this.pendingSegment && this.turnSegment && !event.text.trim()) return;
+      if (event.text) this.setReplying(true);
       // Maintainers 2026-11-13: a message reads "what I'm about to do, then the steps". Steps run
       // before any words keep their own message, and the words start the next one, so the chat
       // can always draw a message's steps under its text.
@@ -148,6 +157,7 @@ export class ChatReplies {
       this.nextSegment = true;
       this.replyTo = event.id;
     } else if (event.type === "replyStart") {
+      this.setReplying(false);
       this.modelReplyPending = true;
       if (!this.nextSegment) {
         if (this.holdTurn) {
@@ -171,6 +181,8 @@ export class ChatReplies {
       this.pendingSegment = true;
       this.flush();
       this.checkpoint();
+    } else if (event.type === "replyEnd") {
+      this.setReplying(false);
     }
   }
   /**

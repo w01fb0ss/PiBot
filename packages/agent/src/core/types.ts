@@ -8,6 +8,7 @@ import type {
   ImageDelivery,
   ImageMode,
   ImageModelInfo,
+  MemoryModelFallback,
   ModelInfo,
   PermissionLevels,
   ResolvedCustomModel,
@@ -29,7 +30,16 @@ export interface ProviderCatalogEntry {
   unavailableReason?: "openai_approval_required";
 }
 
+export interface InitialHistoryMessage {
+  role: "user" | "assistant";
+  text: string;
+  createdAt: string;
+  imported: boolean;
+}
+
 export interface OpenSessionOptions {
+  /** Loaded only when opening a topic without an existing transcript. */
+  initialHistory?(): Promise<InitialHistoryMessage[]>;
   /** Supplied after the host has loaded its registered secrets. */
   redactProviderDetail?(text: string): string;
   retryBoundary?: {
@@ -43,6 +53,8 @@ export interface OpenSessionOptions {
   sessionFile?: string;
   model: { provider: string; id: string };
   thinkingLevel: "off" | "low" | "medium" | "high";
+  /** Dispatch approval can pin the custom provider's origin before any request is sent. */
+  assertModelRecipient?(provider: string, configuredBaseUrl?: string): void;
   // Resolve runtime identity from the same model snapshot used for this session.
   systemPrompt: string | ((model: ModelInfo, providerName: string) => string);
   localTools?: LocalToolPorts;
@@ -51,6 +63,7 @@ export interface OpenSessionOptions {
   signal?: AbortSignal;
   unattended?: boolean;
   onCompaction?(event: CompactionActivity): void;
+  compactWithSelectedModel?: boolean;
   /**
    * Diagnostics only: called as each opening step starts, so a brain stall can be pinned to the
    * step that held the thread. Names are fixed; nothing about the session is passed.
@@ -95,16 +108,20 @@ export interface ModelRequestMetrics {
 export interface AgentRequestObserver {
   beforeRequest(input: {
     id: string;
-    /** `auxiliary`: a run-scoped helper call on the auxiliary model (page extraction). */
+    /** `auxiliary`: a run-scoped helper call such as page extraction or tool input translation. */
     kind: "response" | "compaction" | "auxiliary";
     provider: string;
     model: string;
     pricingKnown: boolean;
+    /** Conservative admission estimate for a bounded optional request. */
+    estimatedCostUsd?: number;
     toolSet?: ToolSetSnapshot;
   }): void;
   settled(input: {
     id: string;
     complete: boolean;
+    /** A failed stream can already have emitted reasoning, text or a tool call. */
+    outputObserved?: boolean;
     usage?: { tokens?: number; costUsd?: number };
   }): void;
   /** One content-free prompt-cache line per settled conversation request. */
@@ -322,21 +339,38 @@ export interface SkillDraftRequest {
 }
 
 /** Conversation text or a note catalog, already redacted by brain. */
+type MemoryModelRef = MemoryModelFallback["from"];
 export interface MemoryDraftRequest {
   text: string;
-  /** Explicit import distillation uses the local-only Ollama transport, with no model fallback. */
+  /** Pins explicit import consent to the catalog route and limits shown in its quote. */
+  importRoute?: { key: string; maxTextBytes: number };
+  /** Explicit import distillation uses the local-only Ollama transport. */
   useLocalOllama?: true;
   /** Replaces the extraction instruction; both share the same model and cost path. */
   instruction?: string;
-  model: { provider: string; id: string };
+  model: MemoryModelRef;
+  /** An overload can use another configured provider. Prefer these text models in order. */
+  fallbackModels?: readonly MemoryModelRef[];
+  /** When Dream requires loopback, a cloud selection is ineligible before dispatch. */
+  localModelChoices?: readonly MemoryModelRef[];
+  onFallback?(fallback: MemoryModelFallback): void;
   signal: AbortSignal;
   /** Dream can restrict the selected generation route to a literal loopback endpoint. */
   localOnly?: true;
   /** Remaining shared background allowance; checked after selecting the actual model. */
   budget?: { tokens: number; costUsd: number };
-  /** Includes failed/truncated responses; never contains model text. */
+  /** Usage from generated output, including incomplete responses. Never contains model text. */
   onUsage?(usage: MemoryDraftUsage): void;
 }
+export type MemoryDraftQuote = {
+  model: MemoryModelRef;
+  modelName: string;
+  providerName: string;
+  maxTextBytes: number;
+  inputOverhead: number;
+  outputTokens: number;
+  prices: { input: number; output: number } | null;
+} & ({ local: true } | { local: false; routeKey: string });
 export interface MemoryDraftUsage {
   tokens: number;
   costUsd?: number;
@@ -345,6 +379,7 @@ export interface MemoryDraftUsage {
 }
 export interface MemoryDraftResult {
   draft: unknown;
+  fallback?: MemoryModelFallback;
   tokens: number;
   costUsd?: number;
 }
@@ -391,10 +426,13 @@ export interface LocalToolResult {
     backgroundStatus?: "running" | "exited" | "stopped" | "failed";
     /** Program metadata only; never extracted from a text result. */
     errorCode?: string;
+    /** Program-owned recovery action surfaced directly on the tool step. */
+    settingsAction?: import("@pibot/protocol-base").ToolSettingsAction;
     /** Fixed execution check, distinct from the outcome of the dispatched operation. */
     executionCheck?: ExecutionCheckCode;
     userRejected?: boolean;
     resultCount?: number | null;
+    open_topic?: import("@pibot/protocol-base").OpenTopicAction;
     fallback?: "browser";
     fallbackReason?: "http_status" | "anti_bot_page" | "js_required";
   };
@@ -544,7 +582,8 @@ export type SessionEvent =
         | { phase: "clear" };
     }
   | { type: "addition"; id: string }
-  | { type: "replyStart" };
+  | { type: "replyStart" }
+  | { type: "replyEnd" };
 
 export type FetchCustomModelsOptions = Pick<CustomProviderConfig, "baseUrl" | "api" | "headers"> & {
   apiKey?: string;
@@ -555,6 +594,7 @@ export interface CompactHistoryRequest {
   sessionFile: string;
   model: { provider: string; id: string };
   fork: boolean;
+  compactWithSelectedModel?: boolean;
   signal: AbortSignal;
   redact(text: string): string;
 }
@@ -594,13 +634,20 @@ export interface AgentRuntime {
   generateImage?(request: ImageGenerationRequest): Promise<ImageGenerationResult>;
   generatePersona(request: PersonaRequest): Promise<{ name: string; systemPrompt: string }>;
   draftCommitMessage?(request: CommitDraftRequest): Promise<string>;
-  transformMessage?(request: {
-    kind: "translation" | "handoff";
-    model: { provider: string; id: string };
-    text: string;
-    language: "zh" | "en";
-    signal: AbortSignal;
-  }): Promise<string>;
+  transformMessage?(
+    request: {
+      text: string;
+      language: "zh" | "en";
+      signal: AbortSignal;
+    } & (
+      | { kind: "translation" | "handoff"; model: { provider: string; id: string } }
+      | {
+          kind: "tool_input_translation";
+          model?: { provider: string; id: string };
+          observer?: AgentRequestObserver;
+        }
+    ),
+  ): Promise<string>;
   /**
    * Only on a configured auxiliary model, never the main one; throws when it is unset or
    * unusable so brain returns the page as before.
@@ -617,7 +664,13 @@ export interface AgentRuntime {
     providerId: string,
     signal: AbortSignal,
   ): Promise<{ providerId: "openrouter"; count: number; updatedAt: string }>;
-  listModels(opts?: { availableOnly?: boolean }): Promise<ModelInfo[]>;
+  quoteMemoryDraft?(request: {
+    models: readonly MemoryModelRef[];
+    localModelChoices: readonly MemoryModelRef[];
+    maxTokens: number;
+    signal: AbortSignal;
+  }): Promise<MemoryDraftQuote | undefined>;
+  listModels(opts?: { availableOnly?: boolean; includeRetired?: boolean }): Promise<ModelInfo[]>;
   testProvider(
     providerId: string,
     modelId?: string,
@@ -683,6 +736,10 @@ export interface ImageGenerationRequest {
   model: { provider: string; id: string };
   // Brain pins the service recipient it authorized before resolving credentials.
   recipient: string;
+  /** The authorized scheme, host and port for configurable image transports. */
+  origin?: string;
+  /** Recheck the approval after asynchronous model and credential resolution. */
+  assertCurrent?(): void;
   mode: ImageMode;
   prompt: string;
   images: ImageContent[];

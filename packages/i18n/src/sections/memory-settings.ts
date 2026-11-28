@@ -4,31 +4,54 @@ export const memorySettingsZh = {
   "memorySettings.maintenance.healthy": "记忆正常 · 最近一次记下 {time}。",
   "memorySettings.maintenance.extraction": "提炼记忆最近 {count} 次未完成：{reason}",
   "memorySettings.maintenance.organization": "整理记忆最近 {count} 次未完成：{reason}",
-  "memorySettings.maintenance.no_model": "没有可用的文字模型。",
+  "memorySettings.maintenance.no_model": "没有可用的文字模型。请在「模型与密钥」配置一个。",
+  "memorySettings.maintenance.local_only_no_model":
+    "已开启「只用本机模型」，但没有可用的本机模型。关闭它或在「模型与密钥」添加本机模型后重试。",
+  "memorySettings.maintenance.busy": "模型服务正忙。",
+  "memorySettings.maintenance.network": "网络暂不可用。",
+  "memorySettings.maintenance.configuration": "模型或服务配置需要检查。",
   "memorySettings.maintenance.auth_failed": "模型密钥无效或登录已失效。",
-  "memorySettings.maintenance.budget_exhausted": "今日记忆预算不足。",
+  "memorySettings.maintenance.budget_exhausted":
+    "今日记忆预算不足。每日额度将在当地时间明天零点重置。",
   "memorySettings.maintenance.draft_invalid": "模型返回的记忆格式无法读取。",
-  "memorySettings.maintenance.failed": "记忆维护遇到错误，请检查模型设置。",
-  "memorySettings.maintenance.budgetNext": "将在预算恢复后继续。",
+  "memorySettings.maintenance.failed": "记忆维护遇到未知错误。",
+  "memorySettings.maintenance.fallback": "{provider} 正忙，已改用 {model} 完成。",
+  "memorySettings.maintenance.fallbackPartial": "{provider} 正忙，已改用 {model} 完成部分整理。",
+  "memorySettings.maintenance.modelOrder":
+    "记忆维护用「模型与密钥」中的辅助模型；没有设置时用默认模型。关闭「只用本机模型」时，如果模型服务持续繁忙，相关内容可能会发送给另一家已配置的厂商。",
+  "memorySettings.maintenance.raiseLimit": "调高上限",
+  "memorySettings.dream.heading": "记忆整理",
   "memorySettings.dream.title": "最近一次记忆整理",
   "memorySettings.dream.summary": "合并 {merged} 组 · 退休 {retired} 条 · {proposed} 条提议",
-  "memorySettings.dream.lead":
-    "用已配置的记忆模型整理。可设为每天空闲时自动整理，也可现在整理。共享记忆的改动由你确认。",
+  "memorySettings.dream.lead": "整理重复或过时的记忆",
+  "memorySettings.dream.sharedNote": "共享记忆的改动由你确认。",
   "memorySettings.dream.run": "现在整理",
   "memorySettings.dream.undo": "撤销",
   "memorySettings.dream.changes": "查看改动",
   "memorySettings.dream.waiting": "提议在「等你处理」里查看。",
   "memorySettings.dream.options": "整理设置",
-  "memorySettings.dream.automatic": "每日自动整理（使用已配置的记忆模型）",
+  "memorySettings.dream.automatic": "每日自动整理",
+  "memorySettings.dream.automaticNote": "空闲时用已配置的记忆模型",
   "memorySettings.dream.localOnly": "只用本机模型",
+  "memorySettings.dream.localOnlyNote": "记忆提炼和整理仅使用本机模型",
   "memorySettings.dream.budget": "每次预算（美元）",
-  "memorySettings.dream.save": "保存",
+  "memorySettings.dream.budgetNote": "单次整理的费用上限",
+  "memorySettings.dream.dailyLimit": "每日上限（美元）",
+  "memorySettings.dream.dailyUsage": "今天已用 {used} / {limit}",
+  "memorySettings.dream.budgetUpdated": "已调整，下次整理按新预算。",
+  "memorySettings.dream.budgetInvalid": "请输入 $0–$100，保留至多两位小数。",
   "memorySettings.dream.empty": "这一轮没有需要整理的记忆。",
   "memorySettings.dream.busy": "正在聊天或整理记忆，请稍后再试。",
   "memorySettings.dream.failed": "未能完成这次操作。记忆有更新时，请重新查看改动。",
   "memorySettings.dream.runFailed":
     "整理遇到错误。检查模型设置或连接后，点「现在整理」继续。已完成的改动已保留。",
+  "memorySettings.dream.noModel":
+    "没有可用的文字模型。请在「模型与密钥」配置一个，再点「现在整理」。",
+  "memorySettings.dream.localOnlyNoModel":
+    "已开启「只用本机模型」，但没有可用的本机模型。关闭它或在「模型与密钥」添加本机模型后，再点「现在整理」。",
+  "memorySettings.dream.runStopped": "整理未完成。{reason} 已完成的改动已保留。",
   "memorySettings.dream.limited": "本次预算已用完。下次从剩余记忆继续。",
+  "memorySettings.dream.dailyLimited": "今日记忆预算不足。预算恢复后从剩余记忆继续。",
   "memorySettings.dream.interrupted": "整理已暂停。下次从剩余记忆继续。",
   "memorySettings.sortIntoPlace": "整理归位",
   "memorySettings.sortLead": "用模型将工作记忆归回来源 Bot，保留个人偏好；移动前由你逐条确认。",
@@ -40,6 +63,13 @@ export const memorySettingsZh = {
   "memorySettings.sort.limited":
     "已达到本次整理的时间、内容或用量上限，剩余记忆未处理。已生成的提议仍可确认。",
   "memorySettings.sort.failed": "整理未完成，请检查模型和连接后重试。已生成的提议仍可确认。",
+  "memorySettings.sort.noModel":
+    "没有可用的文字模型。请在「模型与密钥」配置一个，再点「整理归位」。已生成的提议仍可确认。",
+  "memorySettings.sort.localOnlyNoModel":
+    "已开启「只用本机模型」，但没有可用的本机模型。关闭它或在「模型与密钥」添加本机模型后，再点「整理归位」。已生成的提议仍可确认。",
+  "memorySettings.sort.busyProvider": "模型服务正忙，稍后再试（已生成的提议仍可确认）",
+  "memorySettings.sort.network": "网络暂不可用，请在连接恢复后重试（已生成的提议仍可确认）",
+  "memorySettings.sort.unknown": "{reason} 已生成的提议仍可确认。",
   "memorySettings.projectFileChanged": "AGENTS.md 在提议之后被改过，没有写入。请重新整理后再确认。",
   "memorySettings.projectTargetInvalid":
     "项目里的 AGENTS.md 不是普通文件（可能是链接），没有写入。",
@@ -146,35 +176,60 @@ export const memorySettingsEn = {
     "Recent unfinished extraction attempts ({count}): {reason}",
   "memorySettings.maintenance.organization":
     "Recent unfinished organization attempts ({count}): {reason}",
-  "memorySettings.maintenance.no_model": "No text model is available.",
+  "memorySettings.maintenance.no_model": "No text model is available. Set one in Models and keys.",
+  "memorySettings.maintenance.local_only_no_model":
+    "Local-only is on, but no local model is available. Turn it off or add a local model in Models and keys, then retry.",
+  "memorySettings.maintenance.busy": "The model service is busy.",
+  "memorySettings.maintenance.network": "The network is temporarily unavailable.",
+  "memorySettings.maintenance.configuration": "The model or service configuration needs attention.",
   "memorySettings.maintenance.auth_failed":
     "The model API key is invalid or the sign-in has expired.",
-  "memorySettings.maintenance.budget_exhausted": "There is not enough memory budget left today.",
+  "memorySettings.maintenance.budget_exhausted":
+    "There’s not enough memory budget left under the daily limit. It resets tonight at local midnight.",
   "memorySettings.maintenance.draft_invalid":
     "The model returned a memory draft that could not be read.",
-  "memorySettings.maintenance.failed": "Memory maintenance failed. Check the model settings.",
-  "memorySettings.maintenance.budgetNext": "Work resumes when the budget is available.",
+  "memorySettings.maintenance.failed": "Memory maintenance failed for an unknown reason.",
+  "memorySettings.maintenance.fallback": "{provider} was busy — finished with {model}",
+  "memorySettings.maintenance.fallbackPartial":
+    "{provider} was busy — completed part of the cleanup with {model}",
+  "memorySettings.maintenance.modelOrder":
+    "Memory maintenance uses the auxiliary model from Models and keys, or the default model when none is set. With local-only off, a busy model service can cause maintenance to send the relevant content to another configured provider.",
+  "memorySettings.maintenance.raiseLimit": "Raise limit",
+  "memorySettings.dream.heading": "Memory cleanup",
   "memorySettings.dream.title": "Latest memory cleanup",
   "memorySettings.dream.summary": "{merged} merged · {retired} retired · {proposed} proposals",
-  "memorySettings.dream.lead":
-    "Use the configured memory model to clean up now or daily while idle. Changes to shared memories need your confirmation.",
+  "memorySettings.dream.lead": "Tidy saved memories",
+  "memorySettings.dream.sharedNote": "Approve changes to shared memories.",
   "memorySettings.dream.run": "Clean up now",
   "memorySettings.dream.undo": "Undo",
   "memorySettings.dream.changes": "View changes",
   "memorySettings.dream.waiting": "Review proposals in Waiting for you.",
   "memorySettings.dream.options": "Cleanup settings",
-  "memorySettings.dream.automatic": "Clean up daily using the configured memory model",
+  "memorySettings.dream.automatic": "Clean up automatically every day",
+  "memorySettings.dream.automaticNote": "Use the configured memory model while idle",
   "memorySettings.dream.localOnly": "Use only a local model",
+  "memorySettings.dream.localOnlyNote": "Use local models for memory extraction and cleanup",
   "memorySettings.dream.budget": "Budget per run (USD)",
-  "memorySettings.dream.save": "Save",
+  "memorySettings.dream.budgetNote": "Maximum cost of a single cleanup",
+  "memorySettings.dream.dailyLimit": "Daily limit (USD)",
+  "memorySettings.dream.dailyUsage": "Used today: {used} of {limit}",
+  "memorySettings.dream.budgetUpdated": "Updated. The next run uses the new budget.",
+  "memorySettings.dream.budgetInvalid": "Enter $0–$100 in whole cents.",
   "memorySettings.dream.empty": "No memories needed cleanup this time.",
   "memorySettings.dream.busy": "Chat or memory maintenance is busy. Try again shortly.",
   "memorySettings.dream.failed":
     "Could not complete the operation. If memories changed, review the latest changes.",
   "memorySettings.dream.runFailed":
     "Cleanup stopped. Check the model settings or connection, then choose Clean up now to continue. Completed changes were kept.",
+  "memorySettings.dream.noModel":
+    "No text model is available. Set one in Models and keys, then choose Clean up now.",
+  "memorySettings.dream.localOnlyNoModel":
+    "Local-only is on, but no local model is available. Turn it off or add a local model in Models and keys, then choose Clean up now.",
+  "memorySettings.dream.runStopped": "Cleanup stopped. {reason} Completed changes were kept.",
   "memorySettings.dream.limited":
     "This run reached its budget. Cleanup will continue with the remaining memories next time.",
+  "memorySettings.dream.dailyLimited":
+    "Today’s memory budget is too low. Cleanup will continue with the remaining memories when the budget is available.",
   "memorySettings.dream.interrupted":
     "Cleanup paused. It will continue with the remaining memories next time.",
   "memorySettings.sortIntoPlace": "Sort into place",
@@ -190,6 +245,15 @@ export const memorySettingsEn = {
     "This run reached its time, content or usage limit. Remaining memories were not processed; created proposals are still available.",
   "memorySettings.sort.failed":
     "Sorting could not finish. Check the model and connection, then retry. Created proposals are still available.",
+  "memorySettings.sort.noModel":
+    "No text model is available. Set one in Models and keys, then choose Sort into place. Created proposals are still available.",
+  "memorySettings.sort.localOnlyNoModel":
+    "Local-only is on, but no local model is available. Turn it off or add a local model in Models and keys, then choose Sort into place. Created proposals are still available.",
+  "memorySettings.sort.busyProvider":
+    "The model service is busy — try again shortly (suggestions already made can still be confirmed)",
+  "memorySettings.sort.network":
+    "The network is temporarily unavailable — try again when connected (suggestions already made can still be confirmed)",
+  "memorySettings.sort.unknown": "{reason} Created proposals are still available to confirm.",
   "memorySettings.projectFileChanged":
     "AGENTS.md changed after this proposal was made, so nothing was written. Sort again, then confirm.",
   "memorySettings.projectTargetInvalid":

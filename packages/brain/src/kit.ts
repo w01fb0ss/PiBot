@@ -11,6 +11,7 @@ export {
   matchesFileIdentity,
   sameFile,
 } from "@pibot/execution/file-identity";
+export { DISPATCH_FOLDER_CONFIRM, DISPATCH_MODEL_CONFIRM } from "@pibot/policy";
 export {
   attachmentDirectory,
   checkedImage,
@@ -20,6 +21,7 @@ export {
 export { attachmentSource } from "./conversations/attachments/attachment-source.ts";
 export type { PreparedAttachments } from "./conversations/attachments/attachments.ts";
 export { AttachmentService } from "./conversations/attachments/attachments.ts";
+export { extractAttachment } from "./conversations/attachments/extract-attachment.ts";
 export { imageDimensions } from "./conversations/attachments/image-dimensions.ts";
 export { readManagedImage } from "./conversations/attachments/managed-image.ts";
 export { isOutputDeliverable } from "./conversations/attachments/output-path.ts";
@@ -49,6 +51,7 @@ export type {
   CapabilityContext,
   ToolCardDescriber,
   ToolExecutor,
+  ToolMustAsk,
   UnattendedAuthorization,
   UnattendedSendIntent,
   UnattendedSendLedger,
@@ -67,7 +70,7 @@ export { endpoint } from "./core/endpoint.ts";
 export { activeGroup, requireGroupMember, visibleGroupMessage } from "./core/group-access.ts";
 export type { HostCall } from "./core/host-call.ts";
 export type { CollaborationPort, PreparedTool, ToolRunContext } from "./core/local-types.ts";
-export { mainDirectRun } from "./core/main-direct.ts";
+export { mainDirectRun, mainDirectTopic } from "./core/main-direct.ts";
 export type {
   ExecutionCleanupPort,
   ExecutionPort,
@@ -108,6 +111,8 @@ export {
   zipEntries,
 } from "./resources/packages/skill-source.ts";
 export * from "./resources/packages/skill-zip.ts";
+export type { DispatchFolder } from "./resources/workplaces/dispatch-folder.ts";
+export { resolveDispatchFolder } from "./resources/workplaces/dispatch-folder.ts";
 export { FolderLockError } from "./resources/workplaces/folder-write-lock.ts";
 export {
   isWorkplaceUnavailable,
@@ -149,9 +154,20 @@ export {
   authorizeDelegatedAction,
   type DelegatedDecision,
 } from "./runtime/external-agents/delegated-authorization.ts";
-export type { ExternalAgentRunHost, ExternalAgentsPort } from "./runtime/external-agents/port.ts";
+export {
+  type AgentReplayCapabilities,
+  EXTERNAL_AGENT_REPLAY_PORT,
+  type ExternalAgentReplayPort,
+  type ExternalAgentRunHost,
+  type ExternalAgentsPort,
+  type ReplayAgentId,
+  type ReplayedMessage,
+  type ReplayedSession,
+  type ReplaySessionRequest,
+  type ReplaySessionsResult,
+} from "./runtime/external-agents/port.ts";
 export { requireImageModel } from "./runtime/media/image-preflight.ts";
-export type { ImageRunHost, ImagesPort } from "./runtime/media/images-port.ts";
+export type { ImageDispatchModel, ImageRunHost, ImagesPort } from "./runtime/media/images-port.ts";
 export type { BinaryToolRun, ExtractedOffice, OfficePort } from "./runtime/media/office-port.ts";
 export type {
   GroupMemoryPort,
@@ -162,6 +178,11 @@ export type {
   PersonalMemoryPort,
 } from "./runtime/memory/port.ts";
 export { memoryProjectPath } from "./runtime/memory/project.ts";
+export {
+  type DispatchRecoveryCard,
+  dispatchModelProblem,
+  dispatchThinkingLevel,
+} from "./runtime/models/dispatch-run-model.ts";
 export type { ModelProvidersPort, ModelSettingsPort } from "./runtime/models/port.ts";
 export { writeReviewedProjectNotes } from "./runtime/notes/reviewed-project-notes.ts";
 export type { WakeSource } from "./runtime/queue/brain-sleep.ts";
@@ -187,6 +208,10 @@ export {
   prepareTool,
   toolFingerprint,
 } from "./runtime/tools/local-prepare.ts";
+export {
+  createProtectedReadPathCheck,
+  createReadPathBoundary,
+} from "./runtime/tools/local-read-boundary.ts";
 export type {
   BuiltinMethodsPort,
   PluginSkillInput,

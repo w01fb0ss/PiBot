@@ -10,7 +10,11 @@ import {
   RpcErrorCodes,
 } from "@pibot/protocol-base";
 import { BotNameTakenError, ConversationsRepo } from "@pibot/storage";
-import type { RpcRequestContext } from "../../core/business-rpc.ts";
+import {
+  PI_SETTINGS_METHODS,
+  type PiSettingsRpc,
+  type RpcRequestContext,
+} from "../../core/business-rpc.ts";
 import type { BrainSleep } from "../queue/brain-sleep.ts";
 
 interface StartupContext {
@@ -23,6 +27,7 @@ interface StartupContext {
   opts?: {
     requestSource?: () => "acp" | "desktop-main" | undefined;
     isPhoneRequest?: () => boolean;
+    phoneRequestDeviceId?: () => string | undefined;
   };
   sleep: BrainSleep | undefined;
   interactiveAttached: boolean;
@@ -88,7 +93,9 @@ export function registerBusinessRpc<K extends keyof typeof KernelMethods>(
       ...context,
       source: source === "acp" ? source : undefined,
       desktopMain: source === "desktop-main",
-      ...(ctx.opts?.isPhoneRequest?.() ? { phone: true } : {}),
+      ...(ctx.opts?.isPhoneRequest?.()
+        ? { phone: true, phoneDeviceId: ctx.opts.phoneRequestDeviceId?.() }
+        : {}),
     };
     context.signal.throwIfAborted();
     if (ctx.stopping) throw new RpcError(-32001, "Brain stopping");
@@ -159,4 +166,31 @@ export function registerBusinessRpc<K extends keyof typeof KernelMethods>(
       context: RpcRequestContext,
     ) => Promise<import("@pibot/protocol-base").Result<typeof KernelMethods, K>>,
   );
+  return invoke;
+}
+
+/** Route Pi's validated settings plans through the UI's registered RPC entry points. */
+export function piSettingsRpc(methods: import("@pibot/protocol-base").MethodTable) {
+  const handlers = new Map<
+    string,
+    (params: unknown, context: RpcRequestContext) => Promise<unknown>
+  >();
+  const allowed = new Set<string>(PI_SETTINGS_METHODS);
+  const call: PiSettingsRpc = async (method, params, signal) => {
+    const schema = methods[method];
+    const handler = handlers.get(method);
+    if (!schema || !handler) throw new RpcError(RpcErrorCodes.unsupported, "settings_unavailable");
+    const parsed = schema.params.safeParse(params);
+    if (!parsed.success) throw new RpcError(RpcErrorCodes.invalidParams, "settings_invalid_value");
+    return schema.result.parse(await handler(parsed.data, { signal }));
+  };
+  return {
+    call,
+    register(
+      method: string,
+      handler: (params: unknown, context: RpcRequestContext) => Promise<unknown>,
+    ) {
+      if (allowed.has(method)) handlers.set(method, handler);
+    },
+  };
 }

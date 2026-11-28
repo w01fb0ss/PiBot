@@ -3,6 +3,7 @@ import type { DeviceView } from "@pibot/remote-contract";
 import { Overlay, SettingsLine, useT } from "@pibot/renderer-kit";
 import { Button, Chip, IconTile } from "@pibot/ui";
 import { useEffect, useState } from "react";
+import { displaySecurityCode } from "../pairing/security-code.ts";
 import styles from "../settings/remote.module.css";
 export function DeviceRow({
   device,
@@ -92,9 +93,7 @@ export function DeviceRow({
               ? t("remote.lastSeen", { time: new Date(device.lastSeenAt).toLocaleString() })
               : t("remote.neverSeen")}
           </small>
-          {device.online && (
-            <small>{t(direct ? "remote.path.directHint" : "remote.path.relayHint")}</small>
-          )}
+          {device.online && direct && <small>{t("remote.path.directHint")}</small>}
           {phoneData && (
             <small>
               {shared.length
@@ -104,9 +103,22 @@ export function DeviceRow({
           )}
         </div>
         <Chip tone={device.online ? "ok" : "warn"}>
-          {device.online ? `${status} · ${pathText}` : status}
+          {device.online && direct ? `${status} · ${pathText}` : status}
         </Chip>
       </div>
+      {device.online && !direct && (
+        <details className={styles.deviceDetails}>
+          <summary>{pathText}</summary>
+          <p>{t("remote.path.relayHint")}</p>
+          {device.directFailure && <p>{t("remote.direct.fallback")}</p>}
+        </details>
+      )}
+      {device.securityCode && (
+        <details className={styles.deviceDetails}>
+          <summary>{t("remote.verifyCode")}</summary>
+          <p>{t("remote.securityCode", { code: displaySecurityCode(device.securityCode) })}</p>
+        </details>
+      )}
       <div className={styles.deviceActions}>
         <Button
           variant="ghost"
@@ -122,16 +134,24 @@ export function DeviceRow({
           </Button>
         )}
       </div>
-      {device.online && !direct && device.directFailure && (
-        <SettingsLine tone="warn">
-          {t(`remote.direct.failure.${device.directFailure}`)}
-        </SettingsLine>
-      )}
-      {device.online && device.isolation && !device.isolation.available && (
-        <SettingsLine tone="warn">
-          {t("isolation.warning")} {isolationReasonText(device.isolation.reason, t)}
-        </SettingsLine>
-      )}
+      {(device.online || device.kind === "runner") &&
+        device.isolation &&
+        !device.isolation.available && (
+          <SettingsLine tone="warn">
+            {device.isolation.reason === "windows_unisolated" ||
+            device.isolation.reason === "acp_editor_terminal_unisolated"
+              ? t("isolation.warning.device")
+              : t("isolation.deviceBlocked", { name: device.name })}{" "}
+            {isolationReasonText(device.isolation.reason, t)}
+            {(device.isolation.reason === "linux_bubblewrap_missing" ||
+              device.isolation.reason === "linux_socat_missing") &&
+              ` ${t("isolation.deviceInstall", {
+                name: device.name,
+                dependency:
+                  device.isolation.reason === "linux_bubblewrap_missing" ? "bubblewrap" : "socat",
+              })}`}
+          </SettingsLine>
+        )}
       {device.revocationPending && (
         <SettingsLine tone="warn">{t(`remote.revocationPending.${device.kind}`)}</SettingsLine>
       )}

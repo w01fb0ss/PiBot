@@ -14,6 +14,8 @@ export const IslandItemSchema = z.strictObject({
   key: z.string().min(1).max(200),
   name: line,
   text: line,
+  /** Localized location of a run on a paired device. */
+  runner: line.optional(),
   /** Accessible name of the row's open button. */
   open: line,
   avatar: z.strictObject({
@@ -28,8 +30,7 @@ export const IslandItemSchema = z.strictObject({
   }),
   startedAt: z.number().int().nonnegative(),
 });
-export const IslandStateSchema = z.strictObject({
-  theme: z.enum(["light", "dark"]),
+const IslandViewSchema = z.strictObject({
   mode: z.enum(["full", "avatars"]),
   labels: z.strictObject({
     previous: line,
@@ -42,7 +43,13 @@ export const IslandStateSchema = z.strictObject({
   }),
   items: z.array(IslandItemSchema).min(1).max(20),
 });
+export const IslandStateSchema = IslandViewSchema.extend({ theme: z.enum(["light", "dark"]) });
 export type IslandState = z.infer<typeof IslandStateSchema>;
+export const IslandPresentationSchema = z.strictObject({
+  title: line,
+  view: IslandViewSchema,
+});
+export type IslandPresentation = z.infer<typeof IslandPresentationSchema>;
 export const IslandActionSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("open"), key: z.string().min(1).max(200) }),
   // The pill's laid-out size, so the window covers only the pill and not the screen around it.
@@ -52,8 +59,6 @@ export const IslandActionSchema = z.discriminatedUnion("kind", [
     height: z.number().int().min(1).max(200),
   }),
 ]);
-export type IslandAction = z.infer<typeof IslandActionSchema>;
-
 export type IslandSupport = "supported" | "wayland" | "no_display";
 /**
  * Whether this session can keep a small non-focusable window on top at a chosen position.

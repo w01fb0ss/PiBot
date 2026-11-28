@@ -43,12 +43,12 @@ export function grantLabel(grant: GrantListItem, t = createTranslator("en")): st
       return grant.scope.name;
     // Owner decision 2026-10-23: paid image generation with this exact model.
     case "paid_image":
-      return paidImageModel(grant.scope);
+      return paidImageModel(grant.scope, grant.providerName);
   }
 }
 /** How a paid image scope names its model on cards and grant lists. */
-export function paidImageModel(scope: { provider: string; model: string }) {
-  return `${scope.provider} / ${scope.model}`;
+export function paidImageModel(scope: { provider: string; model: string }, providerName?: string) {
+  return `${providerName || scope.provider} / ${scope.model}`;
 }
 /**
  * One Bot's remembered "always allow" grants, shown only in that Bot's profile panel

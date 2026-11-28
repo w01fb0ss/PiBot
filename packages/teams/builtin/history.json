@@ -5015,6 +5015,62 @@
           }
         }
       ]
+    },
+    "content-writer": {
+      "1": [
+        {
+          "thinkingLevel": "low",
+          "permissionOverrides": {
+            "run_command": "never",
+            "send_out": "never"
+          },
+          "norms": {
+            "zh": "0e8f2b4ce1ecd020",
+            "en": "c19d5f5e286dc508"
+          },
+          "skills": {
+            "media-desk-produce": {
+              "zh": "870c65e45f89ec60",
+              "en": "fdb3ec75e2382dcb"
+            },
+            "media-desk-review": {
+              "zh": "c0d8905753c89517",
+              "en": "78c2a449320809ff"
+            },
+            "media-desk-style": {
+              "zh": "f9e04c088fc730d0",
+              "en": "3cf3fbdc57a9d8dd"
+            }
+          }
+        }
+      ],
+      "2": [
+        {
+          "thinkingLevel": "low",
+          "permissionOverrides": {
+            "run_command": "never",
+            "send_out": "never"
+          },
+          "norms": {
+            "zh": "0e8f2b4ce1ecd020",
+            "en": "c19d5f5e286dc508"
+          },
+          "skills": {
+            "media-desk-produce": {
+              "zh": "4de8b528b9537814",
+              "en": "dd8b04f3c541500a"
+            },
+            "media-desk-review": {
+              "zh": "c0d8905753c89517",
+              "en": "78c2a449320809ff"
+            },
+            "media-desk-style": {
+              "zh": "f9e04c088fc730d0",
+              "en": "3cf3fbdc57a9d8dd"
+            }
+          }
+        }
+      ]
     }
   },
   "groups": {
@@ -5885,6 +5941,25 @@
           },
           "autoRoundLimit": 3
         }
+      ],
+      "16": [
+        {
+          "name": {
+            "zh": "研究小组",
+            "en": "Research Group"
+          },
+          "coordinator": "researcher",
+          "members": ["researcher", "data-analyst", "presentation-designer"],
+          "announcement": {
+            "zh": "6285eeb58b016ff4",
+            "en": "0e30f6bc755248ca"
+          },
+          "quickStarts": {
+            "zh": "c9fdb2401e7b3f33",
+            "en": "7e7e33094946525e"
+          },
+          "autoRoundLimit": 8
+        }
       ]
     },
     "study-group": {
@@ -6155,6 +6230,25 @@
           },
           "autoRoundLimit": 3
         }
+      ],
+      "5": [
+        {
+          "name": {
+            "zh": "轻量开发组",
+            "en": "Lean Dev Team"
+          },
+          "coordinator": "fullstack-dev",
+          "members": ["fullstack-dev", "qa-engineer", "code-reviewer"],
+          "announcement": {
+            "zh": "ab8526bf35456b4d",
+            "en": "dd00ff4023363ba5"
+          },
+          "quickStarts": {
+            "zh": "c3835397fe2e2650",
+            "en": "91db36c04d1f8ed1"
+          },
+          "autoRoundLimit": 8
+        }
       ]
     },
     "opc-team": {
@@ -6182,6 +6276,91 @@
             "en": "0f78efc75d684d22"
           },
           "autoRoundLimit": 3
+        }
+      ],
+      "2": [
+        {
+          "name": {
+            "zh": "一人公司",
+            "en": "One-Person Company"
+          },
+          "coordinator": "chief-of-staff",
+          "members": [
+            "chief-of-staff",
+            "finance-assistant",
+            "fullstack-dev",
+            "operations-manager",
+            "customer-support",
+            "code-reviewer"
+          ],
+          "announcement": {
+            "zh": "75b86cc2151dd957",
+            "en": "71b3cb6e2ee9cf93"
+          },
+          "quickStarts": {
+            "zh": "775fd3a41a7fffa7",
+            "en": "0f78efc75d684d22"
+          },
+          "autoRoundLimit": 8
+        }
+      ]
+    },
+    "content-desk": {
+      "1": [
+        {
+          "name": {
+            "zh": "自媒体工作台",
+            "en": "Content desk"
+          },
+          "coordinator": "content-writer",
+          "members": ["content-writer", "image-designer"],
+          "announcement": {
+            "zh": "adfb914d5941861e",
+            "en": "9b1114e578e79265"
+          },
+          "quickStarts": {
+            "zh": "00a45261c9456999",
+            "en": "dd6315c6bb7f0dbf"
+          },
+          "autoRoundLimit": 3
+        }
+      ],
+      "2": [
+        {
+          "name": {
+            "zh": "自媒体工作台",
+            "en": "Content desk"
+          },
+          "coordinator": "content-writer",
+          "members": ["content-writer", "image-designer"],
+          "announcement": {
+            "zh": "ed783a1d39c65dfc",
+            "en": "e463adc9c841cff8"
+          },
+          "quickStarts": {
+            "zh": "00a45261c9456999",
+            "en": "dd6315c6bb7f0dbf"
+          },
+          "autoRoundLimit": 3
+        }
+      ],
+      "3": [
+        {
+          "name": {
+            "zh": "自媒体工作台",
+            "en": "Content desk"
+          },
+          "coordinator": "content-writer",
+          "members": ["content-writer", "image-designer"],
+          "announcement": {
+            "zh": "ed783a1d39c65dfc",
+            "en": "e463adc9c841cff8"
+          },
+          "quickStarts": {
+            "zh": "00a45261c9456999",
+            "en": "dd6315c6bb7f0dbf"
+          },
+          "autoRoundLimit": 8
         }
       ]
     }
@@ -7170,6 +7349,36 @@
         {
           "zh": "4d0bd85dbdc993a2",
           "en": "eeff4bc5ce416554"
+        }
+      ]
+    },
+    "media-desk-produce": {
+      "1": [
+        {
+          "zh": "870c65e45f89ec60",
+          "en": "fdb3ec75e2382dcb"
+        }
+      ],
+      "2": [
+        {
+          "zh": "4de8b528b9537814",
+          "en": "dd8b04f3c541500a"
+        }
+      ]
+    },
+    "media-desk-review": {
+      "1": [
+        {
+          "zh": "c0d8905753c89517",
+          "en": "78c2a449320809ff"
+        }
+      ]
+    },
+    "media-desk-style": {
+      "1": [
+        {
+          "zh": "f9e04c088fc730d0",
+          "en": "3cf3fbdc57a9d8dd"
         }
       ]
     }

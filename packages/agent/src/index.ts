@@ -7,7 +7,7 @@ export {
 export { type ChatGPTSignInFailure, chatGPTSignInFailure } from "./auth/chatgpt-callback.ts";
 export { assertSupportedCredential, assertSupportedHeaders } from "./auth/claude-subscription.ts";
 export { BRAIN_AUTH_ENV_NAMES, sanitizeBrainEnv } from "./core/env.ts";
-export { AgentError, mapAgentError } from "./core/errors.ts";
+export { AgentError, MemoryDraftBudgetError, mapAgentError } from "./core/errors.ts";
 export {
   type ConnectorToolHints,
   connectorEffectClass,
@@ -17,6 +17,7 @@ export {
 } from "./core/tool-effects.ts";
 export { toolErrorLog } from "./core/tool-error-log.ts";
 export type * from "./core/types.ts";
+export { formatImportedHistoryReference } from "./extensions/imported-history.ts";
 export { createConnectorConnectionFactory } from "./mcp/lazy-connection.ts";
 export { listProviderCatalog } from "./models/catalog.ts";
 export { chatGPTPlanModels } from "./models/chatgpt-plan-models.ts";

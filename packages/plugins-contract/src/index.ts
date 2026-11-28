@@ -15,6 +15,7 @@ export * from "./api/discovery.ts";
 export * from "./api/knowledge.ts";
 export * from "./api/methods.ts";
 export * from "./import/credential-detection.ts";
+export * from "./import/plugin-config.ts";
 export * from "./import/unsupported-components.ts";
 export * from "./tools/index.ts";
 

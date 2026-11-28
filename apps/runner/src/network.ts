@@ -20,7 +20,6 @@ import {
   runnerPairRoom,
   runnerRetryDelay,
   runnerRoomKey,
-  type SocketConstructor,
   unbase64,
   waitRunnerRetry,
 } from "@pibot/link";
@@ -29,8 +28,9 @@ import type { createRunnerRuntime, RunnerIdentity } from "@pibot/runner";
 import { createRunnerDirect } from "./direct.ts";
 import type { RunnerLogger } from "./logger.ts";
 import { forgetPairedDesktop, readPairedDesktop, savePairedDesktop } from "./paired-desktop.ts";
+import type { RunnerProxy } from "./proxy/route.ts";
 import type { RunnerRedactor } from "./redactor.ts";
-import { RelaySocket } from "./relay-socket.ts";
+import { relaySocket } from "./relay-socket.ts";
 import { createRunnerRtcFactory } from "./rtc-peer.ts";
 import type { RunnerConnection } from "./state.ts";
 
@@ -72,6 +72,8 @@ export function createRunnerNetwork(options: {
   pair?: boolean;
   pairCode?: string;
   relay: string;
+  /** How relay connections reach the internet (`--proxy`, environment or system proxy). */
+  proxy: RunnerProxy;
   /** This device's name as it appears in the desktop (default: host name, or `pair --name`). */
   deviceName: string;
   output(code: string): void;
@@ -80,6 +82,14 @@ export function createRunnerNetwork(options: {
 }) {
   const lifetime = new AbortController();
   const signal = AbortSignal.any([options.signal, lifetime.signal]);
+  const RelaySocketClass = relaySocket(options.proxy);
+  // The route is asynchronous (a PAC script may decide it); a failed lookup means direct.
+  const relayRoute = async (relay: string) => ({
+    relay: relay === OFFICIAL_RUNNER_RELAY ? "official" : "custom",
+    proxy: (await options.proxy.route(relay).catch(() => undefined))
+      ? options.proxy.source
+      : "direct",
+  });
   let current: Port | undefined;
   let pendingCleanup: (() => Promise<void>) | undefined;
   let revocation: Promise<void> | undefined;
@@ -141,11 +151,12 @@ export function createRunnerNetwork(options: {
       const decoded = decodeRunnerPairCode(code);
       decoded.psk.fill(0);
       decoded.prologue.fill(0);
-      if (decoded.relay) options.relay = decoded.relay;
+      const relay = decoded.relay ?? options.relay;
       const expires = Date.now() + 600_000;
       const pairing = AbortSignal.any([signal, AbortSignal.timeout(600_000)]);
       if (!options.pairCode) options.output(code);
       let success = false;
+      let reachedService = false;
       // Only a pairing that reached the room can tell us the code was rejected. Relay and TLS
       // timeouts happen before that and must not consume the three code attempts.
       let codeFailures = 0;
@@ -157,14 +168,15 @@ export function createRunnerNetwork(options: {
         const started = Date.now();
         try {
           room = await openRunnerRelay({
-            WebSocket: RelaySocket as unknown as SocketConstructor,
-            relay: options.relay,
+            WebSocket: RelaySocketClass,
+            relay,
             ticket: runnerPairRoom(decoded.hint),
             slot: runnerDeviceId(new TextEncoder().encode(decoded.hint.padEnd(32, ":"))),
             role: "runner",
             signal: pairing,
           });
           opened = true;
+          reachedService = true;
           await pairRunnerSession({
             transport: room.transport,
             keys: options.identity.keys,
@@ -181,10 +193,10 @@ export function createRunnerNetwork(options: {
               await savePairedDesktop(options.dataDir, {
                 version: 1,
                 ...peer,
-                relay: options.relay,
+                relay,
               });
               options.onPaired?.();
-              audit("paired");
+              audit("paired", await relayRoute(relay));
               success = true;
             },
           });
@@ -194,6 +206,7 @@ export function createRunnerNetwork(options: {
           if (success) break;
           const where = {
             ...runnerLinkFailure(error, opened ? "noise_handshake" : "relay"),
+            ...(await relayRoute(relay)),
             elapsedMs: Date.now() - started,
           };
           if (opened && !pairing.aborted) {
@@ -213,7 +226,7 @@ export function createRunnerNetwork(options: {
       }
       if (!success) {
         audit("expired_or_exhausted");
-        throw new Error("runner_pair_failed");
+        throw new Error(reachedService ? "runner_pair_failed" : "runner_pair_unreachable");
       }
     }
     let attempt = 0;
@@ -337,7 +350,7 @@ export function createRunnerNetwork(options: {
         const paired = await readPairedDesktop(options.dataDir);
         if (!paired) return;
         pairedComputerName = paired.name;
-        validateRunnerRelay(paired.relay);
+        const relay = validateRunnerRelay(paired.relay);
         let room: Awaited<ReturnType<typeof openRunnerRelay>> | undefined;
         let selectedDirect: Direct | undefined;
         let active: AbortSignal;
@@ -362,11 +375,12 @@ export function createRunnerNetwork(options: {
             try {
               const ticket = roomTicket(key);
               room = await openRunnerRelay({
-                WebSocket: RelaySocket as unknown as SocketConstructor,
-                relay: paired.relay,
+                WebSocket: RelaySocketClass,
+                relay,
                 ticket,
                 role: "runner",
-                peerTimeoutMs: 5000,
+                // The desktop can be between attempts when this runner rejoins.
+                peerTimeoutMs: 20_000,
                 slot: runnerDeviceId(unbase64(ticket.roomId, 32)),
                 signal: relayLifetime,
               });
@@ -381,7 +395,6 @@ export function createRunnerNetwork(options: {
               publicKey: paired.publicKey,
               role: "initiator",
               random: randomBytes,
-              timeoutMs: 5000,
               signal: relaySignal,
             });
             return { port, signal: relaySignal };
@@ -537,6 +550,7 @@ export function createRunnerNetwork(options: {
               const ended = room?.ended();
               options.logger.write("info", "runner.connection_ended", {
                 path: selectedDirect?.path ?? "relay",
+                stage: ended?.stage ?? "session",
                 reason: generation.aborted
                   ? "rotation"
                   : selectedDirect
@@ -553,6 +567,7 @@ export function createRunnerNetwork(options: {
           if (!signal.aborted)
             options.logger.write("warn", "runner.connection_failed", {
               ...runnerLinkFailure(error, stage),
+              ...(await relayRoute(relay)),
               path: selectedDirect?.path ?? "relay",
               elapsedMs: Date.now() - started,
               ...(onlineAt ? { onlineMs: Date.now() - onlineAt } : {}),

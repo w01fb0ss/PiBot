@@ -1,6 +1,6 @@
 {
   "name": "@pibot/runner-app",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "pibot": {
@@ -29,6 +29,7 @@
     "node-datachannel": "0.33.6",
     "ws": "8.22.0",
     "@napi-rs/image": "1.16.0",
-    "@pibot/computer": "workspace:*"
+    "@pibot/computer": "workspace:*",
+    "quickjs-wasi": "3.6.2"
   }
 }

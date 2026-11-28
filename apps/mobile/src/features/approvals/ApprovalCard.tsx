@@ -1,11 +1,12 @@
 import {
-  approvalCountdown,
   approvalExplanation,
   approvalFactText,
   approvalText,
+  isDirectRunApproval,
+  isolationReasonText,
+  isWindowsDirectRunApproval,
 } from "@pibot/client-core";
 import type { Approval } from "@pibot/protocol";
-import { useEffect, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { useLanguage, useLinkState, useSharedText, useText } from "../../runtime/context.tsx";
 import { mono, radius, space, type } from "../../theme/scale.ts";
@@ -14,21 +15,20 @@ import { BotAvatar } from "../../ui/avatar.tsx";
 import { Banner, Button, Switch } from "../../ui/controls.tsx";
 import { useTimeText } from "../../ui/time.ts";
 import { useToast } from "../../ui/toast.tsx";
+import { ConnectorNetworkDestination } from "../chat/messages/cards.tsx";
 import { useApprovals } from "./approvals-context.tsx";
-import { approvalLead, approvalTarget, isPiManagerApproval, piRememberText } from "./card-facts.ts";
+import {
+  approvalLead,
+  approvalTarget,
+  isPiManagerApproval,
+  isSecuritySettingsApproval,
+  piRememberText,
+} from "./card-facts.ts";
 import { RiskTag } from "./RiskTag.tsx";
+import { useApprovalDeadline } from "./use-approval-deadline.ts";
 import { canRemember, desktopOnly } from "./use-approvals.ts";
 import { useApprovalSource } from "./where.ts";
 
-/** Seconds until the card is denied automatically; the inbox shows whole minutes. */
-function useSecondsLeft(expiresAt: string | undefined) {
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 15_000);
-    return () => clearInterval(timer);
-  }, []);
-  return expiresAt ? Math.max(0, Math.floor((Date.parse(expiresAt) - now) / 1000)) : undefined;
-}
 /**
  * Inbox card, as the desktop approval card: who wants what, the command, why it needs the
  * user, the countdown, then deny / allow at the bottom right. A dangerous allow goes through the
@@ -44,19 +44,36 @@ export function ApprovalCard({ approval, onOpen }: { approval: Approval; onOpen:
     mobile = useLinkState(),
     approvals = useApprovals(),
     source = useApprovalSource()(approval);
-  const left = useSecondsLeft(approval.expiresAt);
+  const deadline = useApprovalDeadline(approval);
   const text = approvalText(approval, language);
   const target = approvalTarget(approval, language, shared);
   const why = approvalExplanation(approval, shared).summary;
+  const windowsDirectRun = isWindowsDirectRunApproval(approval);
+  const directRun = windowsDirectRun || isDirectRunApproval(approval);
+  const securitySettings = isSecuritySettingsApproval(approval);
   const desktop = desktopOnly(approval);
-  const disabled = mobile.status !== "online" || desktop || approvals.action.busy || left === 0;
+  const disabled =
+    mobile.status !== "online" || desktop || approvals.action.busy || deadline.expired;
   const remembered = !!approvals.remember[approval.id];
   const pi = isPiManagerApproval(approval);
+  const knowledge = text.facts.some((fact) => fact.labelKey === "library");
+  const visibleFacts = knowledge
+    ? text.facts.filter((fact) => fact.labelKey || fact.kind === "warning")
+    : text.facts;
   const lead = approvalLead(approval, language);
   const rememberText = pi ? piRememberText(approval, shared) : t("remember");
   const decide = async (decision: "allow" | "deny") => {
-    if ((await approvals.resolve(approval, decision)) === undefined) return;
-    toast(t(decision === "allow" ? "allowedToast" : "deniedToast"));
+    const outcome = await approvals.resolve(approval, decision);
+    if (outcome === undefined) return;
+    toast(
+      t(
+        outcome === "superseded"
+          ? "supersededToast"
+          : outcome === "allow"
+            ? "allowedToast"
+            : "deniedToast",
+      ),
+    );
   };
   const muted = [type.caption, { color: colors.text2 }];
   return (
@@ -89,9 +106,12 @@ export function ApprovalCard({ approval, onOpen }: { approval: Approval; onOpen:
           <Text numberOfLines={2} style={[type.rowTitle, { flex: 1, color: colors.text }]}>
             {text.title}
           </Text>
-          <RiskTag approval={approval} />
         </View>
-        {!!target && (
+        <RiskTag approval={approval} />
+        {approval.connectorNetworkSite && (
+          <ConnectorNetworkDestination host={approval.connectorNetworkSite} />
+        )}
+        {!approval.connectorNetworkSite && !!target && (
           <Text
             numberOfLines={2}
             style={[
@@ -114,36 +134,55 @@ export function ApprovalCard({ approval, onOpen }: { approval: Approval; onOpen:
             {lead}
           </Text>
         )}
-        {pi &&
-          text.facts.slice(0, 5).map((fact) => (
+        {(pi || knowledge) &&
+          visibleFacts.slice(0, 5).map((fact) => (
             <View
               key={`${fact.label ?? fact.kind}:${fact.value}`}
               style={{ flexDirection: "row", alignItems: "baseline", gap: 12 }}
             >
-              <Text style={[type.caption, { width: 56, color: colors.text2 }]}>
-                {fact.label ?? shared(`facts.${fact.kind}`)}
+              <Text
+                style={[
+                  type.caption,
+                  { minWidth: 56, maxWidth: 112, flexShrink: 0, color: colors.text2 },
+                ]}
+              >
+                {fact.label ?? shared(`facts.${fact.labelKey ?? fact.kind}`)}
               </Text>
               <Text numberOfLines={3} style={[type.caption, { flex: 1, color: colors.text }]}>
                 {approvalFactText(fact, shared)}
               </Text>
             </View>
           ))}
-        {!!why && !pi && (
-          <Text numberOfLines={3} style={muted}>
-            {why}
-          </Text>
+        {directRun ? (
+          <Text style={muted}>{shared("facts.value.outside_sandbox")}</Text>
+        ) : (
+          !!why &&
+          !pi &&
+          !approval.connectorNetworkSite && (
+            <Text numberOfLines={3} style={muted}>
+              {why}
+            </Text>
+          )
         )}
+        {windowsDirectRun && <Text style={muted}>{shared("facts.value.windows_unisolated")}</Text>}
+        {!windowsDirectRun &&
+          !approval.isolation.available &&
+          approval.isolation.reason === "windows_unisolated" &&
+          approval.command && (
+            <Text style={muted}>
+              {isolationReasonText(
+                approval.isolation.reason,
+                shared,
+                approval.isolation.windowsYoloConsent,
+              )}
+            </Text>
+          )}
         <Text numberOfLines={1} style={muted}>
-          {[
-            source.where,
-            time.ago(approval.createdAt),
-            left !== undefined ? t("autoDeny", { time: approvalCountdown(left) }) : "",
-          ]
-            .filter(Boolean)
-            .join(" · ")}
+          {[source.where, time.ago(approval.createdAt)].filter(Boolean).join(" · ")}
         </Text>
+        <Text style={muted}>{deadline.label}</Text>
       </Pressable>
-      {canRemember(approval) && !desktop && (
+      {canRemember(approval) && !deadline.paused && !desktop && (
         <View
           style={{
             flexDirection: "row",
@@ -196,9 +235,19 @@ export function ApprovalCard({ approval, onOpen }: { approval: Approval; onOpen:
             <Button
               variant="prim"
               icon={approval.risk === "danger" ? "face" : undefined}
-              title={t(approval.risk === "danger" ? "approvalReview" : "allow")}
+              title={
+                approval.connectorNetworkSite
+                  ? shared("connectors.network.allowRemember")
+                  : t(
+                      securitySettings
+                        ? "approvalOpen"
+                        : directRun || approval.risk === "danger"
+                          ? "approvalReview"
+                          : "allow",
+                    )
+              }
               disabled={disabled}
-              onPress={() => void decide("allow")}
+              onPress={directRun || securitySettings ? onOpen : () => void decide("allow")}
             />
           </>
         )}

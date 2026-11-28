@@ -4,7 +4,7 @@ import { type MemoryExtraction, MessagesRepo, memoryHumanMessageSql } from "@pib
 import { type ExtractionSource, extractionSource } from "./memory-extraction.ts";
 
 const cue =
-  /^(?:请(?:你)?\s*)?(?:从现在起|从今以后|今后|以后|下次|永远不要|不要|别再|记住|纠正一下|更正一下)\s*[,，:：]?\s*\S|^(?:please\s+)?(?:from now on|going forward|next time|always|never|remember(?: that)?|don't|do not|(?:let me )?correct(?:ion| that))\b\s*[, :]?\s*\S/iu;
+  /^(?:请(?:你)?\s*)?(?:从现在起|从今以后|今后|以后|下次|永远不要|不要|别再|记住|纠正一下|更正一下|不对(?=[，,]))\s*[,，:：]?\s*\S|^(?:please\s+)?(?:from now on|going forward|next time|always|never|remember(?: that)?|don't|do not|(?:let me )?correct(?:ion| that))\b\s*[, :]?\s*\S/iu;
 
 export function correctionOffset(text: string) {
   // Keep offsets when removing quoted examples so the bounded window starts at the actual cue.

@@ -13,9 +13,11 @@ import {
   PROVIDER_IMPORT_RESOLVE,
   ProviderImportDecisionSchema,
   ProviderImportResultSchema,
+  SKILL_DROP_CHANNEL,
+  SKILL_DROP_MAX_FILES,
 } from "@pibot/protocol-base/desktop-bridge";
 import { DesktopBackgroundMethods } from "@pibot/routines-contract/desktop-bridge";
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 import { liveIslandSupport } from "../shared/live-island.ts";
 import { parseStartupLabels } from "../shared/startup-labels.ts";
 import {
@@ -26,6 +28,13 @@ import { assertStartupCacheCleared } from "../shared/startup-receipt.ts";
 import { STARTUP_SNAPSHOT_CHANNEL, StartupSnapshotSchema } from "../shared/startup-snapshot.ts";
 import { SYSTEM_PROXY_CHANNEL, SYSTEM_PROXY_URL } from "../shared/system-proxy.ts";
 import { TITLE_OVERLAY_ARG } from "../shared/title-overlay.ts";
+
+contextBridge.exposeInMainWorld("pibotSkillDrop", async (files: File[]) => {
+  if (!Array.isArray(files) || files.length < 1 || files.length > SKILL_DROP_MAX_FILES) return null;
+  const paths = files.map((file) => webUtils.getPathForFile(file));
+  if (paths.some((path) => !path)) return null;
+  return ipcRenderer.invoke(SKILL_DROP_CHANNEL, paths);
+});
 
 contextBridge.exposeInMainWorld(
   "pibotStartup",

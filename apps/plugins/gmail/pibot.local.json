@@ -35,8 +35,8 @@
           "en": "App password"
         },
         "help": {
-          "zh": "先开启 Google 两步验证，再生成 16 位应用专用密码（不是登录密码）。密码保存在连接 → 访问令牌中，可随时更新。此方式使用 IMAP/SMTP。",
-          "en": "Enable Google 2-Step Verification, then create a 16-character app password (not your sign-in password). It is saved under Connections → Access tokens, where you can update it. This method uses IMAP/SMTP."
+          "zh": "先开启 Google 两步验证，再生成 16 位应用专用密码（不是登录密码）。密码保存在连接 → 访问令牌中，可随时更新。",
+          "en": "Enable Google 2-Step Verification, then create a 16-character app password (not your sign-in password). It is saved under Connections → Access tokens, where you can update it."
         },
         "documentationUrl": "https://support.google.com/accounts/answer/185833"
       }
@@ -70,7 +70,7 @@
             "name": "GMAIL_CREDENTIAL"
           }
         },
-        "networkDomains": ["imap.gmail.com", "smtp.gmail.com"]
+        "networkDomains": ["imap.gmail.com:993", "smtp.gmail.com:465"]
       }
     },
     "readOnlyTools": [

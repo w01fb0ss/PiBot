@@ -2,6 +2,7 @@ import type { ExternalAgentMethodResults } from "@pibot/external-agents-contract
 import { hostPlatform, SettingsRow, SettingsSection, useT } from "@pibot/renderer-kit";
 import { Button, Chip, Switch } from "@pibot/ui";
 import styles from "../agents/agents.module.css";
+import { readOnlyLabel } from "../agents/shared.tsx";
 
 type Info = ExternalAgentMethodResults["externalAgents.bot"];
 
@@ -107,7 +108,7 @@ export function AgentIsolation({
           // The brain already writes these home-relative paths as `~/…`.
           [
             ...allowances.readWrite,
-            ...allowances.readOnly.map(() => t("externalAgents.create.keychain")),
+            ...allowances.readOnly.map((path) => readOnlyLabel(path, t)),
           ].join(" · ") || t("externalAgents.create.allowNone")
         }
       >

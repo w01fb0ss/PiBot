@@ -3,7 +3,15 @@ import { Button, Icon, type IconName, IconTile, type Tone } from "@pibot/ui";
 import { useEffect, useId, useRef, useState } from "react";
 import styles from "./connections.module.css";
 
-export type AddChoice = "bringOver" | "mcp" | "plugin" | "link" | "skill" | "notion" | "obsidian";
+export type AddChoice =
+  | "bringOver"
+  | "mcp"
+  | "plugin"
+  | "link"
+  | "skill"
+  | "notion"
+  | "obsidian"
+  | "folder";
 // Each way in keeps one coloured mark in the menu.
 const MARKS: Record<AddChoice, { icon: IconName; tone: Tone }> = {
   bringOver: { icon: "arrow", tone: "pink" },
@@ -13,6 +21,7 @@ const MARKS: Record<AddChoice, { icon: IconName; tone: Tone }> = {
   skill: { icon: "edit", tone: "violet" },
   notion: { icon: "file", tone: "neutral" },
   obsidian: { icon: "box", tone: "violet" },
+  folder: { icon: "folder", tone: "amber" },
 };
 
 /**
@@ -104,6 +113,7 @@ export function AddMenu({
               : t("knowledge.add.notionHint"),
           )}
           {item("obsidian", t("knowledge.add.obsidian"), t("knowledge.add.obsidianHint"))}
+          {item("folder", t("knowledge.add.folder"), t("knowledge.add.folderHint"))}
         </div>
       )}
     </div>

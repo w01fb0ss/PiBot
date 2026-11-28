@@ -11,7 +11,7 @@ import { Button, Icon, SegmentedControl } from "@pibot/ui";
 import type { CSSProperties } from "react";
 import { useState } from "react";
 import styles from "./agents.module.css";
-import { AgentLogo, errorKey, megabytes } from "./shared.tsx";
+import { AgentLogo, errorKey, megabytes, readOnlyLabel } from "./shared.tsx";
 
 /**
  * The approved "before you create" card (external-agents.html `create`): who bills, where it can
@@ -47,7 +47,7 @@ export function CreateAgentDialog({
   const confirm = windows && !detected?.confirmedUnisolated;
   const allowed = [
     ...allowances.readWrite.map((path) => `~/${path}`),
-    ...allowances.readOnly.map(() => t("externalAgents.create.keychain")),
+    ...allowances.readOnly.map((path) => readOnlyLabel(path, t)),
     ...(allowances.unixSockets.length ? [t("externalAgents.create.dnsSocket")] : []),
     // macOS: the system certificate service; it fetches intermediate certificates outside the
     // sandbox, a channel the domain list does not cover (a known cost).
@@ -58,6 +58,7 @@ export function CreateAgentDialog({
     ...(allowances.localBinding && platform === "darwin"
       ? [t("externalAgents.create.localPorts")]
       : []),
+    ...(allowances.pty && platform === "darwin" ? [t("externalAgents.create.pty")] : []),
   ];
 
   const create = async () => {

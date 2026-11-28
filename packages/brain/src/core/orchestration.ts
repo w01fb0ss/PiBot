@@ -179,12 +179,36 @@ export interface ExecutionCleanupPort {
   drain(runId: string, beforeRelease?: () => Promise<void>): Promise<void>;
 }
 
+/** The same handlers as `groups.plan.progress/choose/stop`, `groups.workflow.resolve`, `groups.tasks.resolve`. */
+export interface GroupPlanControl {
+  progress(
+    params: KernelMethodParams["groups.plan.progress"],
+  ): KernelMethodResults["groups.plan.progress"];
+  choose(
+    params: KernelMethodParams["groups.plan.choose"],
+  ): KernelMethodResults["groups.plan.choose"];
+  stop(params: KernelMethodParams["groups.plan.stop"]): KernelMethodResults["groups.plan.stop"];
+  resolveStep(
+    params: KernelMethodParams["groups.workflow.resolve"],
+  ): Promise<KernelMethodResults["groups.workflow.resolve"]>;
+  resolveTask(
+    params: KernelMethodParams["groups.tasks.resolve"],
+  ): Promise<KernelMethodResults["groups.tasks.resolve"]>;
+  /**
+   * Health-repair-only path for closing long-idle open tasks: allows any non-archived topic of
+   * the group and groups with archived members, while still refusing archived groups and
+   * non-open tasks. Not exposed as an RPC or model tool.
+   */
+  closeStaleTask(params: { groupId: string; taskId: string; summary: string }): Promise<GroupTask>;
+}
+
 export interface GroupOrchestrationPort extends CollaborationPort {
   /** Returns false only for questions unrelated to a persisted plan step. */
   answerStepQuestion(
     sourceMessageId: string,
     text: string,
     confirmation: import("../conversations/chat/chat-confirmation.ts").ChatConfirmation,
+    display: import("../conversations/chat/user-message-display.ts").UserMessageDisplay,
   ): Promise<boolean>;
   confirmNotice(
     groupId: string,
@@ -194,6 +218,13 @@ export interface GroupOrchestrationPort extends CollaborationPort {
     confirmation: import("../conversations/chat/chat-confirmation.ts").ChatConfirmation,
     display?: import("../conversations/chat/user-message-display.ts").UserMessageDisplay,
   ): Promise<void>;
+  /**
+   * The person's answers to a waiting plan, a blocked step and an open task, through exactly the
+   * paths their RPCs use (state, revision and stale checks included). The default Pi's repairs
+   * call these; they never write plan or task state themselves.
+   */
+  readonly planControl: GroupPlanControl;
+  continueRounds(params: KernelMethodParams["groups.rounds.continue"]): Promise<{ ok: true }>;
   readonly deps: GroupOrchestrationDependencies;
   readonly signal: AbortSignal;
   readonly groups: GroupsRepo;
@@ -201,7 +232,11 @@ export interface GroupOrchestrationPort extends CollaborationPort {
   readonly cycles: GroupCyclesRepo;
   readonly runs: RunsRepo;
   readonly topics: {
-    create(params: KernelMethodParams["groups.topics.create"]): Promise<Group>;
+    create(
+      params: KernelMethodParams["groups.topics.create"],
+      parent?: AbortSignal,
+      dispatch?: import("../resources/workplaces/dispatch-folder.ts").DispatchTopicOptions,
+    ): Promise<Group>;
     history(
       params: KernelMethodParams["groups.topics.history"],
     ): KernelMethodResults["groups.topics.history"];
@@ -290,6 +325,7 @@ export interface GroupOrchestrationPort extends CollaborationPort {
       Extract<KernelMethodParams["runs.retry"], { source: "group" }>,
       "model" | "thinkingLevel"
     >,
+    scope?: import("../runtime/models/run-model.ts").RunModelScope,
   ): Promise<{ bot: Bot; model: Pick<ModelInfo, "contextWindow" | "input"> }>;
   admitInteractive(connected: boolean): void;
   drainInteractive(): Promise<void>;

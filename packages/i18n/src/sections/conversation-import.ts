@@ -1,31 +1,92 @@
 export const conversationImportZh = {
   "conversationImport.title": "从别的 AI 导入",
   "conversationImport.chooseSource":
-    "选择内容来源。全部在这台电脑上处理。本机来源只在你选中文件后读取。",
+    "选择来源。预览和导入在这台电脑上完成。开启提炼记忆后，估算中显示的模型会处理选中的对话。",
   "conversationImport.sources": "导入来源",
+  "conversationImport.group.consumer": "常用 AI 聊天",
+  "conversationImport.group.coding": "本机编程工具",
+  "conversationImport.group.codingSummary": "Claude Code、Codex、Cursor、OpenCode、Antigravity",
   "conversationImport.source.chatgpt": "ChatGPT",
   "conversationImport.source.claude": "Claude",
   "conversationImport.source.claude-code": "Claude Code",
   "conversationImport.source.codex": "Codex",
   "conversationImport.source.cursor": "Cursor",
+  "conversationImport.source.opencode": "OpenCode",
+  "conversationImport.source.antigravity": "Antigravity",
   "conversationImport.source.gemini": "Gemini",
   "conversationImport.source.fixture": "测试数据",
-  "conversationImport.sourceNote.chatgpt": "数据导出 ZIP · 对话、记忆、自定义指令",
-  "conversationImport.sourceNote.claude": "数据导出 ZIP · 对话、项目、记忆",
-  "conversationImport.sourceNote.claude-code": "这台电脑 · CLAUDE.md、项目会话",
-  "conversationImport.sourceNote.codex": "这台电脑 · AGENTS.md、会话",
-  "conversationImport.sourceNote.cursor": "这台电脑 · 规则、明文聊天记录",
-  "conversationImport.sourceNote.gemini": "Google 导出 ZIP · 对话",
+  "conversationImport.sourceNote.chatgpt": "对话（.zip 或 .json）；压缩包还可包含记忆和自定义指令",
+  "conversationImport.sourceNote.claude": "对话（.zip 或 .json）；压缩包还可包含项目和记忆",
+  "conversationImport.sourceNote.claude-code": "这台电脑 · 对话、记忆、项目说明",
+  "conversationImport.sourceNote.codex": "这台电脑 · 对话、记忆、项目说明",
+  "conversationImport.sourceNote.cursor": "这台电脑 · 对话、项目规则",
+  "conversationImport.sourceNote.opencode": "这台电脑 · 对话、项目说明",
+  "conversationImport.sourceNote.antigravity": "这台电脑 · 对话、项目说明",
+  "conversationImport.sourceNote.gemini": "Google 导出（.zip 或 .json）· 对话",
+  "conversationImport.exportGuide.title": "如何从 {source} 导出",
+  "conversationImport.exportGuide.chatgpt":
+    "1. 打开 ChatGPT 网页版 → 点左下角头像 →「设置」→「数据控制」→「导出数据」。\n2. 收到邮件后下载压缩包（.zip）；如果 Safari 自动解压了，直接选里面的 conversations.json 也可以（如果导出的对话拆成了 conversations-000.json、conversations-001.json 等多个编号文件，请逐个选择导入）。",
+  "conversationImport.exportGuide.claude":
+    "1. 打开 Claude 网页版 → 点左下角头像 →「设置」→「隐私」→「导出数据」。\n2. 收到邮件后下载压缩包（.zip）；如果 Safari 自动解压了，直接选里面的 conversations.json 也可以。",
+  "conversationImport.exportGuide.gemini":
+    "1. 打开 Google Takeout → 先点「取消全选」，只勾选「我的活动记录」→ 点「已包含所有活动记录数据」，只保留「Gemini 应用」。\n2. 点「多种格式」，把活动记录格式从 HTML 改为 JSON，再创建并下载导出包。\n3. 在下方选择下载的 .zip 压缩包，或已解压出的 .json 文件。",
+  "conversationImport.exportGuide.openLink.chatgpt": "打开 ChatGPT",
+  "conversationImport.exportGuide.openLink.claude": "打开 Claude",
+  "conversationImport.exportGuide.openLink.gemini": "打开 Google Takeout",
+  "conversationImport.exportGuide.openLinkError": "没能打开浏览器，请检查默认浏览器设置后重试。",
+  "conversationImport.localHintPlain":
+    "点「列出对话」挑选要导入的 {source} 对话、记忆或项目说明，也可以手动选择本机文件。",
+  "conversationImport.localHintAdvancedToggle": "高级：查看常见文件位置",
+  "conversationImport.exportFilter": "导出文件（ZIP、JSON）",
   "conversationImport.pickExport": "选择导出文件…",
   "conversationImport.pickLocal": "选择本机文件…",
+  "conversationImport.listConversations": "列出对话",
+  "conversationImport.listTitle": "{source} 对话",
+  "conversationImport.listIntro": "勾选要导入的对话（最多 {max} 个），或选择导入记忆与项目规则。",
+  "conversationImport.listIntroMemoryOnly": "勾选要导入的对话（最多 {max} 个），或选择导入记忆。",
+  "conversationImport.listIntroRulesOnly":
+    "勾选要导入的对话（最多 {max} 个），或选择导入项目规则。",
+  "conversationImport.listIntroChatsOnly": "勾选要导入的对话（最多 {max} 个）。",
+  "conversationImport.listClaudePrivacy":
+    "列出 Claude Code 对话时，Pi Bot 会在本机读取文件开头，从你的消息里摘一行作为标题，并查找工作文件夹。预览时会读取你勾选的对话内容。",
+  "conversationImport.listSearch": "搜索对话标题或项目…",
+  "conversationImport.listEmpty": "没有找到可列出的对话。",
+  "conversationImport.listNoMatch": "没有匹配的对话。",
+  "conversationImport.listCount": "共 {total} 个对话 · 已选 {selected} / {max}",
+  "conversationImport.listClear": "清空选择",
+  "conversationImport.listInProgress": "进行中",
+  "conversationImport.listMore": "加载更多",
+  "conversationImport.listBack": "返回来源",
+  "conversationImport.listNext": "预览导入",
+  "conversationImport.includeLocalMemory": "同时导入 {source} 记忆",
+  "conversationImport.includeLocalMemoryNote": "导入前逐条核对去向（关于你或指定 Bot）",
+  "conversationImport.includeProjectRules": "同时导入项目规则",
+  "conversationImport.includeProjectRulesNote":
+    "检测工作文件夹中的项目说明，导入前可先预览即将写入的内容",
+  "conversationImport.cannotExport.no_load_session": "这个 agent 不支持导出对话内容",
+  "conversationImport.cannotExport.agent_unavailable":
+    "未检测到 {source} CLI，暂时无法导出对话内容（仍可导入项目规则或选择本机文件）。",
+  "conversationImport.cannotExport.agent_unconfirmed":
+    "请先在「外部 Agent」设置中确认允许运行 {source}，再导出对话内容。",
+  "conversationImport.cannotExport.unsupported": "当前设备暂不支持导出 {source} 的对话内容。",
+  "conversationImport.pickHint.claude-code":
+    "点「列出对话」挑选会话、记忆和 CLAUDE.md，或手动选择 {path} 下的会话、项目的 CLAUDE.md 或 {notes}。",
+  "conversationImport.pickHint.codex":
+    "点「列出对话」挑选会话、记忆和 AGENTS.md，或手动选择 {path} 下的会话或项目的 AGENTS.md。",
+  "conversationImport.pickHint.cursor":
+    "点「列出对话」挑选会话和规则，或手动选择 {path} 下的聊天记录、项目的 .cursorrules 或 {rule}。",
+  "conversationImport.pickHint.opencode":
+    "点「列出对话」挑选 OpenCode 会话和项目规则，或手动选择 {path} 或项目的 AGENTS.md。",
+  "conversationImport.pickHint.antigravity":
+    "点「列出对话」挑选 Antigravity 会话和项目规则，或手动选择项目的 GEMINI.md。",
   "conversationImport.preview": "导入预览",
-  "conversationImport.topicSource": "导入自 {source} · 只读",
-  "conversationImport.topicReadOnly": "导入的会话 · 只读",
+  "conversationImport.topicSource": "导入自 {source}",
+  "conversationImport.importedTopic": "导入的会话",
   "conversationImport.emptyTopic": "这个导入的话题没有消息。",
   "conversationImport.dateRange": "{from} 至 {through}",
   "conversationImport.sourceExport": "{source} 数据导出",
   "conversationImport.sourceLocal": "{source} · 这台电脑",
-  "conversationImport.readLocally": "在这台电脑上读取，不会上传",
+  "conversationImport.readLocally": "此预览在本机生成",
   "conversationImport.tab.projects": "项目",
   "conversationImport.tab.memories": "记忆",
   "conversationImport.tab.chats": "对话",
@@ -36,14 +97,25 @@ export const conversationImportZh = {
   "conversationImport.unnamedProject": "ChatGPT 项目 {n}",
   "conversationImport.unnamedProjectOther": "未命名项目 {n}",
   "conversationImport.longMessages": "{count} 条长消息全文存为附件，话题里保留开头。",
-  "conversationImport.folderHomeNote": "不建文件夹，也不写 AGENTS.md",
-  "conversationImport.agentsNeedsFolder": "AGENTS.md 要放进工作文件夹才会写入",
+  "conversationImport.folderHomeNote": "不建文件夹，也不写入项目说明",
+  "conversationImport.agentsNeedsFolder": "项目说明需要先选一个工作文件夹才会写入",
   "conversationImport.history.title": "导入记录",
   "conversationImport.history.hint": "完成的导入可以在这里撤销",
   "conversationImport.history.label": "{source} · {date}",
-  "conversationImport.history.files": "{count} 个 AGENTS.md",
+  "conversationImport.history.files": "{count} 份项目说明",
   "conversationImport.history.undo": "撤销",
   "conversationImport.history.more": "加载更多",
+  "conversationImport.undoConfirm.title": "撤销导入？",
+  "conversationImport.undoConfirm.intro": "将撤回这批从 {source} 导入的内容。",
+  "conversationImport.undoConfirm.chats":
+    "移除 {messages} 条导入消息及其附件，并删除未继续的导入话题",
+  "conversationImport.undoConfirm.continued": "已继续的话题会保留你新发的消息",
+  "conversationImport.undoConfirm.memories": "移除这批导入的记忆（{count} 条）",
+  "conversationImport.undoConfirm.notes":
+    "撤回 {count} 份项目说明（AGENTS.md）中的导入内容，保留你后来修改过的文件",
+  "conversationImport.undoConfirm.folders":
+    "检查这批创建的 {count} 个文件夹，仍为空且未使用的才会移除",
+  "conversationImport.undoConfirm.role": "恢复导入前的 Bot 角色",
   "conversationImport.includeProject": "导入项目「{name}」",
   "conversationImport.projectBot": "「{name}」交给哪个 Bot",
   "conversationImport.into": "放进",
@@ -55,10 +127,11 @@ export const conversationImportZh = {
   "conversationImport.folderSource": "原来的项目文件夹",
   "conversationImport.folderUsed": "用过的工作文件夹",
   "conversationImport.folderPick": "选择其他文件夹…",
-  "conversationImport.agentsNew": "AGENTS.md 新建",
-  "conversationImport.agentsAppend": "AGENTS.md 追加 {count} 行",
-  "conversationImport.agentsChecking": "AGENTS.md 正在准备…",
-  "conversationImport.agentsFailed": "AGENTS.md 暂时无法准备，换个文件夹试试",
+  "conversationImport.agentsNew": "将新建项目说明（AGENTS.md）",
+  "conversationImport.agentsAppend": "将向项目说明（AGENTS.md）补充 {count} 行",
+  "conversationImport.agentsUnchanged": "项目说明（AGENTS.md）已包含这些内容，无需补充",
+  "conversationImport.agentsChecking": "正在准备项目说明…",
+  "conversationImport.agentsFailed": "项目说明暂时无法准备，换个文件夹试试",
   "conversationImport.agentsConfirmed": "已确认，导入时写入",
   "conversationImport.viewContent": "查看内容",
   "conversationImport.viewChanges": "查看改动",
@@ -76,7 +149,7 @@ export const conversationImportZh = {
   "conversationImport.aboutYouNote": "所有 Bot 都能用",
   "conversationImport.onlyOneBot": "只给一个 Bot",
   "conversationImport.alreadyKnown": "已经记住了，跳过",
-  "conversationImport.chatsHint": "导入后是只读话题，保留原时间，可以搜索",
+  "conversationImport.chatsHint": "导入后可以继续在原话题聊天，保留原时间，也可以搜索",
   "conversationImport.otherChats": "其余 {count} 个对话",
   "conversationImport.allChats": "{count} 个对话",
   "conversationImport.messageCount": "{count} 条消息",
@@ -103,23 +176,60 @@ export const conversationImportZh = {
   "conversationImport.noPersona": "没有现有角色说明。",
   "conversationImport.conflict": "和已有记忆不一样：{text}",
   "conversationImport.omitted": "还有 {count} 条重复、超长或超出此批复核上限的内容未列出。",
-  "conversationImport.projectDiff": "AGENTS.md 的拟议改动",
-  "conversationImport.projectApproval":
-    "项目文件改动还需要一次批准。请在「等你处理」里查看审批卡。",
+  "conversationImport.projectDiff": "即将写入的项目说明（AGENTS.md）",
   "conversationImport.compensationNote":
     "项目文件可能仍待恢复。在「等你处理」中核对改动，或重试这次清理。",
-  "conversationImport.distil": "用本机模型提炼记忆",
-  "conversationImport.distilNote": "默认关闭。打开后先看模型和费用估算，计入每日记忆预算。",
-  "conversationImport.quote":
-    "本机模型 {model} · 最多 {count} token · 预计 {cost} 美元，计入每日记忆预算。",
-  "conversationImport.quoteUnavailable": "暂无可用的本机模型报价，提炼仍关闭。",
+  "conversationImport.distil": "提炼记忆",
+  "conversationImport.distilNote": "让模型阅读这些对话，自动整理出值得记住的偏好和信息。",
+  "conversationImport.quoteLocal":
+    "免费（本机处理）· 用本机模型 {model} 阅读对话，自动整理出值得记住的偏好和信息，不出这台电脑。",
+  "conversationImport.quoteCloud":
+    "预计约 {cost} · 遮盖能识别出的密钥等敏感内容后，将对话发到为 {provider} 配置的服务（{model}），整理出值得记住的偏好和信息。",
+  "conversationImport.quoteCloudUnknown":
+    "费用未知 · 遮盖能识别出的密钥等敏感内容后，将对话发到为 {provider} 配置的服务（{model}），整理出值得记住的偏好和信息。",
+  "conversationImport.quoteUnavailable":
+    "当前没有可用的提炼模型，或所选内容没有可以提炼的对话。你可以直接导入。",
+  "conversationImport.quoteFailed": "这次没能算出费用。可以保留当前选择，重新估算或直接导入。",
+  "conversationImport.quoteRetry": "重新估算",
+  "conversationImport.quoteAdvancedToggle": "高级详情",
+  "conversationImport.quoteAdvanced":
+    "预计文字用量：约 {count} 个词元（输入 {input}、输出 {output}）",
+  "conversationImport.confirmDistilLocal":
+    "已开启提炼记忆：将使用本机模型 {model} 在这台电脑上处理（免费）",
+  "conversationImport.confirmDistilCloud":
+    "预计约 {cost} · 导入时会先遮盖能识别出的密钥等敏感内容，再将对话发到为 {provider} 配置的服务（{model}）。",
+  "conversationImport.confirmDistilCloudUnknown":
+    "费用未知 · 导入时会先遮盖能识别出的密钥等敏感内容，再将对话发到为 {provider} 配置的服务（{model}）。",
+  "conversationImport.distillation.completed": "已提炼 {count} 个对话。",
+  "conversationImport.distillation.completedWithMemories":
+    "已提炼 {count} 个对话，新增 {memories} 条记忆。",
+  "conversationImport.distillation.budget": "已达到本次预算，已提炼 {count} 个对话。",
+  "conversationImport.distillation.budgetWithMemories":
+    "已达到本次预算，已提炼 {count} 个对话，新增 {memories} 条记忆。",
+  "conversationImport.distillation.failed": "记忆提炼失败：{reason}",
+  "conversationImport.distillation.failedPartial":
+    "记忆提炼失败（{reason}），此前已处理 {count} 个对话。",
+  "conversationImport.distillation.failedPartialWithMemories":
+    "记忆提炼失败（{reason}），此前已处理 {count} 个对话，新增 {memories} 条记忆。",
+  "conversationImport.distillationReason.timeout": "处理超时",
+  "conversationImport.distillationReason.network": "无法连接到模型服务，请检查网络或代理设置",
+  "conversationImport.distillationReason.auth": "模型账号或 API Key 认证失败，请检查设置",
+  "conversationImport.distillationReason.quota": "模型账户余额或额度不足",
+  "conversationImport.distillationReason.rate_limited": "请求过于频繁，触发了服务商限流",
+  "conversationImport.distillationReason.overloaded": "模型服务暂时繁忙，请稍后再试",
+  "conversationImport.distillationReason.no_model": "没有可用的记忆提炼模型",
+  "conversationImport.distillationReason.provider": "模型服务返回错误",
+  "conversationImport.distillationReason.memory_quota": "记忆空间已满，无法保存更多记忆",
+  "conversationImport.distillationReason.internal": "发生意外错误，详情见日志",
   "conversationImport.skippedRecords": "已跳过 {count} 条无法识别的记录。",
+  "conversationImport.skippedTooLong": "{count} 个对话太长，已跳过",
   "conversationImport.skippedAttachments": "不导入 {count} 个消息附件引用。",
   "conversationImport.skippedFiles": "不导入压缩包里的 {count} 个附加文件。",
   "conversationImport.empty": "这个文件中没有可导入的内容。",
   "conversationImport.dataNote":
     "导入前会遮盖可识别的密钥和令牌，内容只作资料，不会当成指令执行。可以撤销整次导入：新建的空文件夹会删掉，你改过的文件和放了东西的文件夹会保留。",
   "conversationImport.start": "导入",
+  "conversationImport.loading.list": "正在读取对话列表…",
   "conversationImport.loading.preview": "正在选择并读取文件…",
   "conversationImport.loading.plan": "正在整理要导入的内容…",
   "conversationImport.loading.persona": "正在准备角色对比…",
@@ -142,23 +252,44 @@ export const conversationImportZh = {
   "conversationImport.elapsed": "用时 {count} 秒",
   "conversationImport.addedMemories": "新增 {count} 条记忆。",
   "conversationImport.personaChanged": "已更新所选 Bot 的角色。",
-  "conversationImport.projectChanged": "写入了 {count} 个 AGENTS.md。",
-  "conversationImport.projectKept": "保留了 {count} 个你改过的 AGENTS.md。",
+  "conversationImport.projectChanged": "写入了 {count} 份项目说明（AGENTS.md）。",
+  "conversationImport.projectKept": "保留了 {count} 份你改过的项目说明。",
   "conversationImport.foldersCreated": "新建了 {count} 个工作文件夹。",
   "conversationImport.foldersKept": "保留了 {count} 个已经放了东西的文件夹。",
   "conversationImport.removed": "已清理 {topics} 个话题、{messages} 条消息。",
+  "conversationImport.removedMemories": "已移除 {count} 条导入的记忆。",
+  "conversationImport.removedProjectNotes": "已从 {count} 份项目说明中撤回导入的内容。",
   "conversationImport.openInbox": "打开等你处理",
   "conversationImport.cancel": "取消导入",
   "conversationImport.cancelling": "正在取消和清理，完成状态会在这里更新。",
   "conversationImport.undo": "撤销这次导入",
   "conversationImport.retryCleanup": "重试这次清理",
-  "conversationImport.viewTopics": "查看导入的对话",
+  "conversationImport.openTopic": "打开导入的话题",
+  "conversationImport.viewTopics": "查看导入的话题",
+  "conversationImport.importedBadge": "已导入",
   "conversationImport.another": "选择其他文件",
+  "conversationImport.backToSources": "返回来源",
+  "conversationImport.reviewAgain": "重新选择文件并查看差异",
   "conversationImport.error.source_changed": "源文件已发生变化，请重新选择。",
+  "conversationImport.error.source_in_use":
+    "这段会话还在进行中（文件正在写入）。请选一段已结束的会话，或稍后再试。",
   "conversationImport.error.format": "无法识别所选文件的格式。",
+  "conversationImport.error.formatExport":
+    "无法识别所选文件。请选择下载的 .zip 压缩包，或解压后的 conversations.json（macOS Safari 默认会自动解压；若 ChatGPT 导出了 conversations-000.json 等多个编号文件，请逐个导入）。",
+  "conversationImport.error.formatGemini":
+    "没有在所选文件中找到 Gemini 活动记录（JSON）。请确认在 Google Takeout 中只勾选了「Gemini 应用」并将格式改为 JSON，然后选择 .zip 或解压出的 .json 文件。",
+  "conversationImport.error.gemini_html":
+    "这份 Google 导出是 HTML 网页格式，无法导入。请在 Google Takeout 中点「多种格式」，把 Gemini 活动记录的格式从 HTML 改为 JSON 后重新导出。",
   "conversationImport.error.timeout": "读取或导入超时，请重试。",
   "conversationImport.error.target": "所选 Bot 不再可用，请换一个。",
-  "conversationImport.error.limit": "文件或导入内容超过上限。",
+  "conversationImport.error.limit":
+    "文件或所选内容超出导入大小上限。请选择较小的本机文件，或返回对话列表，分批导入。",
+  "conversationImport.error.limitChatgpt":
+    "文件或其中的内容超出导入大小上限。请解压后选择 conversations.json。如果有 conversations-000.json 等编号文件，请逐个导入。",
+  "conversationImport.error.limitClaude":
+    "文件或其中的内容超出导入大小上限。请解压后选择 conversations.json。",
+  "conversationImport.error.limitGemini":
+    "文件或其中的内容超出导入大小上限。请解压后选择 Gemini 活动的 JSON 文件，或在 Google Takeout 中仅导出 Gemini 活动，并选择 JSON 格式。",
   "conversationImport.error.interrupted": "导入被中断。",
   "conversationImport.error.internal": "暂时无法完成此操作，请重试。",
   "conversationImport.error.memory_conflict": "记忆内容有变化，请重新核对后导入。",
@@ -166,7 +297,10 @@ export const conversationImportZh = {
   "conversationImport.error.distillation": "本机记忆提炼未完成。可关闭提炼后重试。",
   "conversationImport.error.project":
     "无法写入或恢复项目文件。请核对目标目录、文件改动和待处理审批。",
+  "conversationImport.error.project_review_changed":
+    "目标文件或文件夹已发生变化。请重新查看并确认项目说明的改动。",
   "conversationImport.error.unsupported": "此设备或文件不支持所选的导入来源。",
+  "conversationImport.error.topicBusy": "这批话题还有任务在进行，结束后即可撤销导入。",
   "conversationImport.error.busy": "另一项导入或审核正在处理，请稍后重试。",
   "conversationImport.error.expired": "预览或确认已过期。请返回并重新选择文件。",
   "conversationImport.error.selection": "无法使用当前选择。请重新核对所选内容。",
@@ -175,31 +309,99 @@ export const conversationImportZh = {
 export const conversationImportEn: Record<keyof typeof conversationImportZh, string> = {
   "conversationImport.title": "Import from another AI",
   "conversationImport.chooseSource":
-    "Choose a source. Everything is processed on this computer. Local sources are read only after you pick a file.",
+    "Choose a source. Preview and import run on this computer. If you turn on memory distillation, the model shown in the estimate will process the selected chats.",
   "conversationImport.sources": "Import sources",
+  "conversationImport.group.consumer": "Popular AI chats",
+  "conversationImport.group.coding": "Local coding tools",
+  "conversationImport.group.codingSummary": "Claude Code, Codex, Cursor, OpenCode, Antigravity",
   "conversationImport.source.chatgpt": "ChatGPT",
   "conversationImport.source.claude": "Claude",
   "conversationImport.source.claude-code": "Claude Code",
   "conversationImport.source.codex": "Codex",
   "conversationImport.source.cursor": "Cursor",
+  "conversationImport.source.opencode": "OpenCode",
+  "conversationImport.source.antigravity": "Antigravity",
   "conversationImport.source.gemini": "Gemini",
   "conversationImport.source.fixture": "Test data",
-  "conversationImport.sourceNote.chatgpt": "Export ZIP · Chats, memories, custom instructions",
-  "conversationImport.sourceNote.claude": "Export ZIP · Chats, projects, memories",
-  "conversationImport.sourceNote.claude-code": "This computer · CLAUDE.md and project sessions",
-  "conversationImport.sourceNote.codex": "This computer · AGENTS.md and sessions",
-  "conversationImport.sourceNote.cursor": "This computer · Rules and plain-text chats",
-  "conversationImport.sourceNote.gemini": "Google Takeout ZIP · Chats",
+  "conversationImport.sourceNote.chatgpt":
+    "Chats (.zip or .json). ZIPs can also include memories and custom instructions.",
+  "conversationImport.sourceNote.claude":
+    "Chats (.zip or .json). ZIPs can also include projects and memories.",
+  "conversationImport.sourceNote.claude-code": "This computer · Chats, memory, project notes",
+  "conversationImport.sourceNote.codex": "This computer · Chats, memory, project notes",
+  "conversationImport.sourceNote.cursor": "This computer · Chats and project rules",
+  "conversationImport.sourceNote.opencode": "This computer · Chats, project notes",
+  "conversationImport.sourceNote.antigravity": "This computer · Chats, project notes",
+  "conversationImport.sourceNote.gemini": "Google Takeout (.zip or .json) · Chats",
+  "conversationImport.exportGuide.title": "How to export from {source}",
+  "conversationImport.exportGuide.chatgpt":
+    "1. Open ChatGPT on the web → click your profile → Settings → Data controls → Export data.\n2. Download the .zip from the email (if Safari unzipped it, you can pick conversations.json directly; if a large export was split into numbered files like conversations-000.json, conversations-001.json, import each numbered file one by one).",
+  "conversationImport.exportGuide.claude":
+    "1. Open Claude on the web → click your profile → Settings → Privacy → Export data.\n2. Download the .zip from the email (if Safari unzipped it, you can pick conversations.json directly).",
+  "conversationImport.exportGuide.gemini":
+    "1. Open Google Takeout → click “Deselect all”, check only “My Activity” → click “All activity data included” and keep only “Gemini Apps”.\n2. Click “Multiple formats”, switch the activity format from HTML to JSON, then create and download the export.\n3. Pick the downloaded .zip archive or the extracted .json file below.",
+  "conversationImport.exportGuide.openLink.chatgpt": "Open ChatGPT",
+  "conversationImport.exportGuide.openLink.claude": "Open Claude",
+  "conversationImport.exportGuide.openLink.gemini": "Open Google Takeout",
+  "conversationImport.exportGuide.openLinkError":
+    "Couldn’t open your browser. Check your default browser settings and try again.",
+  "conversationImport.localHintPlain":
+    "Click “List conversations” to choose {source} chats, memories, or project notes, or pick a local file manually.",
+  "conversationImport.localHintAdvancedToggle": "Advanced: typical file locations",
+  "conversationImport.exportFilter": "Export files (ZIP, JSON)",
   "conversationImport.pickExport": "Choose export file…",
   "conversationImport.pickLocal": "Choose local file…",
+  "conversationImport.listConversations": "List conversations",
+  "conversationImport.listTitle": "{source} conversations",
+  "conversationImport.listIntro":
+    "Select conversations to import (up to {max}), or include memory and project rules.",
+  "conversationImport.listIntroMemoryOnly":
+    "Select conversations to import (up to {max}), or include memory.",
+  "conversationImport.listIntroRulesOnly":
+    "Select conversations to import (up to {max}), or include project rules.",
+  "conversationImport.listIntroChatsOnly": "Select conversations to import (up to {max}).",
+  "conversationImport.listClaudePrivacy":
+    "To list Claude Code chats, Pi Bot reads the start of the files on this computer. It looks up the working folder and uses a line from your messages as the title when available. Preview reads the chats you select.",
+  "conversationImport.listSearch": "Search titles or projects…",
+  "conversationImport.listEmpty": "No conversations found.",
+  "conversationImport.listNoMatch": "No matching conversations.",
+  "conversationImport.listCount": "{total} conversations · {selected} / {max} selected",
+  "conversationImport.listClear": "Clear selection",
+  "conversationImport.listInProgress": "In progress",
+  "conversationImport.listMore": "Load more",
+  "conversationImport.listBack": "Back",
+  "conversationImport.listNext": "Preview import",
+  "conversationImport.includeLocalMemory": "Include {source} memory",
+  "conversationImport.includeLocalMemoryNote":
+    "Review each item’s destination before importing (About you or a Bot)",
+  "conversationImport.includeProjectRules": "Include project rules",
+  "conversationImport.includeProjectRulesNote":
+    "Find project notes in work folders and preview what will be written before importing",
+  "conversationImport.cannotExport.no_load_session": "This agent can't export conversation content",
+  "conversationImport.cannotExport.agent_unavailable":
+    "{source} CLI was not found, so conversation content can’t be exported right now (you can still import project rules or choose a local file).",
+  "conversationImport.cannotExport.agent_unconfirmed":
+    "Confirm running {source} in External Agents settings before exporting conversation content.",
+  "conversationImport.cannotExport.unsupported":
+    "Exporting {source} conversation content isn’t supported on this device.",
+  "conversationImport.pickHint.claude-code":
+    "Click “List conversations” to pick sessions, memory, and CLAUDE.md, or choose a session at {path}, a project’s CLAUDE.md, or {notes}.",
+  "conversationImport.pickHint.codex":
+    "Click “List conversations” to pick sessions, memory, and AGENTS.md, or choose a session at {path}, or a project’s AGENTS.md.",
+  "conversationImport.pickHint.cursor":
+    "Click “List conversations” to pick chats and rules, or choose a transcript at {path}, a project’s .cursorrules, or {rule}.",
+  "conversationImport.pickHint.opencode":
+    "Click “List conversations” to pick OpenCode sessions and project rules, or choose {path} or a project’s AGENTS.md.",
+  "conversationImport.pickHint.antigravity":
+    "Click “List conversations” to pick Antigravity sessions and project rules, or choose a project’s GEMINI.md.",
   "conversationImport.preview": "Import preview",
-  "conversationImport.topicSource": "Imported from {source} · Read only",
-  "conversationImport.topicReadOnly": "Imported conversation · Read only",
+  "conversationImport.topicSource": "Imported from {source}",
+  "conversationImport.importedTopic": "Imported conversation",
   "conversationImport.emptyTopic": "There are no messages in this imported topic.",
   "conversationImport.dateRange": "{from} to {through}",
   "conversationImport.sourceExport": "{source} data export",
   "conversationImport.sourceLocal": "{source} · this computer",
-  "conversationImport.readLocally": "read on this computer, never uploaded",
+  "conversationImport.readLocally": "Preview generated on this computer",
   "conversationImport.tab.projects": "Projects",
   "conversationImport.tab.memories": "Memories",
   "conversationImport.tab.chats": "Chats",
@@ -211,14 +413,26 @@ export const conversationImportEn: Record<keyof typeof conversationImportZh, str
   "conversationImport.unnamedProjectOther": "Unnamed project {n}",
   "conversationImport.longMessages":
     "{count} long messages keep their start in the topic; the full text is saved as an attachment.",
-  "conversationImport.folderHomeNote": "No new folder and no AGENTS.md",
-  "conversationImport.agentsNeedsFolder": "AGENTS.md is written only into a work folder",
+  "conversationImport.folderHomeNote": "No new folder and no project notes written",
+  "conversationImport.agentsNeedsFolder": "Choose a work folder to save project notes",
   "conversationImport.history.title": "Past imports",
   "conversationImport.history.hint": "Finished imports can be undone here",
   "conversationImport.history.label": "{source} · {date}",
-  "conversationImport.history.files": "AGENTS.md files: {count}",
+  "conversationImport.history.files": "Project notes: {count}",
   "conversationImport.history.undo": "Undo",
   "conversationImport.history.more": "Load more",
+  "conversationImport.undoConfirm.title": "Undo import?",
+  "conversationImport.undoConfirm.intro": "This will undo the batch imported from {source}.",
+  "conversationImport.undoConfirm.chats":
+    "Remove {messages} imported messages and their attachments, and delete imported topics that were never continued",
+  "conversationImport.undoConfirm.continued":
+    "Continued topics keep the messages you sent after importing.",
+  "conversationImport.undoConfirm.memories": "Remove imported memories ({count})",
+  "conversationImport.undoConfirm.notes":
+    "Remove imported notes from {count} project note files (AGENTS.md), keeping files you edited",
+  "conversationImport.undoConfirm.folders":
+    "Remove any of the {count} folders created by this import that are still empty and unused",
+  "conversationImport.undoConfirm.role": "Restore the Bot's previous role",
   "conversationImport.includeProject": "Import project “{name}”",
   "conversationImport.projectBot": "Bot for “{name}”",
   "conversationImport.into": "Into",
@@ -230,10 +444,11 @@ export const conversationImportEn: Record<keyof typeof conversationImportZh, str
   "conversationImport.folderSource": "The project’s own folder",
   "conversationImport.folderUsed": "Work folders in use",
   "conversationImport.folderPick": "Choose another folder…",
-  "conversationImport.agentsNew": "AGENTS.md new",
-  "conversationImport.agentsAppend": "AGENTS.md +{count} lines",
-  "conversationImport.agentsChecking": "Preparing AGENTS.md…",
-  "conversationImport.agentsFailed": "AGENTS.md can’t be prepared here; try another folder",
+  "conversationImport.agentsNew": "New project notes (AGENTS.md)",
+  "conversationImport.agentsAppend": "Add {count} lines to project notes (AGENTS.md)",
+  "conversationImport.agentsUnchanged": "Already in project notes (AGENTS.md), nothing to add",
+  "conversationImport.agentsChecking": "Preparing project notes…",
+  "conversationImport.agentsFailed": "Couldn’t prepare project notes here; try another folder",
   "conversationImport.agentsConfirmed": "Confirmed, written on import",
   "conversationImport.viewContent": "View",
   "conversationImport.viewChanges": "View changes",
@@ -251,7 +466,8 @@ export const conversationImportEn: Record<keyof typeof conversationImportZh, str
   "conversationImport.aboutYouNote": "Every Bot can use it",
   "conversationImport.onlyOneBot": "Only one Bot",
   "conversationImport.alreadyKnown": "Already remembered, skipped",
-  "conversationImport.chatsHint": "Imported as read-only topics with original times, searchable",
+  "conversationImport.chatsHint":
+    "Continue chatting in imported topics. They keep their original timestamps and can be searched.",
   "conversationImport.otherChats": "The other {count} chats",
   "conversationImport.allChats": "{count} chats",
   "conversationImport.messageCount": "{count} messages",
@@ -279,25 +495,67 @@ export const conversationImportEn: Record<keyof typeof conversationImportZh, str
   "conversationImport.conflict": "Differs from an existing memory: {text}",
   "conversationImport.omitted":
     "{count} more entries were duplicates, too long, or beyond the review limit.",
-  "conversationImport.projectDiff": "Proposed changes to AGENTS.md",
-  "conversationImport.projectApproval":
-    "Changes to the project file also require approval. Open your inbox to find the approval card.",
+  "conversationImport.projectDiff": "Proposed project notes (AGENTS.md)",
   "conversationImport.compensationNote":
     "The project file may still need to be restored. Review pending changes in your inbox or retry this cleanup.",
-  "conversationImport.distil": "Distil memories with a local model",
+  "conversationImport.distil": "Distill memories",
   "conversationImport.distilNote":
-    "Off by default. Turn on to see the model and cost estimate; counts toward the daily memory budget.",
-  "conversationImport.quote":
-    "Local model {model} · Up to {count} tokens · Estimated {cost} USD, within your daily memory budget.",
+    "Have the model read these chats and pull out useful preferences and details to remember.",
+  "conversationImport.quoteLocal":
+    "Free (local) · Uses local model {model} on this computer to pull out useful preferences and details to remember.",
+  "conversationImport.quoteCloud":
+    "Estimated {cost} · Masks recognizable secrets before sending chats to the service configured for {provider} ({model}) to find useful preferences and details to remember.",
+  "conversationImport.quoteCloudUnknown":
+    "Cost unknown · Masks recognizable secrets before sending chats to the service configured for {provider} ({model}) to find useful preferences and details to remember.",
   "conversationImport.quoteUnavailable":
-    "A local model estimate is unavailable. Distillation is still off.",
+    "No distillation model is available, or the selection has no chats that can be distilled. You can still import your selection.",
+  "conversationImport.quoteFailed":
+    "Pi Bot couldn’t calculate the cost this time. You can retry with the same selection or import it now.",
+  "conversationImport.quoteRetry": "Retry estimate",
+  "conversationImport.quoteAdvancedToggle": "Advanced details",
+  "conversationImport.quoteAdvanced":
+    "Estimated usage: ~{count} tokens ({input} input, {output} output)",
+  "conversationImport.confirmDistilLocal":
+    "Memory distillation on: will run locally with {model} on this computer (free)",
+  "conversationImport.confirmDistilCloud":
+    "Estimated {cost} · On import, Pi Bot masks recognizable secrets before sending chats to the service configured for {provider} ({model}).",
+  "conversationImport.confirmDistilCloudUnknown":
+    "Cost unknown · On import, Pi Bot masks recognizable secrets before sending chats to the service configured for {provider} ({model}).",
+  "conversationImport.distillation.completed": "Distilled {count} conversations.",
+  "conversationImport.distillation.completedWithMemories":
+    "Distilled {count} conversations, added {memories} memories.",
+  "conversationImport.distillation.budget":
+    "Reached this import’s budget after distilling {count} conversations.",
+  "conversationImport.distillation.budgetWithMemories":
+    "Reached this import’s budget after distilling {count} conversations, added {memories} memories.",
+  "conversationImport.distillation.failed": "Memory distillation failed: {reason}",
+  "conversationImport.distillation.failedPartial":
+    "Memory distillation failed ({reason}) after processing {count} conversations.",
+  "conversationImport.distillation.failedPartialWithMemories":
+    "Memory distillation failed ({reason}) after processing {count} conversations, added {memories} memories.",
+  "conversationImport.distillationReason.timeout": "timed out",
+  "conversationImport.distillationReason.network":
+    "could not reach the model service — check your network or proxy",
+  "conversationImport.distillationReason.auth":
+    "model authentication failed — check your API key or sign-in",
+  "conversationImport.distillationReason.quota": "model account quota or balance is exhausted",
+  "conversationImport.distillationReason.rate_limited": "rate-limited by the model provider",
+  "conversationImport.distillationReason.overloaded":
+    "the model service is temporarily busy — try again later",
+  "conversationImport.distillationReason.no_model": "no model is available for distillation",
+  "conversationImport.distillationReason.provider": "the model service returned an error",
+  "conversationImport.distillationReason.memory_quota": "memory storage is full",
+  "conversationImport.distillationReason.internal":
+    "an unexpected error occurred — check the log for details",
   "conversationImport.skippedRecords": "{count} unrecognized records were skipped.",
+  "conversationImport.skippedTooLong": "{count} conversations were too long and skipped.",
   "conversationImport.skippedAttachments": "{count} message attachment references will be skipped.",
   "conversationImport.skippedFiles": "{count} additional files inside the archive will be skipped.",
   "conversationImport.empty": "There’s nothing to import from this file.",
   "conversationImport.dataNote":
     "Recognized keys and tokens are masked before import; the content is kept as material, never followed as instructions. You can undo the whole import: new empty folders are removed, files you edited and folders with new content are kept.",
   "conversationImport.start": "Import",
+  "conversationImport.loading.list": "Reading conversation list…",
   "conversationImport.loading.preview": "Choosing and reading a file…",
   "conversationImport.loading.plan": "Sorting out what to import…",
   "conversationImport.loading.persona": "Preparing the role comparison…",
@@ -321,24 +579,46 @@ export const conversationImportEn: Record<keyof typeof conversationImportZh, str
   "conversationImport.elapsed": "Took {count} seconds",
   "conversationImport.addedMemories": "{count} memories added.",
   "conversationImport.personaChanged": "The selected Bot’s persona was updated.",
-  "conversationImport.projectChanged": "{count} AGENTS.md files written.",
-  "conversationImport.projectKept": "{count} AGENTS.md files you edited were kept.",
+  "conversationImport.projectChanged": "Wrote {count} project note files (AGENTS.md).",
+  "conversationImport.projectKept": "Kept {count} project note files you edited.",
   "conversationImport.foldersCreated": "{count} work folders created.",
   "conversationImport.foldersKept": "{count} folders that now hold other files were kept.",
   "conversationImport.removed": "Removed {topics} topics and {messages} messages.",
+  "conversationImport.removedMemories": "Removed {count} imported memories.",
+  "conversationImport.removedProjectNotes":
+    "Removed imported notes from {count} project note files.",
   "conversationImport.openInbox": "Open inbox",
   "conversationImport.cancel": "Cancel import",
   "conversationImport.cancelling":
     "Cancelling and cleaning up. This status will update when cleanup finishes.",
   "conversationImport.undo": "Undo this import",
   "conversationImport.retryCleanup": "Retry this cleanup",
-  "conversationImport.viewTopics": "View imported conversations",
+  "conversationImport.openTopic": "Open imported topic",
+  "conversationImport.viewTopics": "View imported topics",
+  "conversationImport.importedBadge": "Imported",
   "conversationImport.another": "Choose another file",
+  "conversationImport.backToSources": "Back to sources",
+  "conversationImport.reviewAgain": "Select the file again to review changes",
   "conversationImport.error.source_changed": "The source file changed. Select it again.",
+  "conversationImport.error.source_in_use":
+    "This conversation is still in progress (the file is being written). Choose one that has ended, or try again later.",
   "conversationImport.error.format": "The selected file format was not recognized.",
+  "conversationImport.error.formatExport":
+    "This file wasn’t recognized. Choose the downloaded .zip archive, or pick conversations.json inside the unzipped folder (macOS Safari unzips downloads automatically; if ChatGPT split your export into numbered parts like conversations-000.json, import each part one by one).",
+  "conversationImport.error.formatGemini":
+    "No Gemini activity JSON was found in this file. In Google Takeout, make sure you selected Gemini Apps and set the format to JSON, then choose the .zip or extracted .json file.",
+  "conversationImport.error.gemini_html":
+    "This Google Takeout export is in HTML format and can’t be imported. In Google Takeout, open “Multiple formats”, switch Gemini Apps activity from HTML to JSON, and export again.",
   "conversationImport.error.timeout": "Reading or importing timed out. Try again.",
   "conversationImport.error.target": "The selected Bot is no longer available. Choose another.",
-  "conversationImport.error.limit": "The file or its contents exceed the import limit.",
+  "conversationImport.error.limit":
+    "The file or selection exceeds the import limit. Choose a smaller local file or return to the conversation list and import fewer chats at a time.",
+  "conversationImport.error.limitChatgpt":
+    "The file or its contents exceed the import limit. Unzip the export and select conversations.json. If there are numbered files like conversations-000.json, import them one at a time.",
+  "conversationImport.error.limitClaude":
+    "The file or its contents exceed the import limit. Unzip the export and select conversations.json.",
+  "conversationImport.error.limitGemini":
+    "The file or its contents exceed the import limit. Unzip the export and select the Gemini activity JSON file, or export only Gemini activity in JSON format from Google Takeout.",
   "conversationImport.error.interrupted": "The import was interrupted.",
   "conversationImport.error.internal": "Could not complete this action. Try again.",
   "conversationImport.error.memory_conflict":
@@ -348,8 +628,12 @@ export const conversationImportEn: Record<keyof typeof conversationImportZh, str
     "Local memory distillation did not finish. You can turn it off and try again.",
   "conversationImport.error.project":
     "Could not update or restore the project file. Check the folder, file changes, and pending approvals.",
+  "conversationImport.error.project_review_changed":
+    "The destination file or folder changed. Review and confirm the project notes changes again.",
   "conversationImport.error.unsupported":
     "This device or file is not supported for the selected source.",
+  "conversationImport.error.topicBusy":
+    "You can undo this import after the active runs in its topics finish.",
   "conversationImport.error.busy": "Another import or review is in progress. Try again shortly.",
   "conversationImport.error.expired":
     "The preview or review expired. Go back and select the file again.",

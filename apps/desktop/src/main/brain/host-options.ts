@@ -25,6 +25,7 @@ export interface BrainHostOptions {
   updateProxy?(url: string | null | undefined): Promise<void>;
   systemLocale?: string;
   window?: BrowserWindow;
+  takeSkillDrop?(params: { dropId: string }): string[] | null;
   business?: Port;
   acp?: Port;
   onAcpRetired?(): void;
@@ -46,6 +47,7 @@ export interface BrainHostOptions {
   prelaunchedBrain?: ReturnType<typeof prelaunchBrainProcess>;
   originalEnv: Readonly<NodeJS.ProcessEnv>;
   dataDir: string;
+  dataDirDisplayPath?: string;
   outputDir: string;
   resourcesDir: string;
   dev: boolean;

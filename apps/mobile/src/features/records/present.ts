@@ -8,6 +8,7 @@ import {
   isUserAudit,
   routineRunName,
   routineRunStatus,
+  runErrorText,
   safeAuditText,
 } from "@pibot/client-core";
 import type { TranslationKey } from "@pibot/i18n";
@@ -196,7 +197,14 @@ export function recordFacts(
           label: c.shared("activity.routineFinished"),
           value: run.finishedAt ? time.stamp(run.finishedAt) : undefined,
         },
-        { label: c.t("recordError"), value: run.errorCode ?? undefined },
+        {
+          label: c.t("recordError"),
+          value:
+            runErrorText(run.errorCode, c.shared, { ambiguousPermissionDenied: true }) ??
+            (run.status === "failed" || run.status === "timeout"
+              ? c.shared("errors.genericFailure")
+              : undefined),
+        },
       );
       break;
     }
@@ -211,7 +219,12 @@ export function recordFacts(
           value: run.finishedAt ? time.stamp(run.finishedAt) : undefined,
         },
         { label: c.t("recordDuration"), value: between(run.startedAt, run.finishedAt) },
-        { label: c.t("recordError"), value: run.errorCode ?? undefined },
+        {
+          label: c.t("recordError"),
+          value:
+            runErrorText(run.errorCode, c.shared, { ambiguousPermissionDenied: true }) ??
+            (run.status === "error" ? c.shared("errors.genericFailure") : undefined),
+        },
       );
       break;
     }

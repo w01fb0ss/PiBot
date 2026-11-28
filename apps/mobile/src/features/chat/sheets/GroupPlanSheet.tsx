@@ -1,6 +1,7 @@
+import { localizedPlanStepTitle } from "@pibot/i18n";
 import { useEffect, useRef, useState } from "react";
 import { Text, View } from "react-native";
-import { useRuntime, useSharedText, useText } from "../../../runtime/context.tsx";
+import { useLanguage, useRuntime, useSharedText, useText } from "../../../runtime/context.tsx";
 import { onFill, useColors } from "../../../theme/use-theme.ts";
 import { Button, ErrorLine, ListCard, Separator } from "../../../ui/controls.tsx";
 import { Icon } from "../../../ui/icons.tsx";
@@ -64,9 +65,19 @@ function statusLine(step: PlanStepView, t: ReturnType<typeof useText>) {
     : status;
 }
 /** The desktop task panel's current plan, read-only apart from its retry and continue. */
-export function GroupPlanSheet({ page, onClose }: { page: ChatPage; onClose: () => void }) {
+export function GroupPlanSheet({
+  page,
+  onClose,
+  onApproval,
+}: {
+  page: ChatPage;
+  onClose: () => void;
+  onApproval: (id: string) => void;
+}) {
   const t = useText(),
     toast = useToast();
+  const language = useLanguage();
+  const title = (step: PlanStepView) => localizedPlanStepTitle(step.title, language);
   const plan = page.groupPlan;
   const view = plan.view;
   const [selected, setSelected] = useState<string>();
@@ -87,6 +98,26 @@ export function GroupPlanSheet({ page, onClose }: { page: ChatPage; onClose: () 
   }, [live]);
   const name = (botId?: string) => page.lookFor(botId)?.name ?? t("gpMember");
   const step = view?.steps.find((item) => item.id === selected);
+  const tasksByThread = new Map(page.groupTasks.map((task) => [task.threadConversationId, task]));
+  const tasksById = new Map(page.groupTasks.map((task) => [task.id, task]));
+  const approvalsByTask = new Map<string, string>();
+  // A step may delegate the tool to a child Bot. The oldest request in that task tree leads.
+  for (const approval of [...(page.timelineApprovals ?? [])].reverse()) {
+    if (approval.status !== "pending" || !approval.conversationId) continue;
+    let task = tasksByThread.get(approval.conversationId);
+    while (task && !approvalsByTask.has(task.id)) {
+      approvalsByTask.set(task.id, approval.id);
+      task = tasksById.get(task.source?.parentTaskId ?? "");
+    }
+  }
+  const stepApproval = (item: PlanStepView) => {
+    const task = item.title ? stepTask(page.groupTasks, item.title, item.botId) : undefined;
+    return task && approvalsByTask.get(task.id);
+  };
+  const openApproval = (id: string) => {
+    onClose();
+    onApproval(id);
+  };
   // In a step's detail only that step can be retried; on the list, the first one waiting for you.
   const retryTarget = !view
     ? undefined
@@ -125,7 +156,7 @@ export function GroupPlanSheet({ page, onClose }: { page: ChatPage; onClose: () 
       {retryTarget && (
         <>
           <SheetText
-            text={t("gpNeedsYouHint", { title: retryTarget.title, name: name(retryTarget.botId) })}
+            text={t("gpNeedsYouHint", { title: title(retryTarget), name: name(retryTarget.botId) })}
           />
           <Button
             size="lg"
@@ -163,11 +194,15 @@ export function GroupPlanSheet({ page, onClose }: { page: ChatPage; onClose: () 
       <SheetText small text={t("gpDesktopOnly")} />
     </>
   );
+  const selectedApproval = step && stepApproval(step);
   if (step && page.scope)
     return (
       <>
-        <SheetTitle text={step.title} />
+        <SheetTitle text={title(step)} />
         <SheetText text={`${name(step.botId)} · ${statusLine(step, t)}`} />
+        {selectedApproval && (
+          <Button title={t("gpStepNeedsYou")} onPress={() => openApproval(selectedApproval)} />
+        )}
         {!!step.task && (
           <>
             <SheetLabel text={t("gpStepTask")} />
@@ -192,17 +227,20 @@ export function GroupPlanSheet({ page, onClose }: { page: ChatPage; onClose: () 
       <SheetText text={t(view.status)} />
       <ErrorLine text={plan.action.error && t(plan.action.error)} />
       <ListCard flush>
-        {view.steps.map((item, index) => (
-          <View key={item.id}>
-            {index > 0 && <Separator />}
-            <OptionRow
-              title={item.title}
-              subtitle={`${name(item.botId)} · ${statusLine(item, t)}`}
-              lead={<StepMarkView mark={item.mark} />}
-              onPress={() => setSelected(item.id)}
-            />
-          </View>
-        ))}
+        {view.steps.map((item, index) => {
+          const approval = stepApproval(item);
+          return (
+            <View key={item.id}>
+              {index > 0 && <Separator />}
+              <OptionRow
+                title={title(item)}
+                subtitle={`${name(item.botId)} · ${approval ? t("gpStepNeedsYou") : statusLine(item, t)}`}
+                lead={<StepMarkView mark={approval ? "attention" : item.mark} />}
+                onPress={() => (approval ? openApproval(approval) : setSelected(item.id))}
+              />
+            </View>
+          );
+        })}
       </ListCard>
       {actions}
       <CloseButton onClose={onClose} />
@@ -226,7 +264,7 @@ function StepResult({ groupId, step }: { groupId: string; step: PlanStepView }) 
     `gpresult:${groupId}:${step.id}`,
     async (signal) => {
       const tasks = await readGroupTasks(runtime, groupId, undefined, signal);
-      return stepTask(tasks, step.title, step.botId) ?? null;
+      return step.title ? (stepTask(tasks, step.title, step.botId) ?? null) : null;
     },
     ["group.task"],
   );

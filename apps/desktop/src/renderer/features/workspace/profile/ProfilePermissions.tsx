@@ -25,7 +25,7 @@ export function ProfilePermissions({ bot }: { bot: Bot }) {
       grants={
         <>
           {!image && <ProfileConnections botId={bot.id} />}
-          {!image && peer && (
+          {!image && peer && window.pibot.platform !== "win32" && (
             <BotSandboxPermissions
               peer={peer}
               botId={bot.id}

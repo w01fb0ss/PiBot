@@ -3,7 +3,7 @@ import { join } from "node:path";
 import {
   directoryIdentity,
   type RunCommandOptions,
-  SKILL_PYTHON_DOMAINS,
+  skillPythonDomains,
   skillPythonPaths,
   skillPythonWriteRoots,
 } from "@pibot/execution";
@@ -27,7 +27,10 @@ export async function pythonPreparationCommand(input: {
     botHome: join(dataDir, "bots", target.botId, "home"),
     skillGroupId: target.groupId,
     writeRoots: skillPythonWriteRoots(paths, preparation.phase),
-    network: { allowAll: false, domains: [...SKILL_PYTHON_DOMAINS] },
+    network: preparation.windowsConfirmed
+      ? { allowAll: true, domains: [] }
+      : { allowAll: false, domains: skillPythonDomains(preparation.useMirror) },
+    ...(preparation.windowsConfirmed ? { allowUnisolated: true } : {}),
     skillPythonPreparation: preparation,
     timeoutSec: 600,
     runId: randomUUID(),

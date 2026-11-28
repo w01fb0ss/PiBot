@@ -18,7 +18,12 @@ function prepareRepair(service: GroupService, record: GroupWorkflowRunRecord) {
   const original = GroupPlanSchema.parse(
     (record.workflow as { dynamicPlan?: unknown }).dynamicPlan,
   );
-  const generated = verdictRepairPlan(original, states, progress);
+  const generated = verdictRepairPlan(
+    original,
+    states,
+    progress,
+    service.deps.chat.currentLanguage(),
+  );
   if (!generated) return;
   const group = service.active(record.groupId);
   const entry = service.plans.repo.forCycle(group.conversationId, record.cycleId);
@@ -89,7 +94,8 @@ function commitRepair(
   if (current.replans >= 2) throw stop("replan_limit");
   // A pause is not an end: replan() waits on it, so this race reports it the same way.
   if (group.paused) throw new RpcError(-32602, "group_paused", { paused: true });
-  if (service.cycles.consume(group.id, record.cycleId) !== "ok") throw stop("round_limit");
+  // Keep the refusal's stop ID when no repair can be admitted. Other errors still roll back.
+  if (!service.auto(group.id, record.cycleId, () => true).value) return false;
   const workflow = workflowOf(latest);
   const contractSteps = repair.added.map(({ method: _method, ...step }) => ({
     ...step,
@@ -119,6 +125,7 @@ function commitRepair(
     "Repair and recheck scheduled / 已排修复与复验",
     { actor: "system", reasonCode: "verdict_auto_repair" },
   );
+  return true;
 }
 
 export function appendVerdictRepairs(
@@ -128,7 +135,8 @@ export function appendVerdictRepairs(
 ): boolean {
   const repair = prepareRepair(service, record);
   if (!repair) return false;
-  transaction(service.deps.db, () => commitRepair(service, record, repair, signal));
+  const applied = transaction(service.deps.db, () => commitRepair(service, record, repair, signal));
+  if (!applied) throw new RpcError(-32602, "round_limit", { planLimit: true });
   service.plans.changed(repair.entry.message.id, repair.card);
   service.workflows.schedule(record.id);
   return true;

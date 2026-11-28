@@ -10,7 +10,12 @@ const page = PageSchema;
 export const TopicMethods = {
   "topics.metadata": {
     params: botId.extend({ topicId: IdSchema }),
-    result: ConversationSchema.pick({ title: true, routineId: true, importSource: true })
+    result: ConversationSchema.pick({
+      title: true,
+      routineId: true,
+      importSource: true,
+      modelOverride: true,
+    })
       .extend({ readOnly: z.boolean() })
       .nullable(),
   },
@@ -18,6 +23,7 @@ export const TopicMethods = {
     params: botId.extend(page.shape).extend({
       query: z.string().trim().max(200).optional(),
       archived: z.boolean().optional(),
+      importId: IdSchema.optional(),
       // Previews follow the newest message; topic activity alone (a routine's new empty topic)
       // bumps updated_at and must not displace it. Cursor order is newest message, then id.
       withMessages: z.boolean().optional(),

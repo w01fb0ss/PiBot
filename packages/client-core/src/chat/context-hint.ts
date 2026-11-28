@@ -1,3 +1,4 @@
+import type { ModelOverride } from "@pibot/protocol";
 import type { ChatSession } from "./session.ts";
 
 /**
@@ -26,7 +27,7 @@ export async function checkContextHint(this: ChatSession) {
 }
 
 /** Records 「不用」 for this topic and model, and hides the notice immediately. */
-export async function dismissContextHint(this: ChatSession) {
+export async function dismissContextHint(this: ChatSession, override?: ModelOverride) {
   const botId = this.state.bot?.id ?? this.target.botId;
   const conversationId = this.state.conversationId;
   const bot = this.state.bot;
@@ -41,9 +42,11 @@ export async function dismissContextHint(this: ChatSession) {
         dismiss: true,
         // Name the model that was on screen: a save racing this click must not file the refusal
         // under the next model.
-        ...(bot?.modelProvider && bot.modelId
-          ? { modelProvider: bot.modelProvider, modelId: bot.modelId }
-          : {}),
+        ...(override
+          ? { modelProvider: override.provider, modelId: override.id }
+          : bot?.modelProvider && bot.modelId
+            ? { modelProvider: bot.modelProvider, modelId: bot.modelId }
+            : {}),
       },
       { signal: this.lifetime.signal },
     );

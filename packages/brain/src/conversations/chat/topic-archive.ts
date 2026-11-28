@@ -81,6 +81,8 @@ export class TopicArchiveService {
   }
 
   private changed(botId: string) {
-    this.local.deps.peer.emit("sidebar.changed", { conversationKey: `dm:${botId}` });
+    const route = { conversationKey: `dm:${botId}` };
+    this.local.deps.peer.emit("sidebar.topicsChanged", route);
+    this.local.deps.peer.emit("sidebar.changed", route);
   }
 }

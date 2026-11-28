@@ -44,11 +44,13 @@ export interface InteractiveClientPort {
   setInteractive(state: "available" | "quit"): void;
 }
 
-/** What a registered capability hands back: optional start and stop hooks, nothing else. */
+/** Lifecycle hooks and notifications for a registered capability. */
 export interface CapabilityHandle {
   start?(): void | Promise<void>;
   /** Optional diagnostics only: RPC prerequisites must be complete before start resolves. */
   afterReady?(signal: AbortSignal): void | Promise<void>;
+  /** A committed change to a group's conversation, work, or configuration. */
+  onGroupChanged?(groupId: string): void;
   /** Must drain everything the capability started; the database closes after the last stop. */
   stop?(): Promise<void>;
 }
@@ -115,6 +117,7 @@ export interface CapabilityContext {
       display?: import("../conversations/chat/user-message-display.ts").UserMessageDisplay,
     ): Promise<void>;
     update(params: KernelMethodParams["groups.update"]): Promise<Group>;
+    continueRounds(params: KernelMethodParams["groups.rounds.continue"]): Promise<{ ok: true }>;
     addMember(groupId: string, botId: string): Promise<Group>;
     /** The same as the `groups.create` / `removeMember` / `archive` / `restore` RPCs. */
     create(params: KernelMethodParams["groups.create"]): Group;
@@ -130,12 +133,18 @@ export interface CapabilityContext {
       conversationId: string,
       text: string,
       display: import("../conversations/chat/user-message-display.ts").UserMessageDisplay,
+      confirmation?: import("../conversations/chat/chat-confirmation.ts").ChatConfirmation,
     ): Promise<KernelMethodResults["chat.send"]>;
     /**
      * The same as `groups.topics.create` with the current folders kept; refused while the
      * group is busy (the caller then stays in the current topic).
      */
-    newTopic(groupId: string): Promise<Group>;
+    newTopic(
+      groupId: string,
+      dispatch?: import("../resources/workplaces/dispatch-folder.ts").DispatchTopicOptions,
+    ): Promise<Group>;
+    /** A waiting plan's choice, a blocked step's retry / skip and closing a task, as the RPCs do. */
+    readonly plan: import("./orchestration.ts").GroupPlanControl;
     /**
      * A workflow run addressed to one member, through the same admission as a user's
      * group message (`ChatService.sendWorkflow` is the private-chat counterpart).
@@ -147,11 +156,18 @@ export interface CapabilityContext {
       conversationId?: string,
     ): Promise<KernelMethodResults["chat.send"]>;
   };
+  /**
+   * Approvals nobody can answer any more, settled through the kernel's own paths (the paused-approval
+   * fix and startup recovery), for the default Pi's repair. Checks and settles; never decides.
+   */
+  readonly approvalRepair: import("../runtime/queue/approval-repair.ts").ApprovalRepairPort;
   /** Host ports of the current process (notifications, files, …); absent ones are unsupported. */
   readonly host: import("../index.ts").BrainHost;
   /** The unified RPC wrapper: schema check, redacted log, error mapping (AGENTS.md). */
   readonly rpc: {
     handle: RegisterRpc;
+    /** Available only to the default Pi settings capability. */
+    settings?: import("./business-rpc.ts").PiSettingsRpc;
     /** This method may run while no desktop client is attached. */
     allowOffline(method: string): void;
     /** KernelMethods under this prefix serve background work and never hold up the interactive drain. */
@@ -221,6 +237,12 @@ export interface CapabilityContext {
      * in each language. Display only: the decision stays with policy and the call itself.
      */
     card(tool: string, describe: ToolCardDescriber): () => void;
+    /**
+     * For a `pi_repair` tool only: whether this call must show its card even under Pi's "always"
+     * level or YOLO (a destructive step). Read from current state while policy judges the call;
+     * a missing or failing answer counts as "must ask".
+     */
+    mustAsk(tool: string, judge: ToolMustAsk): () => void;
     /** Explicit, typed allowlist for kernel tools whose implementation moved to a capability. */
     delegateKernel(
       tool: import("../runtime/tools/tools.ts").DelegatedKernelToolName,
@@ -406,6 +428,7 @@ export type ToolCardDescriber = (
   context: ToolRunContext,
   input: Record<string, unknown>,
   language: "zh" | "en",
+  prepared?: unknown,
 ) => {
   title: string;
   lead?: string;
@@ -418,13 +441,18 @@ export type ToolCardDescriber = (
   invalid?: { code: string; text: string };
 };
 
+/** True when the call must be confirmed on a card now; cheap, synchronous, no file or network. */
+export type ToolMustAsk = (context: ToolRunContext, input: Record<string, unknown>) => boolean;
+
 export type ToolExecutor = (
   context: ToolRunContext,
   call: LocalToolCall,
   signal: AbortSignal,
   authorization?: {
     confirmedNow: boolean;
+    approvalId?: string;
     assertCurrent(): void;
+    recordInputTranslation?(text: string): void;
     /**
      * What this call's own prepare-phase policy hook returned alongside its requests
      * (e.g. which connections were judged). Per call, so concurrent calls cannot see each other.

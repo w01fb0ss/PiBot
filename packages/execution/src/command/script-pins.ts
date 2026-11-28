@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { open } from "node:fs/promises";
+import { constants } from "node:fs";
+import { open, realpath } from "node:fs/promises";
 import { ExecError, type ScriptPin } from "../core/types.ts";
 
 /** Policy reads at most 64 KB of a script; a larger file now cannot be the one it judged. */
@@ -20,14 +21,23 @@ export async function verifyScriptPins(
 ): Promise<void> {
   for (const pin of pins ?? []) {
     signal.throwIfAborted();
-    if ((await pinnedDigest(pin.path)) !== pin.sha256) throw new ExecError("script_changed");
+    if (
+      pin.canonicalPath &&
+      (await realpath(pin.path).catch(() => undefined)) !== pin.canonicalPath
+    )
+      throw new ExecError("script_changed");
+    if ((await pinnedDigest(pin.path, !!pin.canonicalPath)) !== pin.sha256)
+      throw new ExecError("script_changed");
   }
 }
 
-async function pinnedDigest(path: string): Promise<string | undefined> {
+async function pinnedDigest(path: string, installed: boolean): Promise<string | undefined> {
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
-    handle = await open(path, "r");
+    handle = await open(
+      path,
+      installed ? constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK : "r",
+    );
     const info = await handle.stat();
     if (!info.isFile() || info.size > SCRIPT_PIN_MAX_BYTES) return undefined;
     // One byte more than allowed tells a file that grew after stat apart from one that fits.

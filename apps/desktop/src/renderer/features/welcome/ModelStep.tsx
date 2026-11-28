@@ -137,7 +137,7 @@ export function ModelStep({
   const [localModel, setLocalModel] = useState("");
   const providers = current?.providers ?? [];
   const magpieDetected = magpie?.running === true;
-  const allCatalog = providerCatalog(providers, t("setup.customLabel"), t("models.payAsYouGo"));
+  const allCatalog = providerCatalog(providers, t("setup.customLabel"), t("models.payAsYouGo"), t);
   const magpieProvider = allCatalog.find(
     (entry) => entry.id === MAGPIE_PROVIDER.id && entry.available,
   );

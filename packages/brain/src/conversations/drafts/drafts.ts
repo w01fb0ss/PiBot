@@ -1,5 +1,10 @@
 import type { LocalToolCall } from "@pibot/agent";
-import { type DraftResolve, type DraftView, RpcError } from "@pibot/protocol-base";
+import {
+  ConnectorNetworkBlockedError,
+  type DraftResolve,
+  type DraftView,
+  RpcError,
+} from "@pibot/protocol-base";
 import { type DraftPayload, DraftsRepo, transaction } from "@pibot/storage";
 import type { KernelRegisterRpc } from "../../core/business-rpc.ts";
 import type { PreparedTool, ToolRunContext } from "../../core/local-types.ts";
@@ -27,8 +32,11 @@ export class DraftService {
   private readonly jobs = new Set<Promise<unknown>>();
   /** Send replies held only until the waiting tool call reads them (see execute). */
   private readonly replies = new Map<string, unknown>();
-  /** Redacted service failure reasons, held the same way as replies. */
-  private readonly failures = new Map<string, string>();
+  /** Redacted failure details, held the same way as replies. */
+  private readonly failures = new Map<
+    string,
+    { serviceMessage?: string; blockedNetworkMessage?: string }
+  >();
   private sweepCursor?: string;
   private readonly timer: ReturnType<typeof setInterval>;
   constructor(private readonly local: LocalService) {
@@ -339,7 +347,9 @@ export class DraftService {
     }
     if (created && automatic) {
       try {
-        await this.resolve({ approvalId: approval.id, action: "send" }, "automatic", confirmedNow);
+        await this.resolve({ approvalId: approval.id, action: "send" }, "automatic", {
+          confirmedNow,
+        });
       } catch (error) {
         const outcome = this.repo.get(approval.id)?.view.status;
         // A durable failed/uncertain receipt is a tool result, not an invitation to retry.
@@ -496,11 +506,12 @@ export class DraftService {
       // (e.g. the new issue's link); the caller formats it as external data.
       if (this.replies.has(created.approvalId) && receipt.status === "sent")
         return { ...receipt, reply: this.replies.get(created.approvalId) };
-      const serviceMessage = this.failures.get(created.approvalId);
-      // The caller labels it as external data; "unknown" keeps no reason so it never reads as a
-      // definite failure that invites a resend.
-      return serviceMessage && receipt.status === "failed"
-        ? { ...receipt, serviceMessage }
+      const failure = this.failures.get(created.approvalId);
+      // A definite egress refusal can accompany an uncertain delivery without changing its status.
+      if (failure?.blockedNetworkMessage)
+        return { ...receipt, notice: `${receipt.notice} ${failure.blockedNetworkMessage}` };
+      return failure?.serviceMessage && receipt.status === "failed"
+        ? { ...receipt, serviceMessage: failure.serviceMessage }
         : receipt;
     } finally {
       this.replies.delete(created.approvalId);
@@ -545,7 +556,11 @@ export class DraftService {
       before = page.at(-1)?.approvalId;
     }
   }
-  resolve(input: DraftResolve, actor: "user" | "automatic" = "user", confirmedNow = false) {
+  resolve(
+    input: DraftResolve,
+    actor: "user" | "automatic" = "user",
+    options?: Parameters<typeof resolveDraft>[3],
+  ) {
     const job = resolveDraft(
       {
         local: this.local,
@@ -560,14 +575,18 @@ export class DraftService {
           if (!this.waiting.context(id)) return;
           this.replies.set(id, reply);
         },
-        failed: (id, serviceMessage) => {
+        failed: (id, error) => {
           if (!this.waiting.context(id)) return;
-          this.failures.set(id, this.local.deps.redactor.redact(serviceMessage));
+          const redactor = this.local.deps.redactor;
+          if (error instanceof ConnectorNetworkBlockedError)
+            this.failures.set(id, { blockedNetworkMessage: redactor.redact(error.displayMessage) });
+          else if (error.serviceMessage)
+            this.failures.set(id, { serviceMessage: redactor.redact(error.serviceMessage) });
         },
       },
       input,
       actor,
-      confirmedNow,
+      options,
     );
     this.jobs.add(job);
     void job.finally(() => this.jobs.delete(job)).catch(() => undefined);
@@ -624,5 +643,7 @@ export function registerDraftRpc(handle: KernelRegisterRpc, service: DraftServic
     service.status(approvalId, conversationId, signal),
   );
   handle("drafts.list", async (params) => service.list(params));
-  handle("drafts.resolve", (params) => service.resolve(params));
+  handle("drafts.resolve", (params, { source, desktopMain, phone }) =>
+    service.resolve(params, "user", { desktopSend: !source && !desktopMain && !phone }),
+  );
 }

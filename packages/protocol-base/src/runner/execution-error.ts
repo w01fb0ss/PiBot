@@ -105,6 +105,7 @@ export const RunnerExecutionErrorSchema = z.strictObject({
       "editor_capability_missing",
       "isolation_start_failed",
       "seccomp_helper_unavailable",
+      "ripgrep_unavailable",
       "windows_proxy_credentials",
     ])
     .optional(),

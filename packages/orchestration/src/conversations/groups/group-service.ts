@@ -5,6 +5,7 @@ import type {
   ChatConfirmation,
   ChatService,
   CollaborationPort,
+  GroupPlanControl,
   GroupWorktreesPort,
   LocalService,
   ToolInput,
@@ -18,6 +19,11 @@ import {
   attachmentModelForBot,
   GroupFilesService,
   GroupFoldersService,
+  type RunModelScope,
+  runModelOverride,
+  validateModelOverride,
+  windowsDisplayPath,
+  withModelOverride,
 } from "@pibot/brain/orchestration-kit";
 import type { Logger } from "@pibot/observability";
 import {
@@ -30,11 +36,17 @@ import {
   type KernelMethodParams,
   type MethodTable,
   type ModelInfo,
+  type ModelOverride,
   type Peer,
+  type ResolvedWorkplace,
   RpcError,
+  RpcErrorCodes,
 } from "@pibot/protocol-base";
 import {
+  AuditRepo,
   BotsRepo,
+  ConversationsRepo,
+  DispatchModelRoutesRepo,
   GroupCyclesRepo,
   GroupsRepo,
   GroupTasksRepo,
@@ -55,11 +67,13 @@ import { GroupImageContextLoader } from "./group-image-context.ts";
 import { GroupPlanAttemptsController } from "./group-plan-attempts.ts";
 import { planBudgetResume } from "./group-plan-budget-resume.ts";
 import { stepOutputNames } from "./group-plan-filenames.ts";
+import { choosePlan, planProgress, stopPlan } from "./group-plan-progress.ts";
 import { planStepRetried, planStepRetryInput } from "./group-plan-retry.ts";
 import { planStepWorkspace } from "./group-plan-step-workspaces.ts";
 import { type GroupPlanMethodOwner, groupPlanInstruction } from "./group-plan-validation.ts";
 import { planWorkplaceGroup } from "./group-plan-workplace.ts";
 import { GroupDynamicPlans } from "./group-plans.ts";
+import { continueGroupRounds } from "./group-rounds.ts";
 import { GroupSender } from "./group-send.ts";
 import { soloDeliveryMethods } from "./group-solo-delivery.ts";
 import { answerStepQuestion } from "./group-step-question.ts";
@@ -114,6 +128,14 @@ export class GroupService implements CollaborationPort {
   readonly plans: GroupDynamicPlans;
   readonly planAttempts: GroupPlanAttemptsController;
   readonly workflows: GroupWorkflowScheduler;
+  readonly planControl: GroupPlanControl = {
+    progress: (params) => planProgress(this, params),
+    choose: (params) => choosePlan(this, params),
+    stop: (params) => stopPlan(this, params),
+    resolveStep: async (params) => this.workflows.resolve(params),
+    resolveTask: (params) => this.completion.resolve(params),
+    closeStaleTask: (params) => this.completion.closeStale(params),
+  };
   get memberWorktrees(): GroupWorktreesPort {
     const services = this.deps.local.workspaceServices;
     if (!services) throw new RpcError(-32601, "workspaces_unavailable");
@@ -207,11 +229,11 @@ export class GroupService implements CollaborationPort {
   pausedFor(groupId: string) {
     return this.pausing.has(groupId) || this.groups.get(groupId)?.paused === true;
   }
-  active(groupId: string, botId?: string, conversationId?: string) {
+  active(groupId: string, botId?: string, conversationId?: string, allowArchived = false) {
     if (!this.interactive) throw new RpcError(-32001, "Interactive client unavailable");
     if (this.shutdown.signal.aborted) throw new RpcError(-32001, "Brain stopping");
     if (this.locked.get(groupId) === false) throw new RpcError(-32011, "Group changing");
-    return activeGroup(this.deps.db, groupId, botId, conversationId);
+    return activeGroup(this.deps.db, groupId, botId, conversationId, allowArchived);
   }
   changed(groupId: string, reason: "created" | "updated" | "members" | "deleted") {
     this.deps.peer.emit("groups.changed", { groupId, reason });
@@ -274,7 +296,10 @@ export class GroupService implements CollaborationPort {
     try {
       return action();
     } catch (error) {
-      if (error instanceof TypeError && error.message === "image_coordinator_unsupported")
+      if (
+        error instanceof TypeError &&
+        ["image_coordinator_unsupported", "agent_coordinator_unsupported"].includes(error.message)
+      )
         throw new RpcError(-32602, error.message);
       if (
         error instanceof TypeError &&
@@ -438,6 +463,10 @@ export class GroupService implements CollaborationPort {
       postProgramNotice(this, result, "pause");
     return result;
   }
+  async continueRounds(params: KernelMethodParams["groups.rounds.continue"]) {
+    if (this.sender.preparing.has(params.groupId)) throw new RpcError(-32011, "group_rounds_stale");
+    return continueGroupRounds(this, params);
+  }
   /** Groups whose continue came from the chat's words, which resume and post a line themselves. */
   readonly chatResuming = new Set<string>();
   /** Groups whose pause came from the chat's words or group_pause, which post their own line. */
@@ -572,6 +601,64 @@ export class GroupService implements CollaborationPort {
     this.deps.chat.openConversation(threadId ?? group.conversationId);
     return new MessagesRepo(this.deps.db).list(threadId ?? group.conversationId, page);
   }
+  async setTaskModel(taskId: string, override: ModelOverride | null, request?: AbortSignal) {
+    const { db, agent, local, redactor, requireCredentials } = this.deps;
+    const target = () => {
+      const task = this.tasks.get(taskId);
+      if (!task) throw new RpcError(RpcErrorCodes.invalidParams, "model_override_task_unavailable");
+      this.active(task.groupId, task.assigneeBotId, task.threadConversationId);
+      const bot = new BotsRepo(db).get(task.assigneeBotId);
+      if (!bot || bot.archivedAt)
+        throw new RpcError(RpcErrorCodes.invalidParams, "model_override_task_unavailable");
+      return { task, bot };
+    };
+    const { task, bot } = target();
+    const signal = AbortSignal.any([
+      this.signal,
+      AbortSignal.timeout(25_000),
+      ...(request ? [request] : []),
+    ]);
+    if (override)
+      await validateModelOverride(
+        { agent, images: local.imageProvider, credentials: requireCredentials },
+        bot,
+        override,
+        () => new ConversationsRepo(db).hasImages(task.threadConversationId),
+        signal,
+      );
+    signal.throwIfAborted();
+    const result = transaction(db, () => {
+      const current = target();
+      if (
+        current.bot.id !== bot.id ||
+        current.bot.kind !== bot.kind ||
+        current.bot.category !== bot.category ||
+        JSON.stringify(current.task.modelOverride) !== JSON.stringify(task.modelOverride)
+      )
+        throw new RpcError(RpcErrorCodes.busy, "model_override_changed");
+      this.tasks.setTaskModel(taskId, override);
+      new DispatchModelRoutesRepo(db).clear(task.threadConversationId, `task:${taskId}`);
+      new AuditRepo(db, redactor).append({
+        botId: bot.id,
+        kind: "group.task.model_override",
+        summary: override
+          ? "Task model set / 已设置步骤模型"
+          : "Task model cleared / 已恢复步骤模型",
+        detail: {
+          actor: "user",
+          taskId,
+          groupId: task.groupId,
+          conversationId: task.threadConversationId,
+          reasonCode: override ? "set" : "clear",
+          ...(override ? { providerId: override.provider, modelId: override.id } : {}),
+        },
+      });
+      return this.tasks.get(taskId) ?? task;
+    });
+    this.deps.peer.emit("group.task", { task: result });
+    return result;
+  }
+
   async model(
     botId: string,
     signal: AbortSignal,
@@ -579,6 +666,7 @@ export class GroupService implements CollaborationPort {
       Extract<KernelMethodParams["runs.retry"], { source: "group" }>,
       "model" | "thinkingLevel"
     >,
+    scope?: RunModelScope,
   ) {
     const profile = new BotsRepo(this.deps.db).get(botId);
     const bot = profile && {
@@ -599,16 +687,18 @@ export class GroupService implements CollaborationPort {
           this.deps.local.imageProvider,
         ),
       };
-    if (!bot || bot.archivedAt || !bot.modelProvider || !bot.modelId)
-      throw new RpcError(-32010, "no_model");
-    await abortable(this.deps.requireCredentials(bot.modelProvider), signal);
+    if (!bot || bot.archivedAt) throw new RpcError(-32010, "no_model");
+    const override = scope ? runModelOverride(this.deps.db, bot, scope) : undefined;
+    const effective = withModelOverride(bot, override);
+    if (!effective.modelProvider || !effective.modelId) throw new RpcError(-32010, "no_model");
+    await abortable(this.deps.requireCredentials(effective.modelProvider), signal);
     const model = await attachmentModelForBot(
       this.deps.agent,
-      bot,
+      effective,
       signal,
       this.deps.local.imageProvider,
     );
-    return { bot, model };
+    return { bot, model, effective, override };
   }
   confirmNotice(
     groupId: string,
@@ -665,8 +755,13 @@ export class GroupService implements CollaborationPort {
   cancelTaskSends(task: GroupTask) {
     return this.sender.cancelTask(task);
   }
-  answerStepQuestion(messageId: string, text: string, confirmation: ChatConfirmation) {
-    return answerStepQuestion(this, messageId, text, confirmation);
+  answerStepQuestion(
+    messageId: string,
+    text: string,
+    confirmation: ChatConfirmation,
+    display: UserMessageDisplay,
+  ) {
+    return answerStepQuestion(this, messageId, text, confirmation, display);
   }
   guardTool(context: ToolRunContext, tool: string) {
     this.planAttempts.guard(context, tool);
@@ -759,13 +854,7 @@ export class GroupService implements CollaborationPort {
     if (value.group) {
       const workplace = await this.workplace(context, activeSignal);
       const source = this.deps.local.tasks.source(context);
-      value.group.workplace = JSON.stringify({
-        cwd: workplace.cwd,
-        readonly: workplace.boundary.roots
-          .filter((r) => r.role === "readonly")
-          .map((r) => r.canonicalPath),
-        memberWorktree: !!source.groupMemberWorktreeId,
-      });
+      value.group.workplace = this.describeWorkplace(workplace, !!source.groupMemberWorktreeId);
       const visible = new Set(
         value.group.messages.flatMap((m) => m.attachments?.map((a) => `${m.id}:${a.id}`) ?? []),
       );
@@ -841,14 +930,22 @@ export class GroupService implements CollaborationPort {
       instruction,
     );
     if (value.group)
-      value.group.workplace = JSON.stringify({
-        cwd: workplace.cwd,
-        readonly: workplace.boundary.roots
-          .filter((r) => r.role === "readonly")
-          .map((r) => r.canonicalPath),
-        memberWorktree: !!source.groupMemberWorktreeId,
-      });
+      value.group.workplace = this.describeWorkplace(workplace, !!source.groupMemberWorktreeId);
     return value;
+  }
+  private describeWorkplace(workplace: ResolvedWorkplace, memberWorktree: boolean) {
+    const folders = workplace.displayFolders ?? workplace.value.folders;
+    const display = (path: string) =>
+      this.deps.local.deps.platform === "win32" && workplace.boundary.location?.target === "local"
+        ? windowsDisplayPath(path, folders)
+        : path;
+    return JSON.stringify({
+      cwd: display(workplace.cwd),
+      readonly: workplace.boundary.roots
+        .filter((r) => r.role === "readonly")
+        .map((r) => display(r.canonicalPath)),
+      memberWorktree,
+    });
   }
   /** `kind` picks the counter: structured hand-offs do not spend automatic rounds. */
   auto<T>(

@@ -11,6 +11,7 @@ import {
   GIT_HOOK_CONFIRMATION_REASON,
   GIT_HOOKS_PATH_CONFIRMATION_REASON,
   OUTSIDE_WRITE_REASON,
+  WINDOWS_FILE_READ_CONFIRMATION,
   WINDOWS_READ_ONLY,
 } from "./confirmation-reasons.ts";
 import { deny } from "./deny.ts";
@@ -86,8 +87,12 @@ export function finishShared(
   }
   // Image dispatch uses the existing web ceiling/grants, while its facts name only the
   // configured service host. It never grants general browsing or a new permission tier.
-  const category = input.request.category === "image_generation" ? "web" : input.request.category;
-  if (input.request.category === "image_generation") trace.step("category", "web", "info");
+  const requestCategory = input.request.category;
+  const category =
+    requestCategory === "image_generation" || requestCategory === "video_generation"
+      ? "web"
+      : requestCategory;
+  if (requestCategory !== category) trace.step("category", "web", "info");
   if (
     category === "memory" ||
     category === "memory_read" ||
@@ -254,8 +259,33 @@ export function finishShared(
     return trace.result(result, "danger");
   }
   if (input.request.category === "write_file" && input.request.projectNotes) {
+    const { path, projectNotesReview: review } = input.request;
+    // A preview answers this exact local write only, after the normal path and level checks.
+    if (
+      review &&
+      (locationTarget !== "local" ||
+        outside ||
+        path !== review.reviewed.target ||
+        result.path?.path !== review.reviewed.target ||
+        review.change.target !== review.reviewed.target ||
+        review.change.diffHash !== review.reviewed.diffHash ||
+        review.change.contentHash !== review.reviewed.contentHash ||
+        review.change.beforeHash !== review.reviewed.beforeHash)
+    )
+      return deny(result, "project_notes_review_changed", trace, "boundary");
+    result.decision = review ? "allow" : "ask";
+    result.reason = review ? "project_notes_reviewed" : "project_notes_confirmation";
+    result.canRemember = false;
+    delete result.grantScope;
+    return trace.result(result, "boundary");
+  }
+  if (input.request.category === "video_generation") {
+    // A video job can outlive this run, so only this call's human confirmation authorizes it.
     result.decision = "ask";
-    result.reason = "project_notes_confirmation";
+    result.category = "web";
+    result.reason = "video_generation_confirmation";
+    result.videoModel = { provider: input.request.provider, id: input.request.model };
+    result.facts.push({ kind: "warning", value: "paid_generation" });
     result.canRemember = false;
     delete result.grantScope;
     return trace.result(result, "boundary");
@@ -330,6 +360,7 @@ export function finishShared(
   }
   const commandConsent = commandConfirmation(input, result);
   if (commandConsent) return confirmCommand(result, commandConsent, trace);
+  if (result.reason === WINDOWS_FILE_READ_CONFIRMATION) return trace.result(result, "boundary");
   if (
     result.reason === WINDOWS_READ_ONLY &&
     category === "run_command" &&

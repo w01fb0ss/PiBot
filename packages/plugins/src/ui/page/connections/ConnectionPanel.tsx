@@ -155,18 +155,25 @@ export function ConnectionPanel({
               <span>{t("connections.panel.tools")}</span>
             </h3>
             <div className={styles.softCard}>
-              <button
-                type="button"
-                className={`${styles.tileRow} ${styles.tileAction}`}
-                onClick={() => manage(first.id)}
-              >
-                <IconTile icon="puzzle" tone="teal" size="lg" />
-                <span className={styles.tileText}>
-                  <b>{t("connections.panel.toolCount", { count: summary.toolCount })}</b>
-                  <small>{t("connections.panel.more")}</small>
-                </span>
-                <Icon name="chevronRight" size={16} className={styles.tileChevron} />
-              </button>
+              {connectors.map((connector) => (
+                <button
+                  key={connector.id}
+                  type="button"
+                  className={`${styles.tileRow} ${styles.tileAction}`}
+                  onClick={() => manage(connector.id)}
+                >
+                  <IconTile icon="puzzle" tone="teal" size="lg" />
+                  <span className={styles.tileText}>
+                    <b>
+                      {connectors.length > 1
+                        ? connector.serverId
+                        : t("connections.panel.toolCount", { count: summary.toolCount })}
+                    </b>
+                    <small>{t("connections.panel.more")}</small>
+                  </span>
+                  <Icon name="chevronRight" size={16} className={styles.tileChevron} />
+                </button>
+              ))}
             </div>
           </section>
         </>

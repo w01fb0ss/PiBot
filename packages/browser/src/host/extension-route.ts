@@ -1,3 +1,4 @@
+import type { BrowserExtensionStatusSchema } from "@pibot/browser-contract";
 import {
   type BrowserBlocked,
   type BrowserRules,
@@ -6,6 +7,7 @@ import {
   RpcErrorCodes,
 } from "@pibot/browser-contract/full";
 import type { Logger } from "@pibot/observability";
+import type { z } from "zod";
 import { approvedPrivateOrigin } from "./network.ts";
 import type { BrowserGuard } from "./types.ts";
 
@@ -42,15 +44,7 @@ export interface UserBrowser {
   fallback(botId: string, runId?: string): void;
   /** The user pressed stop on the toolbar for this Bot (consumed once). */
   takeStop?(botId: string): boolean;
-  status(): Promise<{
-    defaultBrowser: {
-      id: "chrome" | "edge" | "brave" | "chromium" | "firefox" | "safari" | "other";
-      name: string;
-    } | null;
-    supported: boolean;
-    extension: "connected" | "installed" | "not_installed" | "unsupported";
-    registration?: "separate_data_dir" | "other_instance";
-  }>;
+  status(): Promise<Omit<z.infer<typeof BrowserExtensionStatusSchema>, "preference">>;
   register(enabled: boolean, options?: { explicit?: boolean; takeOver?: boolean }): Promise<void>;
 }
 

@@ -74,6 +74,9 @@
       "path": "../teams"
     },
     {
+      "path": "../videos"
+    },
+    {
       "path": "../workspaces"
     }
   ],

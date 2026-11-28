@@ -1,13 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import {
-  constants,
-  fsyncSync,
-  linkSync,
-  lstatSync,
-  realpathSync,
-  unlinkSync,
-  writeSync,
-} from "node:fs";
+import { constants, fsyncSync, linkSync, lstatSync, unlinkSync, writeSync } from "node:fs";
 import { lstat, mkdir, open, readdir, realpath, unlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
@@ -16,7 +8,7 @@ import {
   fileIdentity,
   matchesFileIdentity,
 } from "../core/file-identity.ts";
-import { missing, writablePath } from "../core/paths.ts";
+import { canonicalExistingPathSync, missing, writablePath } from "../core/paths.ts";
 import type { FileContext } from "../core/types.ts";
 import { matchesPatchContent, PatchRecoveryError, type StagedFile } from "./patch-publish.ts";
 
@@ -64,7 +56,7 @@ function checkParents(journal: Journal, file: Journal["files"][number]) {
       !current.isDirectory() ||
       current.isSymbolicLink() ||
       !owns(current, root) ||
-      realpathSync(root.path) !== root.path
+      canonicalExistingPathSync(root.path) !== root.path
     )
       throw new PatchRecoveryError();
   }
@@ -74,7 +66,7 @@ function checkParents(journal: Journal, file: Journal["files"][number]) {
     !current.isDirectory() ||
     current.isSymbolicLink() ||
     !owns(current, file.parent) ||
-    realpathSync(parent) !== parent
+    canonicalExistingPathSync(parent) !== parent
   )
     throw new PatchRecoveryError();
   for (const entry of [file.backup, file.stage])

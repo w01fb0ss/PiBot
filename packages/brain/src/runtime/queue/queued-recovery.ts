@@ -31,8 +31,7 @@ export async function republishQueuedWorkflows(deps: {
     const usable =
       !!bot &&
       !bot.archivedAt &&
-      !!bot.modelProvider &&
-      !!bot.modelId &&
+      (!!topic?.modelOverride || (!!bot.modelProvider && !!bot.modelId)) &&
       topic?.kind === "dm" &&
       topic.botId === run.botId &&
       !topic.archivedAt;

@@ -9,14 +9,19 @@ import {
   windowsSystemTrees,
 } from "@pibot/execution";
 import { createPolicy, type Policy, type PolicyRequest } from "@pibot/policy";
-import { RpcError, RpcErrorCodes } from "@pibot/protocol-base";
-import { BotsRepo, GroupsRepo, ToolCallsRepo } from "@pibot/storage";
+import { type ResolvedWorkplace, RpcError, RpcErrorCodes } from "@pibot/protocol-base";
+import { BotsRepo, GroupsRepo, RunsRepo, ToolCallsRepo } from "@pibot/storage";
 import { ExternalImages } from "./conversations/attachments/external-images.ts";
 import { DraftService } from "./conversations/drafts/drafts.ts";
 import { abortable } from "./core/abort.ts";
 import { ApprovalService } from "./core/approvals.ts";
 import { defaultCapabilityResolver } from "./core/capability-resolver.ts";
-import type { CollaborationPort, LocalDependencies, ToolRunContext } from "./core/local-types.ts";
+import type {
+  CollaborationPort,
+  LocalDependencies,
+  PreparedTool,
+  ToolRunContext,
+} from "./core/local-types.ts";
 import type {
   ExecutionCleanupPort,
   ExecutionPort,
@@ -54,12 +59,47 @@ import { CodeNavigationService } from "./runtime/review/code-navigation.ts";
 import { DeliveryEvidenceService } from "./runtime/review/delivery-evidence-service.ts";
 import { ReviewExecutionService } from "./runtime/review/review-execution-service.ts";
 import { createStartupTiming } from "./runtime/startup/startup-timing.ts";
+import {
+  connectionCommandChoices,
+  connectionCommandTools,
+  matchConnectionCommand,
+} from "./runtime/tools/connectors/connection-commands.ts";
+import { ConnectorInputTranslations } from "./runtime/tools/connectors/input-translation.ts";
 import { ToolJournal } from "./runtime/tools/journal/journal.ts";
 import { LocalRun } from "./runtime/tools/local-run.ts";
 import type { SkillsPort } from "./runtime/tools/skills/port.ts";
 import { createToolDefinitions } from "./runtime/tools/tools.ts";
+import { WebsiteRetries } from "./runtime/tools/website-retry.ts";
 import { UnattendedAuthorizationPort } from "./runtime/unattended/authorization-port.ts";
 import type { WorkspaceServices } from "./runtime/workspaces/port.ts";
+
+interface CapabilityToolPolicy {
+  requests: PolicyRequest[];
+  /** The resolved target can replace a capability tool's static policy placeholder. */
+  primary?: boolean;
+  prepared?: unknown;
+  binding?: string;
+  modelOptions?: NonNullable<PreparedTool["capabilityModelOptions"]>;
+  refusal?: string;
+  settingsAction?: import("@pibot/protocol-base").ToolSettingsAction;
+  refusalText?: string;
+  confirmation?: string;
+  inspect?(): Promise<{
+    prepared?: unknown;
+    binding?: string;
+    refusalText?: string;
+    facts?: import("@pibot/protocol-base").ApprovalFact[];
+    refusal?: string;
+  }>;
+}
+
+type CapabilityPolicyProvider = (
+  context: ToolRunContext,
+  call: LocalToolCall,
+  tool: string,
+  input: Record<string, unknown>,
+  signal: AbortSignal,
+) => CapabilityToolPolicy | Promise<CapabilityToolPolicy>;
 
 export class LocalService {
   endpoints?: import("@pibot/protocol-base").EndpointCapabilityPort;
@@ -78,6 +118,7 @@ export class LocalService {
   /** Persisted selection plus the default resolver; each model run freezes one resolved map. */
   readonly capabilities: StoredCapabilityResolver;
   readonly projectNotes = new ProjectNotesCache();
+  readonly connectorInputTranslations = new ConnectorInputTranslations();
   /** Provided by the providers capability; runtime authentication stays behind this port. */
   models?: import("./runtime/models/port.ts").ModelProvidersPort;
   officeProvider?: import("./runtime/media/office-port.ts").OfficePort;
@@ -98,9 +139,12 @@ export class LocalService {
   private knowledgeProvider?: (
     botId: string,
     groupId?: string,
-  ) => readonly { name: string; kind: string }[];
+  ) => readonly { name: string; kind: string; writable?: boolean }[];
   provideKnowledge(
-    provider: (botId: string, groupId?: string) => readonly { name: string; kind: string }[],
+    provider: (
+      botId: string,
+      groupId?: string,
+    ) => readonly { name: string; kind: string; writable?: boolean }[],
   ) {
     this.knowledgeProvider = provider;
   }
@@ -110,33 +154,27 @@ export class LocalService {
    * one and the strictest decision wins, so a connection's confirmation mode is never skipped by
    * the capability's static declaration.
    */
-  private toolPolicyProvider?: (
-    context: ToolRunContext,
-    call: LocalToolCall,
-    tool: string,
-    input: Record<string, unknown>,
-  ) => { requests: PolicyRequest[]; prepared?: unknown };
-  provideToolPolicy(
-    provider: (
-      context: ToolRunContext,
-      call: LocalToolCall,
-      tool: string,
-      input: Record<string, unknown>,
-    ) => { requests: PolicyRequest[]; prepared?: unknown },
-  ) {
+  private toolPolicyProvider?: CapabilityPolicyProvider;
+  private readonly toolPolicyOverrides = new Map<string, CapabilityPolicyProvider>();
+  provideToolPolicyFor(tool: string, provider: CapabilityPolicyProvider) {
+    if (this.toolPolicyOverrides.has(tool)) throw new Error("Tool policy already registered");
+    this.toolPolicyOverrides.set(tool, provider);
+    return () => {
+      if (this.toolPolicyOverrides.get(tool) === provider) this.toolPolicyOverrides.delete(tool);
+    };
+  }
+  provideToolPolicy(provider: CapabilityPolicyProvider) {
     this.toolPolicyProvider = provider;
   }
-  toolPolicies(
+  async toolPolicies(
     context: ToolRunContext,
     call: LocalToolCall,
     tool: string,
     input: Record<string, unknown>,
-  ) {
-    // No catch: letting prepare fail is the only safe answer. Returning nothing would let the
-    // capability's static declaration pass where the connection's own rule had to be added.
-    // `prepared` rides along with the call's own prepared data: a capability's executor must never
-    // learn what another call judged from shared state.
-    return this.toolPolicyProvider?.(context, call, tool, input) ?? { requests: [] };
+    signal: AbortSignal,
+  ): Promise<CapabilityToolPolicy> {
+    const provider = this.toolPolicyOverrides.get(tool) ?? this.toolPolicyProvider;
+    return provider?.(context, call, tool, input, signal) ?? { requests: [] };
   }
   knowledgeSources(botId: string, groupId?: string) {
     // Prompt building runs per model call; a provider that throws must not break the run.
@@ -197,6 +235,7 @@ export class LocalService {
    */
   readonly toolExecutors = new Map<string, import("./core/capability.ts").ToolExecutor>();
   readonly toolCards = new Map<string, import("./core/capability.ts").ToolCardDescriber>();
+  readonly toolMustAsk = new Map<string, import("./core/capability.ts").ToolMustAsk>();
   /** Owner of unattended runs; undefined when no capability claims it. */
   unattended?: import("./core/capability.ts").UnattendedRunOwner;
   /** Pre-authorization inside unattended runs; asks the owner capability and fails closed. */
@@ -207,6 +246,7 @@ export class LocalService {
   readonly drafts: DraftService;
   /** Execution journal of non-read tool calls (write-ahead record, replay interception). */
   readonly toolJournal: ToolJournal;
+  readonly websiteRetries = new WebsiteRetries();
   readonly approvals: ApprovalService;
   readonly permissions: PermissionService;
   readonly workplaces: WorkplaceService;
@@ -255,7 +295,13 @@ export class LocalService {
     jobRunId: string | null | undefined,
   ) {
     try {
-      this.deps.peer.emit("runtime.commands", { paused: this.target.commandPause?.() ?? null });
+      const windows = this.deps.platform === "win32";
+      this.deps.peer.emit("runtime.commands", {
+        paused: this.target.commandPause?.() ?? null,
+        ...(this.target.windowsCommandCleanupPending?.()
+          ? { cleanupUnconfirmed: true as const }
+          : {}),
+      });
       const owner = botId ?? new BotsRepo(this.deps.db).getMain()?.id;
       // Without any Bot the row has nowhere to be filed; the log line above still has the event.
       if (!owner) return;
@@ -264,11 +310,20 @@ export class LocalService {
         botId: owner,
         ...(runId ? { runId } : {}),
         kind: "runtime.commands_paused",
-        summary:
-          event.phase === "recovered"
+        summary: windows
+          ? event.phase === "recovered"
+            ? "Command cleanup confirmed / 已确认命令停下"
+            : "Command cleanup unconfirmed / 未能确认命令已停下"
+          : event.phase === "recovered"
             ? "Commands resumed / 命令已恢复"
             : "Commands paused / 命令已暂停",
-        detail: { reasonCode: event.phase },
+        detail: {
+          reasonCode: windows
+            ? event.phase === "recovered"
+              ? "cleanup_confirmed"
+              : "cleanup_unconfirmed"
+            : event.phase,
+        },
       });
     } catch {
       this.deps.logger.warn(JSON.stringify({ module: "exec", event: "command_pause_unreported" }));
@@ -281,6 +336,23 @@ export class LocalService {
       location.target === this.deps.executionLocation?.target
       ? this.target
       : this.executionTargets.require(location.target).target;
+  }
+  setRunWorkplace(context: ToolRunContext, { cwd, boundary }: ResolvedWorkplace) {
+    context.runWorkplace = { cwd, boundary };
+    const target = boundary.location?.target;
+    const deviceId =
+      target && target !== this.deps.executionLocation?.target
+        ? this.executionTargets.get(target)?.pairedDeviceId
+        : undefined;
+    try {
+      // A routine can resume the same run, so also clear a previous runner if it now runs locally.
+      if (new RunsRepo(this.deps.db).setRunnerDevice(context.runId, deviceId ?? null))
+        this.deps.liveActivityChanged?.();
+    } catch {
+      this.deps.logger.warn(
+        JSON.stringify({ module: "live-island", event: "runner_record_failed" }),
+      );
+    }
   }
   workspaceServices?: WorkspaceServices;
   get changes() {
@@ -336,8 +408,7 @@ export class LocalService {
               }),
             ),
           onBackgroundDrain: (event) => {
-            // The pause blocks every command, so its owner (the job's Bot and topic) has to be
-            // in the log; without it 1,380 failures took 5.5 hours to trace.
+            // Include the affected Bot and topic when available, without logging command data.
             const row = event.jobId ? this.background.repo.get(event.jobId) : undefined;
             const botId =
               row?.botId ?? (event.runId ? this.runContexts.get(event.runId)?.botId : undefined);
@@ -368,8 +439,10 @@ export class LocalService {
         },
       });
     timing.mark("execution_target");
-    this.approvals = new ApprovalService(deps, (context) =>
-      this.collaboration?.publicWebTaskScope?.(this.tasks.source(context)),
+    this.approvals = new ApprovalService(
+      deps,
+      (context) => this.collaboration?.publicWebTaskScope?.(this.tasks.source(context)),
+      (providerId) => this.models?.providerName(providerId) ?? null,
     );
     this.tools = new ToolCallsRepo(deps.db);
     this.logs = new RunLogs(deps, this.tools, this.shutdown.signal);
@@ -532,6 +605,11 @@ export class LocalService {
         ? {
             windowsSystemDrive: windowsSystemDrive(this.deps.env),
             windowsSystemTrees: windowsSystemTrees(this.deps.env),
+            windowsUserPaths: Object.fromEntries(
+              Object.entries(this.deps.env)
+                .filter(([key]) => /^(?:username|onedrive|homedrive|homepath)$/i.test(key))
+                .map(([key, value]) => [key.toLowerCase(), value]),
+            ),
           }
         : {}),
       resourcesDir: this.deps.resourcesDir,
@@ -547,10 +625,69 @@ export class LocalService {
       AbortSignal.any([parent, this.shutdown.signal, AbortSignal.timeout(10_000)]),
     );
   }
-  run(context: ToolRunContext): {
+  connectionCommands(
+    botId: string,
+    groupId: string | undefined,
+    readOnly: boolean,
+    signal: AbortSignal,
+  ) {
+    const permissions = groupId
+      ? this.permissions.effectiveGroup(groupId)
+      : this.permissions.effective(botId);
+    if (permissions.levels.connector === "never") return [];
+    const selections = this.capabilities.resolve({ botId, groupId });
+    return connectionCommandChoices(this, botId, groupId).flatMap(({ available, command }) =>
+      available &&
+      connectionCommandTools(this, command, {
+        botId,
+        groupId,
+        readOnly,
+        signal,
+        selections,
+        maxTools: 1,
+      }).length
+        ? [command]
+        : [],
+    );
+  }
+  private connectionCommand(botId: string, groupId: string | undefined, text?: string) {
+    return text?.startsWith("/")
+      ? matchConnectionCommand(text, connectionCommandChoices(this, botId, groupId))
+      : undefined;
+  }
+
+  needsConnectionTurn(
+    scope: Pick<ToolRunContext, "botId" | "groupId" | "conversationId">,
+    text: string,
+    signal: AbortSignal,
+  ): boolean {
+    const { botId, groupId } = scope;
+    const command = this.connectionCommand(botId, groupId, text);
+    if (!command) return false;
+    const permissions = groupId
+      ? this.permissions.effectiveGroup(groupId)
+      : this.permissions.effective(botId);
+    if (permissions.levels.connector === "never") return false;
+    return (
+      connectionCommandTools(this, command, {
+        botId,
+        groupId,
+        readOnly: this.execution.mode(scope) === "plan",
+        signal,
+        selections: this.capabilities.resolve({ botId, groupId }),
+        maxTools: 1,
+      }).length > 0
+    );
+  }
+
+  run(
+    context: ToolRunContext,
+    userCommand?: string,
+  ): {
     ports: LocalToolPorts;
     useModel(input: readonly string[], maxTokens?: number): void;
     toolGroups: LocalRun["toolGroups"];
+    connectionInstruction(): string | undefined;
     modelToolCalls: LocalRun["modelToolCalls"];
     successfulFileWrites: LocalRun["successfulFileWrites"];
     successfulFileSends: LocalRun["successfulFileSends"];
@@ -561,7 +698,8 @@ export class LocalService {
     reuseCheck: LocalRun["reuseCheck"];
     finish(): void;
   } {
-    return new LocalRun(this, this.retainRunContext(context));
+    const command = this.connectionCommand(context.botId, context.groupId, userCommand);
+    return new LocalRun(this, this.retainRunContext(context), command);
   }
   retainRunContext(context: ToolRunContext): ToolRunContext {
     const previous = this.runContexts.get(context.runId);

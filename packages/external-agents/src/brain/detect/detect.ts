@@ -68,6 +68,8 @@ async function commonDirs(
       win32.join(profile, ".local", "bin"),
       ...(env.APPDATA ? [win32.join(env.APPDATA, "npm")] : []),
       ...(env.LOCALAPPDATA ? [win32.join(env.LOCALAPPDATA, "pnpm")] : []),
+      // Where Antigravity's official installer puts agy.exe (LOCALAPPDATA, agy, bin).
+      ...(env.LOCALAPPDATA ? [win32.join(env.LOCALAPPDATA, "agy", "bin")] : []),
       win32.join(profile, "scoop", "shims"),
       win32.join(profile, ".bun", "bin"),
       win32.join(profile, ".opencode", "bin"),

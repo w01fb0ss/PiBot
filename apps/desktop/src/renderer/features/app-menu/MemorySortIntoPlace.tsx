@@ -1,7 +1,8 @@
-import { type MethodResults, RpcError } from "@pibot/protocol";
+import { type MethodResults, memoryFailureNeedsSettings, RpcError } from "@pibot/protocol";
 import { useRpc, useRpcEvent, useT } from "@pibot/renderer-kit";
 import { Button, IconTile } from "@pibot/ui";
 import { useEffect, useRef, useState } from "react";
+import { MemoryFallbackNotice } from "../workspace/memory/MemoryFallbackNotice.tsx";
 import styles from "../workspace/memory/settings/memory-settings.module.css";
 import menuStyles from "./app-menu.module.css";
 import { startMemorySort } from "./memory-sort-run.ts";
@@ -89,6 +90,15 @@ export function MemorySortIntoPlace() {
       }
     }
   };
+  const reason = result?.failureReason ?? "failed";
+  const failureText = () => {
+    if (reason === "busy") return t("memorySettings.sort.busyProvider");
+    if (reason === "network") return t("memorySettings.sort.network");
+    if (reason === "no_model") return t("memorySettings.sort.noModel");
+    if (reason === "local_only_no_model") return t("memorySettings.sort.localOnlyNoModel");
+    if (memoryFailureNeedsSettings(reason)) return t("memorySettings.sort.failed");
+    return t("memorySettings.sort.unknown", { reason: t(`memorySettings.maintenance.${reason}`) });
+  };
   return (
     <div className={`${styles.card} ${menuStyles.sortCard}`} aria-busy={busy}>
       <div className={menuStyles.sortHead}>
@@ -125,13 +135,17 @@ export function MemorySortIntoPlace() {
             {result.status === "done" && result.moves === 0 && (
               <p>{t("memorySettings.sortEmpty")}</p>
             )}
-            {result.status !== "done" && <p>{t(`memorySettings.sort.${result.status}`)}</p>}
+            {result.status === "failed" && <p>{failureText()}</p>}
+            {(result.status === "limited" || result.status === "cancelled") && (
+              <p>{t(`memorySettings.sort.${result.status}`)}</p>
+            )}
+            {result.fallback && (
+              <MemoryFallbackNotice fallback={result.fallback} partial={result.status !== "done"} />
+            )}
           </>
         )}
         {error && (
-          <p role="alert">
-            {t(error === "busy" ? "memorySettings.sortBusy" : "memorySettings.sort.failed")}
-          </p>
+          <p role="alert">{error === "busy" ? t("memorySettings.sortBusy") : failureText()}</p>
         )}
       </div>
     </div>

@@ -1,15 +1,23 @@
 import {
+  chatPermissionFailureText,
   interruptedMessage,
   type LiveRunActivity,
   messageBubbleText,
   providerFailureText,
   replyCitationText,
   routineNoticeText,
+  runErrorText,
   silentWake,
 } from "@pibot/client-core";
-import { type TranslationKey, zh } from "@pibot/i18n";
-import { chatAddition, type Message, messageDispatch, messageForward } from "@pibot/protocol";
-import { type ComponentProps, memo, type ReactNode, useCallback, useRef } from "react";
+import {
+  agentTurnFacts,
+  chatAddition,
+  imageGenerationResults,
+  type Message,
+  messageDispatch,
+  messageForward,
+} from "@pibot/protocol";
+import { type ComponentProps, memo, type ReactNode, useCallback, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { useSharedText, useText } from "../../../runtime/context.tsx";
 import { radius, type } from "../../../theme/scale.ts";
@@ -21,6 +29,8 @@ import { latinQuotes, MessageMarkdown } from "../../../ui/markdown.tsx";
 import { Attachments } from "../../files/Attachments.tsx";
 import { ForwardCard } from "./ForwardCard.tsx";
 import { BubbleGradient, RunActivityPill, TypingPill } from "./live.tsx";
+import { MessageImageResults } from "./MessageImageResults.tsx";
+import { RunRecordsLink } from "./RunReceiptCard.tsx";
 import { ToolSteps } from "./ToolSteps.tsx";
 
 const failureKeys = {
@@ -50,8 +60,31 @@ function failureText(
 ) {
   if (code && Object.hasOwn(failureKeys, code))
     return t(failureKeys[code as keyof typeof failureKeys]);
-  const key = `errors.${code}`;
-  return code && Object.hasOwn(zh, key) ? shared(key as TranslationKey) : t("previewFailed");
+  return runErrorText(code, shared) ?? t("previewFailed");
+}
+
+function ProviderFailureDetails({ text }: { text: string }) {
+  const shared = useSharedText();
+  const colors = useColors();
+  const [open, setOpen] = useState(false);
+  return (
+    <View style={{ marginTop: 6, gap: 4 }}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        onPress={() => setOpen((value) => !value)}
+        style={{ flexDirection: "row", alignItems: "center", gap: 4, alignSelf: "flex-start" }}
+      >
+        <Text style={[type.small, { color: colors.text2 }]}>{shared("chat.technicalDetails")}</Text>
+        <Icon name={open ? "chevron" : "chevronRight"} color={colors.text2} size={14} />
+      </Pressable>
+      {open && (
+        <Text selectable style={[type.small, { color: colors.danger }]}>
+          {text}
+        </Text>
+      )}
+    </View>
+  );
 }
 
 // Desktop bubbles: 18 radius with the 6pt corner at the bottom on the sender's side.
@@ -214,7 +247,17 @@ function MessageBody({
   }
   const failed = message.role === "error" || message.status === "error";
   const streaming = message.status === "streaming";
-  const providerFailure = failed && providerFailureText(message, shared);
+  const agentFacts = failed ? agentTurnFacts(message.usage) : undefined;
+  const providerFailure = failed ? providerFailureText(message, shared) : undefined;
+  const agentFailure =
+    agentFacts?.errorDetail &&
+    shared("externalAgents.errors.agentSaid", {
+      name: agentFacts.name,
+      detail: agentFacts.errorDetail,
+    });
+  const technicalDetails = [providerFailure, agentFailure].filter(Boolean).join("\n\n");
+  const imageResults = imageGenerationResults(message.usage);
+  const permissionFailure = message.errorCode === "permission_denied";
   return (
     <BotRow
       look={look}
@@ -226,26 +269,29 @@ function MessageBody({
       {failed ? (
         <>
           {/* What the Bot wrote before failing stays a normal reply; the reason goes under it. */}
-          {!!message.content && (
+          {!imageResults && !!message.content && (
             <View style={{ ...botBubble, maxWidth: "100%", backgroundColor: colors.bubble }}>
               <MessageMarkdown text={message.content} color={colors.text} cacheKey={message.id} />
             </View>
           )}
           <View style={{ ...botBubble, backgroundColor: colors.dangerBg }}>
             <Text style={[type.body, { color: colors.danger }]}>
-              {failureText(message.errorCode, t, shared)}
+              {permissionFailure
+                ? chatPermissionFailureText(message.usage, !!agentFacts, shared)
+                : failureText(message.errorCode, t, shared)}
             </Text>
-            {providerFailure && (
-              <Text selectable style={[type.small, { color: colors.danger }]}>
-                {providerFailure}
-              </Text>
-            )}
+            {technicalDetails && <ProviderFailureDetails text={technicalDetails} />}
           </View>
-          {onRetry && <Button icon="refresh" title={t("retryFrom")} onPress={onRetry} />}
+          {permissionFailure && !agentFacts && !imageResults && (
+            <RunRecordsLink runId={message.runId} />
+          )}
+          {onRetry && !imageResults && (
+            <Button icon="refresh" title={t("retryFrom")} onPress={onRetry} />
+          )}
         </>
       ) : streaming && !message.content ? (
         !activity && <TypingPill />
-      ) : message.content ? (
+      ) : message.content && !imageResults ? (
         <Pressable
           accessibilityRole="button"
           onPress={onPress}
@@ -263,8 +309,12 @@ function MessageBody({
           {note}
         </Text>
       ))}
-      {!!message.attachments?.length && (
-        <Attachments messageId={message.id} items={message.attachments} />
+      {imageResults ? (
+        <MessageImageResults message={message} results={imageResults} />
+      ) : (
+        !!message.attachments?.length && (
+          <Attachments messageId={message.id} items={message.attachments} />
+        )
       )}
       {interruptedMessage(message) && (
         <Text style={[type.small, { color: colors.warn }]}>{t("interrupted")}</Text>

@@ -6,11 +6,15 @@ import {
 } from "@pibot/import-contract";
 import { z } from "zod";
 
-export { ImportFailure } from "../store/failure.ts";
-export { LONG_MESSAGE_CHARS, MESSAGE_CHARS } from "./limits.ts";
+import { ImportFailure } from "../store/failure.ts";
 
+export { LONG_MESSAGE_CHARS, MESSAGE_CHARS } from "./limits.ts";
+export { ImportFailure };
+
+import { HistoryPartsSchema } from "./history-parts.ts";
 import { LONG_MESSAGE_CHARS, MESSAGE_CHARS } from "./limits.ts";
 import { geminiAdapter } from "./local/gemini.ts";
+import { opencodeAdapter } from "./local/opencode.ts";
 import { transcriptAdapter } from "./local/transcript.ts";
 
 const time = z.iso.datetime({ offset: true }).transform((value) => new Date(value).toISOString());
@@ -27,11 +31,13 @@ export const ImportTopicSchema = z.strictObject({
   createdAt: time,
   updatedAt: time,
   project: ProjectRefSchema.optional(),
+  memoryExcluded: z.boolean().optional(),
 });
 export const ImportMessageSchema = z.strictObject({
   kind: z.literal("message"),
   role: z.enum(["user", "assistant"]),
   text: z.string().max(LONG_MESSAGE_CHARS),
+  historyParts: HistoryPartsSchema.optional(),
   createdAt: time,
 });
 export const ImportRecordSchema = z.discriminatedUnion("kind", [
@@ -47,14 +53,20 @@ export const PreviewRecordSchema = z.discriminatedUnion("kind", [
     createdAt: time,
     updatedAt: time,
     project: ProjectRefSchema.optional(),
+    memoryExcluded: z.boolean().optional(),
   }),
   z.strictObject({
     kind: z.literal("message"),
     createdAt: time,
     /** Over MESSAGE_CHARS: imported as a preview plus a text attachment. */
     long: z.literal(true).optional(),
+    /** Local sizing only. Never part of the RPC preview. */
+    message: z
+      .object({ role: ImportMessageSchema.shape.role, text: ImportMessageSchema.shape.text })
+      .optional(),
   }),
   z.strictObject({ kind: z.literal("skipped") }),
+  z.strictObject({ kind: z.literal("skippedTooLong") }),
   /** A knowledge piece of a source project (its chats may be elsewhere in the export or absent). */
   z.strictObject({
     kind: z.literal("projectKnowledge"),
@@ -67,10 +79,13 @@ export const PreviewRecordSchema = z.discriminatedUnion("kind", [
 export type PreviewRecord = z.input<typeof PreviewRecordSchema>;
 
 /** The preview record of one message, flagging the ones that need a text attachment. */
-export function previewMessage(record: { createdAt: string; text: string }): PreviewRecord {
+export function previewMessage(
+  record: Pick<z.input<typeof ImportMessageSchema>, "createdAt" | "text" | "role">,
+): PreviewRecord {
   return {
     kind: "message",
     createdAt: record.createdAt,
+    message: { role: record.role, text: record.text },
     ...(record.text.length > MESSAGE_CHARS ? { long: true as const } : {}),
   };
 }
@@ -84,6 +99,17 @@ export interface ImportInput {
   (signal: AbortSignal): AsyncIterable<Buffer>;
   modifiedAt?: string;
   projectNote?: true;
+  /** Optional topic title override for a single transcript file (e.g. from Codex session_index). */
+  title?: string;
+  /** Canonical path when bound to a local file (e.g. opencode.db). */
+  sourcePath?: string;
+  /** Pre-built batch stream for multi-conversation / memory / rule selection imports. */
+  batch?: {
+    preview(signal: AbortSignal): AsyncIterable<PreviewRecord>;
+    read(signal: AbortSignal): AsyncIterable<ImportRecord>;
+    supplements?(signal: AbortSignal): AsyncIterable<import("./exports/supplement.ts").Supplement>;
+    assertSource?(signal: AbortSignal): Promise<void>;
+  };
   file?(signal: AbortSignal): AsyncIterable<ImportFile>;
 }
 
@@ -93,6 +119,43 @@ export interface ImportAdapter {
   /** Every topic precedes its messages. Topics and messages from different topics never interleave. */
   read(input: ImportInput, signal: AbortSignal): AsyncIterable<ImportRecord>;
 }
+
+function unsupportedIterable<T>(signal: AbortSignal): AsyncIterable<T> {
+  return {
+    [Symbol.asyncIterator]() {
+      return {
+        next() {
+          signal.throwIfAborted();
+          return Promise.reject(new ImportFailure("unsupported"));
+        },
+      };
+    },
+  };
+}
+
+const antigravityFileAdapter: ImportAdapter = {
+  async *detect(signal) {
+    signal.throwIfAborted();
+    yield true;
+  },
+  preview: (_input, signal) => unsupportedIterable<PreviewRecord>(signal),
+  read: (_input, signal) => unsupportedIterable<ImportRecord>(signal),
+};
+
+export const batchAdapter: ImportAdapter = {
+  async *detect(signal) {
+    signal.throwIfAborted();
+    yield true;
+  },
+  async *preview(input, signal) {
+    if (!input.batch) throw new ImportFailure("format");
+    yield* input.batch.preview(signal);
+  },
+  async *read(input, signal) {
+    if (!input.batch) throw new ImportFailure("format");
+    yield* input.batch.read(signal);
+  },
+};
 
 export function adapters(
   fixture: ImportAdapter,
@@ -106,6 +169,8 @@ export function adapters(
     "claude-code": transcriptAdapter("claude-code"),
     codex: transcriptAdapter("codex"),
     cursor: transcriptAdapter("cursor"),
+    opencode: opencodeAdapter,
+    antigravity: antigravityFileAdapter,
     gemini: geminiAdapter,
   };
 }

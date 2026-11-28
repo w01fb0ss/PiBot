@@ -19,6 +19,8 @@ export const ConversationYoloStateSchema = z.strictObject({
 export const ConversationYoloSchema = ConversationYoloStateSchema.extend({
   /** Command isolation on this computer: the confirm text warns when commands run unisolated. */
   isolation: IsolationSchema,
+  /** Whether the brain can save consent for eligible commands on a Windows execution target. */
+  windowsDirectRun: z.enum(["consented", "needs_consent", "unavailable"]).optional(),
 });
 /** A tool step that was allowed by YOLO instead of a card (risk "danger" shows in warning color). */
 export const YoloStepSchema = z.strictObject({ risk: RiskSchema });

@@ -158,7 +158,7 @@ export const routinesZh = {
   "routines.cooldown": "冷却分钟（1–60）",
   "routines.monitorNote":
     "监视目录自动关联为只读，不切换主文件夹。输出请写主文件夹；隐藏、临时和应用数据文件忽略，10 秒无变化后触发。",
-  "routines.workplace": "工作位置",
+  "routines.workplace": "工作文件夹",
   "routines.followBot": "跟随 Bot 的主文件夹",
   "routines.preauth": "本任务预授权",
   "routines.preauthNote":

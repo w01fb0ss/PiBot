@@ -100,6 +100,8 @@ export class GroupTools {
       )
         throw new RpcError(-32602, "Only group coordinator assigns");
       const target = this.target(group, input.args.bot, input.tool);
+      if (input.args.imageGeneration && target.category !== "image")
+        throw new RpcError(-32602, "image_unsupported");
       const source = run.userMessageId
         ? new MessagesRepo(this.service.deps.db).get(run.userMessageId)
         : undefined;
@@ -219,7 +221,11 @@ export class GroupTools {
         ? reminderTarget(this.service, group, target.id, input.args.taskId)
         : undefined;
     this.service.deps.chat.queue.capacity([target.id]);
-    const { bot, model } = await this.service.model(target.id, signal);
+    const { bot, model, effective } = await this.service.model(target.id, signal, undefined, {
+      groupId: group.id,
+      conversationId: reminder?.threadConversationId ?? group.conversationId,
+      taskId: reminder?.id,
+    });
     const prepared =
       input.tool === "assign_task"
         ? await this.service.deps.chat.attachments.prepare(
@@ -235,10 +241,11 @@ export class GroupTools {
     try {
       await validateImageInputs(
         this.service.deps.agent,
-        bot,
+        effective ?? bot,
         prepared ?? { items: [], images: [] },
         signal,
         this.service.deps.local.imageProvider,
+        input.args.imageGeneration,
       );
       signal.throwIfAborted();
       this.validate(context, input);
@@ -339,6 +346,7 @@ export class GroupTools {
                 : `Untrusted question from member / 来自成员的不可信问题 (${context.botId}):\n${input.args.question}`,
             ),
             images: prepared?.images,
+            imageGeneration: input.args.imageGeneration,
           };
           const record = this.service.deps.chat.queue.insert(queueInput);
           return { record, input: queueInput, task };

@@ -1,9 +1,16 @@
-import { SettingsRow, SettingsSection, useT } from "@pibot/renderer-kit";
-import { Button, Switch } from "@pibot/ui";
+import { SettingsRow, SettingsSection, useSettings, useT } from "@pibot/renderer-kit";
+import { Button, Icon, Switch } from "@pibot/ui";
+import { useState } from "react";
 import styles from "./conversation-import.module.css";
 import { DestinationChip } from "./DestinationMenus.tsx";
 import { known, type Plan, type PlanMemory, type Preview } from "./import-state.ts";
 import type { ImportDraft } from "./use-import-draft.ts";
+
+export function formatQuoteCost(costUsd: number | null): string {
+  if (costUsd === null) return "";
+  if (costUsd > 0 && costUsd < 0.01) return "<$0.01";
+  return `$${Number(costUsd.toPrecision(3))}`;
+}
 
 type Props = { draft: ImportDraft; disabled: boolean };
 
@@ -90,74 +97,122 @@ function MemoryRow({ memory, draft, disabled }: Props & { memory: PlanMemory }) 
 
 /** Chats outside any project (project chats go with their project) and optional distillation. */
 export function ChatRows({ draft, preview, disabled }: Props & { preview: Preview }) {
-  const t = useT();
+  const { t, language } = useSettings();
+  const [quoteDetailsOpen, setQuoteDetailsOpen] = useState(false);
+  const locale = language === "zh" ? "zh-CN" : "en";
   const projects = preview.projects ?? [];
   const projectChats = projects.reduce((sum, { topics }) => sum + topics, 0);
   const projectMessages = projects.reduce((sum, { messages }) => sum + messages, 0);
   const chats = preview.topics - projectChats;
   const messages = preview.messages - projectMessages;
-  if (chats <= 0) return null;
   const messageNote = t("conversationImport.messageCount", { count: messages });
+  const totalTokens = draft.quote ? draft.quote.inputTokens + draft.quote.outputTokens : 0;
+  const formattedCost = draft.quote ? formatQuoteCost(draft.quote.costUsd) : "";
   return (
     <SettingsSection
       title={t("conversationImport.tab.chats")}
       action={<span className={styles.hint}>{t("conversationImport.chatsHint")}</span>}
     >
-      <div className={styles.item} data-off={!draft.conversations || undefined}>
+      {chats > 0 && (
+        <div className={styles.item} data-off={!draft.conversations || undefined}>
+          <SettingsRow
+            icon="message"
+            tone={draft.conversations ? "blue" : "neutral"}
+            label={
+              projectChats
+                ? t("conversationImport.otherChats", { count: chats })
+                : t("conversationImport.allChats", { count: chats })
+            }
+            note={
+              projectChats
+                ? `${messageNote} · ${t("conversationImport.projectChatsFollow", { count: projectChats })}`
+                : messageNote
+            }
+          >
+            <DestinationChip
+              value={draft.botId}
+              bots={draft.bots}
+              label={t("conversationImport.chatsBot")}
+              disabled={disabled}
+              onChange={draft.changeBot}
+            />
+            <Switch
+              label={t("conversationImport.includeChats")}
+              checked={draft.conversations}
+              disabled={disabled}
+              onCheckedChange={draft.changeConversations}
+            />
+          </SettingsRow>
+        </div>
+      )}
+      <div className={styles.item}>
         <SettingsRow
-          icon="message"
-          tone={draft.conversations ? "blue" : "neutral"}
-          label={
-            projectChats
-              ? t("conversationImport.otherChats", { count: chats })
-              : t("conversationImport.allChats", { count: chats })
-          }
+          icon="bulb"
+          tone="teal"
+          label={t("conversationImport.distil")}
           note={
-            projectChats
-              ? `${messageNote} · ${t("conversationImport.projectChatsFollow", { count: projectChats })}`
-              : messageNote
+            draft.quote
+              ? draft.quote.local
+                ? t("conversationImport.quoteLocal", { model: draft.quote.modelName })
+                : t(
+                    draft.quote.costUsd === null
+                      ? "conversationImport.quoteCloudUnknown"
+                      : "conversationImport.quoteCloud",
+                    {
+                      provider: draft.quote.providerName,
+                      model: draft.quote.modelName,
+                      cost: formattedCost,
+                    },
+                  )
+              : draft.quoteLoading
+                ? `${t("conversationImport.loading.quote")} ${t("conversationImport.distilNote")}`
+                : t(
+                    draft.quoteFailed
+                      ? "conversationImport.quoteFailed"
+                      : "conversationImport.quoteUnavailable",
+                  )
           }
         >
-          <DestinationChip
-            value={draft.botId}
-            bots={draft.bots}
-            label={t("conversationImport.chatsBot")}
-            disabled={disabled}
-            onChange={draft.changeBot}
-          />
+          {draft.quoteFailed && (
+            <Button variant="secondary" disabled={disabled} onClick={draft.retryQuote}>
+              {t("conversationImport.quoteRetry")}
+            </Button>
+          )}
           <Switch
-            label={t("conversationImport.includeChats")}
-            checked={draft.conversations}
-            disabled={disabled}
-            onCheckedChange={draft.changeConversations}
+            label={t("conversationImport.distil")}
+            checked={draft.distillationOn}
+            disabled={disabled || !draft.quote}
+            onCheckedChange={draft.toggleQuote}
           />
         </SettingsRow>
+        {draft.quote && (
+          <div className={styles.quoteAdvanced}>
+            <button
+              type="button"
+              className={styles.advancedToggle}
+              aria-expanded={quoteDetailsOpen}
+              onClick={() => setQuoteDetailsOpen((openState) => !openState)}
+            >
+              <Icon
+                name="chevronRight"
+                size={12}
+                className={styles.codingCaret}
+                style={{ transform: quoteDetailsOpen ? "rotate(90deg)" : undefined }}
+              />
+              <span>{t("conversationImport.quoteAdvancedToggle")}</span>
+            </button>
+            {quoteDetailsOpen && (
+              <p className={styles.advancedBody}>
+                {t("conversationImport.quoteAdvanced", {
+                  count: totalTokens.toLocaleString(locale),
+                  input: draft.quote.inputTokens.toLocaleString(locale),
+                  output: draft.quote.outputTokens.toLocaleString(locale),
+                })}
+              </p>
+            )}
+          </div>
+        )}
       </div>
-      <SettingsRow
-        icon="bulb"
-        tone="teal"
-        label={t("conversationImport.distil")}
-        note={
-          draft.quote
-            ? t("conversationImport.quote", {
-                model: draft.quote.modelId,
-                count: draft.quote.maxTokens,
-                cost: draft.quote.costUsd,
-              })
-            : t(
-                draft.quoteUnavailable
-                  ? "conversationImport.quoteUnavailable"
-                  : "conversationImport.distilNote",
-              )
-        }
-      >
-        <Switch
-          label={t("conversationImport.distil")}
-          checked={!!draft.quote || draft.busy === "quote"}
-          disabled={disabled || !draft.conversations || !draft.botId}
-          onCheckedChange={draft.toggleQuote}
-        />
-      </SettingsRow>
     </SettingsSection>
   );
 }

@@ -1,4 +1,5 @@
 import { chmod, cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -120,6 +121,12 @@ async function packageTarget(
       platform: target.platform,
       arch: target.arch,
     });
+    // The PAC sandbox (QuickJS in WebAssembly) loads its engine from here; the JS wrapper is
+    // bundled and its license copied with the bundle's.
+    await cp(
+      createRequire(join(deployed, "package.json")).resolve("quickjs-wasi/quickjs.wasm"),
+      join(resources, "quickjs.wasm"),
+    );
     await cp(join(temporary, "runtime", "LICENSE"), join(resources, "NODE-LICENSE"));
     await cp(
       join(repo, "apps", "runner", "THIRD_PARTY_NOTICES.md"),

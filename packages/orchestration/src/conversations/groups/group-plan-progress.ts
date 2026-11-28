@@ -2,9 +2,14 @@ import {
   type GroupPlanProgress,
   GroupPlanProgressSchema,
   type KernelMethodParams,
+  type KernelMethodResults,
   RpcError,
 } from "@pibot/protocol-base";
-import type { GroupWorkflowRunRecord, GroupWorkflowStepRecord } from "@pibot/storage";
+import {
+  type GroupWorkflowRunRecord,
+  type GroupWorkflowStepRecord,
+  MessagesRepo,
+} from "@pibot/storage";
 import { stepTaskId, workspaceSteps } from "./group-plan-step-workspaces.ts";
 import type { GroupService } from "./group-service.ts";
 import { resolvePlanHold } from "./group-workflow-hold.ts";
@@ -115,7 +120,9 @@ function facts(service: GroupService, record: GroupWorkflowRunRecord): GroupPlan
         }
       : {}),
     steps,
-    passed: steps.filter((step) => step.status === "passed").length,
+    // Settled steps, as the program's status line counts them (passed or skipped): the card, the
+    // bar above the input and the task line under the plan message all read this one number.
+    passed: steps.filter((step) => step.status === "passed" || step.status === "skipped").length,
     total: steps.length,
     ...(progress.hold && ["running", "waiting"].includes(record.status)
       ? { choice: { kind: progress.hold.kind, stepIds: progress.hold.stepIds } }
@@ -154,8 +161,24 @@ export function stopPlan(
 export function choosePlan(
   service: GroupService,
   params: KernelMethodParams["groups.plan.choose"],
-): GroupPlanProgress {
+): KernelMethodResults["groups.plan.choose"] {
   const record = current(service, params.groupId, params.workflowRunId);
   resolvePlanHold(service, record, params.choice);
-  return facts(service, service.workflows.repo.get(record.id) ?? record);
+  const result = facts(service, service.workflows.repo.get(record.id) ?? record);
+  return params.choice === "new_plan"
+    ? { ...result, newPlanGoal: planGoal(service, record) }
+    : result;
+}
+
+/**
+ * The user's request that started the plan chain (its budget root is the coordinator run that
+ * answered it), else the plan's name. Read from stored records only, no model call.
+ */
+function planGoal(service: GroupService, record: GroupWorkflowRunRecord) {
+  const root = record.budgetRootRunId ? service.runs.get(record.budgetRootRunId) : undefined;
+  const source = root?.userMessageId
+    ? new MessagesRepo(service.deps.db).get(root.userMessageId)
+    : undefined;
+  const request = source?.role === "user" ? source.content.trim() : "";
+  return (request || workflowOf(record).name).slice(0, 8_000);
 }

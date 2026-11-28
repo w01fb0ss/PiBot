@@ -3,6 +3,8 @@ import {
   abortable,
   groupWorkplace,
   prepareWorkflow,
+  runModelOverride,
+  windowsDisplayPath,
   workflowLimits,
   workflowPriced,
   workspaceFiles,
@@ -15,12 +17,13 @@ import {
 } from "@pibot/protocol-base";
 import {
   BotsRepo,
+  DispatchModelRoutesRepo,
   type GroupWorkflowRunRecord,
   type GroupWorkflowStepRecord,
   MessagesRepo,
   transaction,
 } from "@pibot/storage";
-import { checkMethodFolderInputs } from "./group-method-inputs.ts";
+import { checkMethodInputs } from "./group-method-inputs.ts";
 import { stepMerged, workspaceFolder, workspaceSteps } from "./group-plan-step-workspaces.ts";
 import { assertPlanWorkplace } from "./group-plan-workplace.ts";
 import type { GroupService } from "./group-service.ts";
@@ -195,24 +198,63 @@ export class GroupWorkflowDispatcher {
     const frozenGroup = workflow.workplace ? { ...group, ...workflow.workplace } : group;
     const place = await groupWorkplace(service.deps.local, state.ownerBotId, frozenGroup, signal);
     const access = workspaceFiles(service.deps.local, place.boundary);
-    if (workflow.source.kind === "dynamic" && workflow.delivery)
-      await checkMethodFolderInputs(
+    if (workflow.source.kind === "dynamic" && workflow.delivery) {
+      const inputs = await checkMethodInputs(
         workflow,
         workflow.delivery.workspaceRoot,
         signal,
         access.paths.join(workflow.folder, "inputs"),
         access,
+        service.deps.logger,
       );
+      workflow = { ...workflow, inputs };
+    }
     const bot = new BotsRepo(service.deps.db).get(state.ownerBotId);
     if (!bot || bot.archivedAt)
       return this.engine.block(record, definition, state, "owner_unavailable");
     service.deps.chat.queue.capacity([bot.id]);
-    await service.model(bot.id, signal);
-    if (
-      workflow.contract.budget?.costUsd !== undefined &&
-      !(await workflowPriced(service.deps, bot, workflow, signal))
-    )
-      return this.engine.block(record, definition, state, "model_price_unknown");
+    const previousTaskId =
+      state.taskId ??
+      (state.executionRunId ? service.runs.get(state.executionRunId)?.taskId : undefined);
+    const previousTask = previousTaskId ? service.tasks.get(previousTaskId) : undefined;
+    const sameOwner = previousTask?.assigneeBotId === bot.id;
+    const routes = new DispatchModelRoutesRepo(service.deps.db);
+    const approved = workflow.piDispatchId
+      ? routes.get(group.conversationId, `step:${definition.id}`)
+      : undefined;
+    const route =
+      sameOwner && previousTask
+        ? routes.get(previousTask.threadConversationId, `task:${previousTask.id}`)
+        : approved?.botId === bot.id && workflow.piDispatchId === approved.dispatchId
+          ? approved
+          : undefined;
+    const modelScope = {
+      groupId: group.id,
+      conversationId:
+        sameOwner && previousTask ? previousTask.threadConversationId : group.conversationId,
+      taskId: sameOwner ? previousTaskId : undefined,
+    };
+    // Pi steps select or recover their model in the running step, where a provider change can
+    // wait for approval in Pi's chat. A user-selected override still follows normal admission.
+    const useDispatchModel =
+      workflow.piDispatchId &&
+      service.deps.local.models?.dispatchModels &&
+      bot.kind !== "agent" &&
+      (route || !runModelOverride(service.deps.db, bot, modelScope));
+    if (!useDispatchModel) {
+      const selected = await service.model(bot.id, signal, undefined, modelScope);
+      if (
+        workflow.contract.budget?.costUsd !== undefined &&
+        !(await workflowPriced(
+          service.deps,
+          selected.effective ?? bot,
+          workflow,
+          signal,
+          !!selected.override,
+        ))
+      )
+        return this.engine.block(record, definition, state, "model_price_unknown");
+    }
     const { dependencies, inputs, afterRunId } = this.dependencies(record, workflow, definition);
     const requiredContext = dependencies.map(({ summary: _summary, ...dependency }) => dependency);
     if (JSON.stringify(requiredContext).length > DEPENDENCY_REFERENCES_CHARS)
@@ -245,6 +287,7 @@ export class GroupWorkflowDispatcher {
         },
         signal,
         access,
+        service.deps.logger,
       );
       if (!prepared.ok) return this.engine.block(record, definition, state, "precheck_failed");
       memberWorkflow = { ...prepared.workflow, folder: workflow.folder };
@@ -265,9 +308,6 @@ export class GroupWorkflowDispatcher {
         name: memberWorkflow.name,
         version: memberWorkflow.version,
       };
-    const previousTaskId = state.executionRunId
-      ? service.runs.get(state.executionRunId)?.taskId
-      : undefined;
     const ownFolder = workspaceSteps(record, workflow, states).has(definition.id)
       ? workspaceFolder(workflow, definition)
       : undefined;
@@ -313,9 +353,14 @@ export class GroupWorkflowDispatcher {
       : isSummary
         ? reviewRequirements(service, workflow, record, definition.id)
         : undefined;
+    const stepFolder = ownFolder ?? workflow.folder;
+    const displayFolder =
+      service.deps.local.deps.platform === "win32" && place.boundary.location?.target === "local"
+        ? windowsDisplayPath(stepFolder, place.displayFolders ?? place.value.folders)
+        : stepFolder;
     const brief = (text?: string) =>
       stepInstructions(
-        ownFolder ? { ...workflow, folder: ownFolder } : workflow,
+        { ...workflow, folder: displayFolder },
         definition,
         spec,
         contextText,
@@ -383,6 +428,17 @@ export class GroupWorkflowDispatcher {
         // The member's prepare decides the actual workspace (or takes turns, with the reason).
         executionMode: ownFolder ? "parallel" : "serial",
       });
+      // A retry dispatch creates a fresh task row for the same step and assignee.
+      const saved =
+        sameOwner && previousTaskId ? service.tasks.get(previousTaskId)?.modelOverride : undefined;
+      const currentRoute =
+        sameOwner && previousTask
+          ? routes.get(previousTask.threadConversationId, `task:${previousTask.id}`)
+          : route;
+      if (currentRoute) {
+        service.tasks.setTaskModel(created.id, currentRoute.model);
+        routes.set(created.threadConversationId, `task:${created.id}`, currentRoute);
+      } else if (saved) service.tasks.setTaskModel(created.id, saved);
       service.cycles.bind(created.id, record.cycleId, record.sourceMessageId, record.id);
       const bound = service.tasks.bindUserSource(created.id, record.sourceMessageId);
       // The kept workspace belongs to the new task from here; if it changed since the check,

@@ -416,9 +416,12 @@ function connectNative(): BrowserPort {
   nativePort.onDisconnect.addListener(() => {
     // Reading lastError here is what keeps Chrome from logging it as unchecked.
     const message = chrome.runtime.lastError?.message ?? "";
-    nativeProblem = /not found|not registered|forbidden/i.test(message)
-      ? "host_missing"
-      : "disconnected";
+    nativeProblem =
+      /not found|not registered|forbidden|no such native application|attempt to postmessage/i.test(
+        message,
+      )
+        ? "host_missing"
+        : "disconnected";
     nativePort = undefined;
     // A connection that held means Pi Bot itself restarted: come back quickly.
     if (Date.now() - openedAt > 10_000) reconnectDelay = 2_000;
@@ -474,14 +477,19 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 connect();
 chrome.runtime.onMessage.addListener(
-  (message: unknown, sender: { id?: string }, sendResponse: (value: unknown) => void) => {
+  (
+    message: unknown,
+    sender: { id?: string; tab?: BrowserTab },
+    sendResponse: (value: unknown) => void,
+  ) => {
     if (
       typeof message === "object" &&
       message !== null &&
       "type" in message &&
-      message.type === "working"
+      (message.type === "working" || message.type === "retry_connection")
     ) {
-      void popupState().then(sendResponse);
+      if (sender.id !== chrome.runtime.id || sender.tab) return false;
+      void popupState(message.type === "retry_connection").then(sendResponse);
       return true;
     }
     if (sender.id !== chrome.runtime.id) return false;
@@ -502,7 +510,11 @@ async function siteAccess() {
 }
 
 /** What the toolbar popup shows: the connection to Pi Bot and the Bots working here. */
-async function popupState() {
+async function popupState(retry: boolean) {
+  if (retry) {
+    clearTimeout(reconnectTimer);
+    reconnectDelay = 2_000;
+  }
   if (!nativePort) {
     try {
       emit({ event: "hello", payload: { version: __PIBOT_VERSION__, browser: __PIBOT_BROWSER__ } });

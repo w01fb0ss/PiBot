@@ -1,11 +1,14 @@
 import { createHash } from "node:crypto";
-import { basename } from "node:path";
 import {
   looksLikeCredential,
   looksLikeCredentialName,
   looksLikeCredentialValue,
 } from "@pibot/plugins-contract";
-import type { DiscoverySourceId } from "@pibot/plugins-contract/full";
+import {
+  ConnectorNetworkSiteSchema,
+  connectorEndpointSite,
+  type DiscoverySourceId,
+} from "@pibot/plugins-contract/full";
 
 /**
  * One MCP server as another tool configures it, in a shared shape. Variable references of every
@@ -139,7 +142,7 @@ export function fromCodexEntry(name: string, raw: unknown): McpEntry {
   if (
     entry.cwd !== undefined &&
     (typeof entry.cwd !== "string" ||
-      !/^(?:\/|[A-Za-z]:[\\/]|\\\\[^\\]+\\[^\\]+)/.test(entry.cwd) ||
+      !/^(?:~[\\/]|\/|[A-Za-z]:[\\/]|\\\\[^\\]+\\[^\\]+)/.test(entry.cwd) ||
       /[\0\r\n]/.test(entry.cwd))
   )
     throw new McpEntryError();
@@ -215,39 +218,26 @@ export function entrySecrets(entry: McpEntry): { name: string; kind: "stored" | 
     .slice(0, 64)
     .map(([name, kind]) => ({ name, kind }));
 }
+const SECRET = /^[A-Z][A-Z0-9_]{0,63}$/;
 const SECRET_NAME = /^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/;
 
-/** Command and first plain arguments, or the server's host; never anything credential-shaped. */
+/** Discovery exposes the program or endpoint host. Other arguments may carry vendor keys. */
 export function entryDescription(entry: McpEntry): string {
   if (entry.transport === "http") {
     try {
-      const url = new URL(entry.url?.replace(REFERENCE, "") ?? "");
-      return `${url.host}${url.pathname === "/" ? "" : url.pathname}`.slice(0, 200);
+      const host = new URL(entry.url?.replace(REFERENCE, "") ?? "").host;
+      return looksLikeCredentialValue(host) ? "" : host;
     } catch {
       return "";
     }
   }
-  const words = [basename(entry.command ?? "")];
-  for (const arg of entry.args) {
-    if (words.length >= 4) break;
-    // Flags and key=value pairs are where inline tokens live; the package name says enough.
-    if (
-      arg.startsWith("-") ||
-      arg.includes("${") ||
-      arg.includes("=") ||
-      looksLikeCredentialValue(arg)
-    )
-      continue;
-    words.push(arg.length > 60 ? `${arg.slice(0, 57)}…` : arg);
-  }
-  return words.filter(Boolean).join(" ").slice(0, 200);
+  const program = entry.command?.split(/[\\/]/).at(-1) ?? "";
+  return looksLikeCredentialValue(program) ? "" : program.slice(0, 200);
 }
 
-const SECRET = /^[A-Z][A-Z0-9_]{0,63}$/;
-
 /**
- * A Pi Bot connector manifest for one entry. References become `${secret:VAR}` (stored in Pi
- * Bot's secret store under that name, filled in from 「密钥」); a non-secret reference with a
+ * A Pi Bot connector manifest for one entry. References become `${env:VAR}` (stored in Pi
+ * Bot's preview as a service-scoped key to fill in); a non-secret reference with a
  * default takes the default. Literal credentials are left in place: the import's own
  * normalization moves them into the secret store before anything is persisted.
  */
@@ -259,7 +249,7 @@ export function entryManifest(
     value.replace(REFERENCE, (_match, variable: string, fallback: string | undefined) => {
       if (fallback !== undefined && !looksLikeCredentialName(variable)) return fallback;
       if (!allowSecret || !SECRET.test(variable)) throw new McpEntryError();
-      return `\${secret:${variable}}`;
+      return `\${env:${variable}}`;
     });
   const serverId =
     entry.name
@@ -283,9 +273,9 @@ export function entryManifest(
     const bearer = Object.entries(headers).some(
       ([key, value]) => key.toLowerCase() === "authorization" && /^Bearer /i.test(value),
     );
-    let host: string;
+    let host: string | undefined;
     try {
-      host = new URL(url).hostname;
+      host = ConnectorNetworkSiteSchema.safeParse(connectorEndpointSite(new URL(url))).data;
     } catch {
       throw new McpEntryError();
     }
@@ -296,14 +286,14 @@ export function entryManifest(
       headers,
       ...(entry.sse ? { sseFallback: true } : {}),
       auth: { kind: bearer ? "bearer" : "none", secretNames: [] },
-      networkDomains: [host],
+      networkDomains: host ? [host] : [],
     };
   } else {
     const env: Record<string, string> = {};
     for (const [key, value] of Object.entries(entry.env)) env[key] = resolve(value, true);
     for (const variable of entry.passthrough)
       if (SECRET.test(variable) && env[variable] === undefined)
-        env[variable] = `\${secret:${variable}}`;
+        env[variable] = `\${env:${variable}}`;
     server = {
       ...base,
       transport: "stdio",

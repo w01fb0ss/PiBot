@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
 import { mkdir, mkdtemp, open, realpath, writeFile } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import type {
   BackgroundStartOptions,
   CommandDiagnostic,
@@ -14,11 +14,19 @@ import { findGit } from "../git/git-process.ts";
 import type { createSandboxProfiles } from "../sandbox/sandbox-profiles.ts";
 import type { NetworkProxy } from "../web/network-proxy.ts";
 import type { BackgroundProcessRecord, createBackgroundJobs } from "./background.ts";
+import { commandLogRoot, prepareCommandHome, verifyBotHomeLayout } from "./command-home.ts";
 import type { createCommandTemps } from "./command-temp.ts";
 import { commandEnvironment, userTerminalEnvironment } from "./environment.ts";
 import { preparePackageManagerEnvironment } from "./package-manager-environment.ts";
 import { mergeSecretEnv } from "./secret-env.ts";
-import { SKILL_PYTHON_DOMAINS, skillPythonPaths, skillPythonWriteRoots } from "./skill-python.ts";
+import {
+  SKILL_NODE_DOMAINS,
+  SKILL_PYTHON_MIRROR,
+  skillNodeDirectory,
+  skillPythonDomains,
+  skillPythonPaths,
+  skillPythonWriteRoots,
+} from "./skill-python.ts";
 
 export interface CommandDependencies {
   options: ExecOptions;
@@ -35,8 +43,13 @@ export interface CommandDependencies {
     record?: BackgroundProcessRecord,
     runId?: string,
   ): void;
-  drainFailed(): boolean;
+  drainFailed(runId: string): boolean;
   retainCommand(work: Promise<unknown>, runId: string): void;
+  waitForForegroundCleanup(
+    error: unknown,
+    runId: string,
+    record?: BackgroundProcessRecord,
+  ): Promise<void> | undefined;
   adoptForeground(job: import("./background.ts").BackgroundJob): void;
 }
 export interface CommandStage {
@@ -65,12 +78,48 @@ export async function commandIsolation(
   state: CommandStage,
 ) {
   const { options, sandbox } = deps;
+  if (input.skillNodePreparation) {
+    const dir = skillNodeDirectory(input.dataDir, input.skillNodePreparation.envId);
+    const windowsConfirmed =
+      options.platform === "win32" && input.skillNodePreparation.windowsConfirmed;
+    const validNetwork = windowsConfirmed
+      ? input.allowUnisolated && input.network.allowAll && input.network.domains.length === 0
+      : !input.allowUnisolated &&
+        !input.network.allowAll &&
+        input.network.domains.length === 1 &&
+        input.network.domains[0] === SKILL_NODE_DOMAINS[0];
+    if (
+      !validNetwork ||
+      input.cwd !== dir ||
+      input.writeRoots.length !== 1 ||
+      input.writeRoots[0] !== dir ||
+      input.docker ||
+      input.outsideSandbox ||
+      input.promotion ||
+      input.gitHook ||
+      input.gitOutput ||
+      input.hostSsh ||
+      input.skillEnv ||
+      input.secretEnv ||
+      input.skillPythonPreparation
+    )
+      throw new ExecError("invalid_input");
+  }
   if (input.skillPythonPreparation) {
     const paths = skillPythonPaths(input.dataDir, input.skillPythonPreparation);
     const expected = skillPythonWriteRoots(paths, input.skillPythonPreparation.phase);
+    const domains = skillPythonDomains(input.skillPythonPreparation.useMirror);
+    const windowsConfirmed =
+      options.platform === "win32" && input.skillPythonPreparation.windowsConfirmed === true;
+    const validNetwork = windowsConfirmed
+      ? input.allowUnisolated && input.network.allowAll && input.network.domains.length === 0
+      : !input.allowUnisolated &&
+        !input.network.allowAll &&
+        input.network.domains.length === domains.length &&
+        domains.every((host) => input.network.domains.includes(host));
     if (
       input.docker ||
-      input.allowUnisolated ||
+      !validNetwork ||
       input.outsideSandbox ||
       input.promotion ||
       input.gitHook ||
@@ -80,10 +129,7 @@ export async function commandIsolation(
       input.secretEnv ||
       input.cwd !== paths.env ||
       input.writeRoots.length !== expected.length ||
-      !expected.every((path) => input.writeRoots.includes(path)) ||
-      input.network.allowAll ||
-      input.network.domains.length !== SKILL_PYTHON_DOMAINS.length ||
-      !SKILL_PYTHON_DOMAINS.every((host) => input.network.domains.includes(host))
+      !expected.every((path) => input.writeRoots.includes(path))
     )
       throw new ExecError("invalid_input");
   }
@@ -118,6 +164,25 @@ export async function commandIsolation(
   }
   return isolation;
 }
+/** Bare ESM imports normally ignore NODE_PATH. Fall back to this skill's managed packages. */
+const skillNodeImports = Buffer.from(`
+  import { registerHooks } from "node:module";
+  import { join } from "node:path";
+  import { pathToFileURL } from "node:url";
+  const parentURL = pathToFileURL(join(process.env.NODE_PATH, "..", "package.json")).href;
+  registerHooks({
+    resolve(name, context, next) {
+      try {
+        return next(name, context);
+      } catch (error) {
+        if (error.code !== "ERR_MODULE_NOT_FOUND" ||
+            !/^(?:@[a-z0-9._-]+\\/[a-z0-9._-]+|[a-z0-9_][a-z0-9._-]*)(?:\\/|$)/i.test(name))
+          throw error;
+        return next(name, { ...context, parentURL });
+      }
+    },
+  });
+`).toString("base64");
 export async function commandResources(
   deps: CommandDependencies,
   input: Input,
@@ -127,10 +192,12 @@ export async function commandResources(
   const { options } = deps;
   const cwd = await realpath(input.cwd),
     home = await realpath(input.botHome);
+  verifyBotHomeLayout(await realpath(input.dataDir), home);
   if (input.homeDir && (await realpath(input.homeDir)) !== home)
     throw new ExecError("invalid_input");
   // Only an issued permit leads to an unsandboxed spawn (command-run consumes it first).
   const outside = "outsideSandbox" in input && input.outsideSandbox !== undefined;
+  const commandHome = outside ? undefined : await prepareCommandHome(home);
   // Windows packages unpack their MinGit on first need (bundled-git.ts). A command that names Git
   // waits for it so `git` resolves on its PATH; any other command only starts the unpack.
   if (options.platform === "win32" && !input.docker) {
@@ -160,23 +227,32 @@ export async function commandResources(
       : commandEnvironment(
           options.platform,
           options.env,
-          home,
+          commandHome ?? home,
           temp,
           input.pathEntries,
           options.resourcesDir,
         ),
     input.secretEnv,
   );
-  // A skill runtime lives outside the workplace, so these variables are the only way a
-  // skill script finds its own interpreter; PATH keeps the environment's entry points first so a
-  // plain `python` inside the skill folder resolves to the prepared venv.
+  if (commandHome) {
+    env.GIT_CONFIG_GLOBAL = join(commandHome, ".gitconfig");
+    if (options.platform === "win32") {
+      env.APPDATA = join(commandHome, "AppData", "Roaming");
+      env.LOCALAPPDATA = join(commandHome, "AppData", "Local");
+    }
+  }
+  // Keep the selected skill's interpreter first on PATH even when the cwd is the workplace.
   if (input.skillEnv) {
-    const { dir, bin, python, node } = input.skillEnv;
-    env.PIBOT_SKILL_DIR = dir;
+    const { dir, sourceDir, bin, python, node } = input.skillEnv;
+    env.PIBOT_SKILL_DIR = sourceDir ? await realpath(sourceDir) : dir;
     if (python) env.PIBOT_SKILL_PYTHON = python;
-    if (node) env.PIBOT_SKILL_NODE = node;
+    if (node) {
+      env.PIBOT_SKILL_NODE = node;
+      env.NODE_PATH = join(dir, "node_modules");
+      env.NODE_OPTIONS = `--import=data:text/javascript;base64,${skillNodeImports}`;
+    }
     const prefix = join(dir, ...bin.split("/"));
-    env.PATH = [prefix, env.PATH]
+    env.PATH = [node && dirname(node), prefix, env.PATH]
       .filter((part) => part !== undefined && part !== "")
       .join(options.platform === "win32" ? ";" : ":");
   }
@@ -194,6 +270,13 @@ export async function commandResources(
     options.systemHome,
     !outside,
   );
+  if (input.skillNodePreparation) {
+    env.npm_config_cache = join(temp, "npm-cache");
+    env.npm_config_registry = `https://${SKILL_NODE_DOMAINS[0]}/`;
+    env.npm_config_userconfig = join(temp, "npm-user.npmrc");
+    env.npm_config_globalconfig = join(temp, "npm-global.npmrc");
+    env.npm_config_manage_package_manager_versions = "false";
+  }
   if (input.skillPythonPreparation) {
     const paths = skillPythonPaths(input.dataDir, input.skillPythonPreparation);
     Object.assign(env, {
@@ -202,9 +285,15 @@ export async function commandResources(
       UV_CACHE_DIR: paths.cache,
       UV_NO_CONFIG: "1",
       UV_NO_PROGRESS: "1",
+      UV_PYTHON_NO_REGISTRY: "1",
+      ...(input.skillPythonPreparation.useMirror
+        ? {
+            UV_PYTHON_INSTALL_MIRROR: `https://${SKILL_PYTHON_MIRROR}/github/python-build-standalone/releases/download`,
+          }
+        : {}),
     });
   }
-  return { cwd, home, temp, env };
+  return { cwd, home, temp, env, commandHome };
 }
 export type CommandResources = Awaited<ReturnType<typeof commandResources>>;
 export async function dockerResources(
@@ -239,8 +328,9 @@ export async function dockerResources(
   return { program, args };
 }
 export async function commandLog(home: string, directory: "runs" | "background", id: string) {
-  const root = join(home, ".pibot", directory);
-  for (const path of [join(home, ".pibot"), root]) {
+  const base = commandLogRoot(home);
+  const root = join(base, directory);
+  for (const path of [base, root]) {
     await mkdir(path, { recursive: true, mode: 0o700 });
     if ((await realpath(path)) !== resolve(path))
       throw new ExecError("outside_workplace", "workspace_root_alias");

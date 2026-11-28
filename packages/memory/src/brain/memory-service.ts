@@ -48,6 +48,7 @@ import {
   type ExtractionCandidate,
   extractionCatalog,
 } from "./memory-extraction.ts";
+import { extractionRepeats } from "./memory-extraction-dedupe.ts";
 import { type MemoryToolInput, noteValue, parseMemoryInput } from "./memory-input.ts";
 import { type OrganizationProposal, organizationCatalog } from "./memory-organization.ts";
 import { organizationInputs } from "./memory-organization-inputs.ts";
@@ -298,7 +299,7 @@ export class MemoryService {
     for (const owner of this.visibleOwners(botId, groupId, project)) {
       if (scope && owner.scope !== scope) continue;
       const value = this.repoFor(owner).get(botId, id);
-      if (value) return { text: value.text, scope: owner.scope };
+      if (value) return { text: value.text, scope: owner.scope, updatedAt: value.updatedAt };
     }
     return undefined;
   }
@@ -602,10 +603,8 @@ export class MemoryService {
   }
 
   /**
-   * A Bot that saves a correction itself (memory_add during the turn) leaves its card on the
-   * text-less step message before the words, where it faded before the reply was read, and the
-   * later correction extraction then found nothing new. The turn's own notes move under the
-   * reply instead and are returned for its "noted" receipt, so one card shows with its undo.
+   * Tool steps can belong to an earlier message in the same run. Move their proposals under
+   * the completed reply and include applied writes that were already attached there.
    */
   anchorRunNotes(botId: string, replyId: string) {
     this.active(botId);
@@ -617,8 +616,8 @@ export class MemoryService {
         JOIN messages reply ON reply.id=? AND reply.run_id IS NOT NULL AND reply.run_id=source.run_id
           AND reply.conversation_id=source.conversation_id
         WHERE p.bot_id=? AND p.status IN ('pending','accepted') AND p.action IN ('add','update')
-          AND p.scope IN ('bot','user','project')
-        ORDER BY p.created_at, p.rowid LIMIT 5`,
+          AND reply.role='assistant' AND reply.status='done' AND source.role='assistant'
+        ORDER BY p.created_at, p.rowid`,
       )
       .all(replyId, botId)
       .map((row) => ({
@@ -630,13 +629,31 @@ export class MemoryService {
     if (!rows.length) return [];
     transaction(this.db, () => {
       const move = this.db.prepare(
-        "UPDATE scoped_memory_proposals SET message_id=? WHERE id=? AND bot_id=?",
+        "UPDATE scoped_memory_proposals SET message_id=? WHERE id=? AND bot_id=? AND message_id<>?",
       );
-      for (const row of rows) move.run(replyId, row.proposalId, botId);
+      for (const row of rows) move.run(replyId, row.proposalId, botId, replyId);
     });
     this.changed(botId, "proposed", undefined, rows[0]?.proposalId);
     return rows.flatMap((row) =>
       row.status === "accepted" && row.memoryId ? [{ id: row.memoryId, text: row.text }] : [],
+    );
+  }
+
+  /** See extractionRepeats: background extraction must not repeat a waiting or undone card. */
+  extractionRepeats(
+    botId: string,
+    conversationId: string,
+    text: string,
+    memoryId?: string,
+    replyId?: string,
+  ) {
+    return extractionRepeats(
+      this.db,
+      botId,
+      conversationId,
+      this.redactor.redact(text),
+      memoryId,
+      replyId,
     );
   }
 

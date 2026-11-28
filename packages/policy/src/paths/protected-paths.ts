@@ -1,5 +1,5 @@
 // Protect the host’s system and credential trees from outside-workplace writes.
-import type { PathContext, Platform } from "../core/types.ts";
+import type { FileSystem, PathContext, Platform } from "../core/types.ts";
 import { canonicalPath, containsPath, pathApi } from "./paths.ts";
 
 /**
@@ -107,6 +107,28 @@ async function canonical(path: string, context: PathContext) {
     throw error;
   }
 }
+
+/** Protected names share long Windows prefixes, including missing paths. Never keep alias
+ * results after this expansion: a junction, SUBST mapping or share can change during a run. */
+function protectedPathProbes(fs: FileSystem): FileSystem {
+  function share<T>(probe: (path: string, signal: AbortSignal) => Promise<T>) {
+    const paths = new Map<string, Promise<T>>();
+    return (path: string, signal: AbortSignal) => {
+      signal.throwIfAborted();
+      const cached = paths.get(path);
+      if (cached) return cached;
+      const pending = probe.call(fs, path, signal);
+      paths.set(path, pending);
+      return pending;
+    };
+  }
+  return {
+    ...fs,
+    realpath: share(fs.realpath),
+    ...(fs.isSymbolicLink ? { isSymbolicLink: share(fs.isSymbolicLink) } : {}),
+    ...(fs.canonicalize ? { canonicalize: share(fs.canonicalize) } : {}),
+  };
+}
 /**
  * Built for outside writes and explicit additional-root validation, where a root must not
  * turn a protected tree into an ordinary inside write. `extra` comes from brain (exec's sensitive roots and the Pi Bot data directory); both the
@@ -117,6 +139,7 @@ export async function protectedPaths(
   extra: readonly string[],
 ): Promise<ProtectedPaths> {
   const { platform } = context;
+  if (platform === "win32") context = { ...context, fs: protectedPathProbes(context.fs) };
   const api = pathApi(platform);
   const home = await canonical(context.home, context);
   const homeNames = [

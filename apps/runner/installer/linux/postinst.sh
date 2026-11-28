@@ -27,29 +27,16 @@ Headless machines without a Secret Service need the passphrase in
 ~/.config/pibot-runner/env (mode 0600), never in the unit file's Environment=.
 MESSAGE
 
-# Ubuntu 24.04 起默认限制非特权 user namespace，bubblewrap 会启动失败，
-# 执行端的每条命令都会因隔离不可用而拒绝执行。安装时先说清楚怎么修。
+# Only the live probe as the service user can tell whether the installed policy permits isolation.
 restrict=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
 if [ -r "$restrict" ] && [ "$(cat "$restrict")" = "1" ]; then
   cat <<'MESSAGE'
 
-注意 / warning: 本机限制了非特权 user namespace
-(kernel.apparmor_restrict_unprivileged_userns=1)，bubblewrap 沙箱可能无法启动，
-执行端的命令在修好之前不会运行。两种修法 / two fixes:
-  1) 给 bwrap 加 AppArmor 配置（Ubuntu 推荐）：
-     把下面内容写进 /etc/apparmor.d/bwrap，然后 sudo apparmor_parser -r /etc/apparmor.d/bwrap
-       abi <abi/4.0>,
-       include <tunables/global>
-       profile bwrap /usr/bin/bwrap flags=(unconfined) {
-         userns,
-         include if exists <local/bwrap>
-       }
-  2) 调 sysctl（隔离变弱，重启后失效）：
-     sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+本机启用了 AppArmor 的非特权用户命名空间限制。启动执行端后，
+运行 pibot runner status 查看实际隔离探测的结果和失败时的处理方法。
 
-This kernel restricts unprivileged user namespaces, so the bubblewrap sandbox
-may fail to start; commands will not run if isolation is unavailable. Install an AppArmor
-profile for /usr/bin/bwrap (recommended) or set the sysctl to 0 (weaker isolation).
+AppArmor restricts unprivileged user namespaces on this host. After starting the
+runner, run pibot runner status for the live isolation result and any remedy.
 MESSAGE
 fi
 

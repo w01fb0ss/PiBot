@@ -1,5 +1,5 @@
 import type { ChatPeer } from "@pibot/client-core";
-import { type GroupTopic, HANDOFF_LIMIT } from "@pibot/protocol";
+import { type GroupTopic, HANDOFF_LIMIT, nextGroupRoundLimit, RpcError } from "@pibot/protocol";
 import {
   BotAvatar,
   FolderPicker,
@@ -19,6 +19,7 @@ import { ChatHeader } from "../chat/ChatHeader.tsx";
 import chatStyles from "../chat/chat.module.css";
 import { MessageReplyProvider } from "../chat/messages/MessageReply.tsx";
 import { YoloControl } from "../chat/status/YoloControl.tsx";
+import { ModelOverrideControl } from "../chat/topics/ModelOverrideControl.tsx";
 import { TasksPane } from "../execution/TasksPane.tsx";
 import { ExecutionContext, useExecutionWorkspace } from "../execution/workspace.tsx";
 import { useGroupFolders } from "../folders/use-group-folders.ts";
@@ -102,19 +103,39 @@ export function GroupChat({
   const places = workplaces.snapshot;
   const thread = useThread(peer, groupId, threadId, data.tasks);
   const group = data.group;
-  const [selectedTopic, setSelectedTopic] = useState<GroupTopic>();
+  const [historyTopic, setSelectedTopic] = useState<GroupTopic>();
   // biome-ignore lint/correctness/useExhaustiveDependencies: selections never cross groups
   useEffect(() => setSelectedTopic(undefined), [groupId]);
-  const draftId = view.name === "chat" && view.groupId === groupId ? view.draftId : undefined;
+  const groupView = view.name === "chat" && view.groupId === groupId ? view : undefined;
+  const draftId = groupView?.draftId;
+  const linkedTopicId = groupView?.topicId;
+  const selectedTopic = linkedTopicId ? undefined : historyTopic;
+  const linkedHistory = !!linkedTopicId && linkedTopicId !== group?.conversationId;
   useEffect(() => {
     // Explicit history selections and message-location requests retain their read-only route.
-    if (group?.topicArchivedAt && !draftId && !threadId && !selectedTopic && !view.focus)
+    if (
+      group?.topicArchivedAt &&
+      !draftId &&
+      !threadId &&
+      !selectedTopic &&
+      !linkedTopicId &&
+      !view.focus
+    )
       navigate({ name: "chat", groupId, draftId: crypto.randomUUID() });
-  }, [group?.topicArchivedAt, draftId, threadId, selectedTopic, view.focus, navigate, groupId]);
+  }, [
+    group?.topicArchivedAt,
+    draftId,
+    threadId,
+    selectedTopic,
+    linkedTopicId,
+    view.focus,
+    navigate,
+    groupId,
+  ]);
   const isDraft = !!draftId;
   const draftFolders = useGroupTopicDraft(peer, group, draftId);
-  const readonly = !isDraft && (!!selectedTopic || !!group?.topicArchivedAt);
-  const viewConversationId = draftId ?? selectedTopic?.id ?? group?.conversationId;
+  const readonly = !isDraft && (linkedHistory || !!selectedTopic || !!group?.topicArchivedAt);
+  const viewConversationId = draftId ?? linkedTopicId ?? selectedTopic?.id ?? group?.conversationId;
   const chooseTopic = (topic?: GroupTopic) => {
     setSelectedTopic(topic);
     navigate({ name: "chat", groupId });
@@ -153,6 +174,29 @@ export function GroupChat({
       () => "group.saveFailed",
     );
     if (updated?.id === groupId) await controller.refresh();
+  };
+  const roundLimitId = !group?.paused && data.cycle?.limited ? data.cycle.roundLimitId : undefined;
+  const raiseTo = group && roundLimitId ? nextGroupRoundLimit(group.autoRoundLimit) : undefined;
+  const continueRounds = async (autoRoundLimit?: number) => {
+    if (!group || !roundLimitId || !data.identityReady || action.busy) return;
+    await action.run(
+      (signal) =>
+        waitRpc(
+          () =>
+            peer.call("groups.rounds.continue", {
+              groupId,
+              roundLimitId,
+              expectedLimit: group.autoRoundLimit,
+              autoRoundLimit,
+            }),
+          AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+        ),
+      (error) =>
+        error instanceof RpcError && error.message === "group_rounds_stale"
+          ? "group.roundsContinueStale"
+          : "group.saveFailed",
+    );
+    await controller.refresh();
   };
   // Changes sidebar: a group uses its primary folder; the coordinator acts for it.
   const baseSidePane = useSidePane(true);
@@ -244,7 +288,7 @@ export function GroupChat({
   );
   const folderText = selectedTopic
     ? (historicalFolder?.displayPath ?? t("folders.groupHome"))
-    : folderModel
+    : !linkedHistory && folderModel
       ? folderLabel(folderModel, t)
       : "";
   // Reply cards read the sidebar link from context; `body` keeps the chat markup unindented.
@@ -271,10 +315,31 @@ export function GroupChat({
               peer={peer}
               group={group}
               selected={selectedTopic}
+              conversationId={isDraft ? undefined : viewConversationId}
+              linkedTitle={linkedHistory ? (groupView?.topicTitle ?? t("group.topics")) : undefined}
               select={chooseTopic}
               draft={isDraft}
               refresh={controller.refresh}
               running={running}
+            />
+          )
+        }
+        modelOverride={
+          group &&
+          !readonly &&
+          !isDraft &&
+          coordinator &&
+          coordinator.kind !== "agent" && (
+            <ModelOverrideControl
+              key={group.conversationId}
+              peer={peer}
+              kind="topic"
+              category={coordinator.category ?? "chat"}
+              override={group.topicModelOverride}
+              disabled={!data.identityReady}
+              save={(override) =>
+                peer.call("chat.topicModel.set", { conversationId: group.conversationId, override })
+              }
             />
           )
         }
@@ -301,7 +366,7 @@ export function GroupChat({
                 }
               />
             )}
-            {readonly && (
+            {readonly && folderText && (
               <span className={chatStyles.subtitleText} title={folderText}>
                 {folderText}
               </span>
@@ -370,16 +435,22 @@ export function GroupChat({
         </div>
       )}
       {group && !readonly && !isDraft && (
-        <div className={styles.rounds} role="status" data-paused={group.paused || undefined}>
-          <span className={styles.roundsText}>
+        <div
+          className={styles.rounds}
+          data-paused={group.paused || undefined}
+          data-limited={!!roundLimitId || undefined}
+        >
+          <span className={styles.roundsText} role="status">
             {t(
               !data.identityReady || !data.cycle
                 ? "group.roundsUnknown"
                 : group.paused
                   ? "group.paused"
-                  : data.cycle?.limited
-                    ? "group.limited"
-                    : "group.rounds",
+                  : roundLimitId
+                    ? "group.roundsReached"
+                    : data.cycle.limited
+                      ? "group.limited"
+                      : "group.rounds",
               { rounds: data.cycle?.rounds ?? t("network.unknown"), limit: group.autoRoundLimit },
             )}
             {!group.paused &&
@@ -395,6 +466,26 @@ export function GroupChat({
                 }}
               />
             </span>
+          )}
+          {roundLimitId && (
+            <div className={styles.roundActions}>
+              <Button
+                variant="pill"
+                disabled={action.busy || data.error || !data.identityReady}
+                onClick={() => void continueRounds()}
+              >
+                {t("group.roundsReset")}
+              </Button>
+              {raiseTo !== undefined && (
+                <Button
+                  variant="pill"
+                  disabled={action.busy || data.error || !data.identityReady}
+                  onClick={() => void continueRounds(raiseTo)}
+                >
+                  {t("group.roundsRaise", { limit: raiseTo })}
+                </Button>
+              )}
+            </div>
           )}
           <div className={styles.toggle}>
             <span>{t("group.pause")}</span>
@@ -473,6 +564,7 @@ export function GroupChat({
                 ) : undefined
               }
               readonly={readonly}
+              linkedHistory={linkedHistory}
               data={data}
               images={images}
               refresh={controller.refresh}
@@ -569,6 +661,8 @@ export function GroupChat({
             close={close}
             places={places?.places}
             refresh={controller.refresh}
+            conversationId={isDraft ? undefined : viewConversationId}
+            selectedTopic={selectedTopic}
             draft={isDraft}
             selectTopic={(topic) => {
               chooseTopic(topic);

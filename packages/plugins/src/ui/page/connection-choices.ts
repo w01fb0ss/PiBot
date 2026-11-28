@@ -34,8 +34,9 @@ export function useConnectionChoices(target: AccessTarget) {
     read.value?.connectors.filter((row) => row.pluginInstallationId === installationId) ?? [];
   const items = (read.value?.summaries ?? []).filter(
     (summary) =>
-      summary.sourceKind === "json" ||
-      (summary.sourceKind === "directory" && connectorsOf(summary.installationId).length > 0),
+      !summary.managedByKnowledge &&
+      (summary.sourceKind === "json" ||
+        (summary.sourceKind === "directory" && connectorsOf(summary.installationId).length > 0)),
   );
   const rows = items.map((summary) => ({
     id: summary.installationId,

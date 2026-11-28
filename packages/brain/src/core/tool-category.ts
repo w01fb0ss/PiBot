@@ -33,5 +33,8 @@ export function toolPermissionCategory(
   // App capability tools declare "connector" in their spec. Without this, "Never" did not hide
   // them and their approval card had no valid category. Capability-specific
   // categories (phone_data, routine_proposal) stay their own.
-  return asPermissionCategory(declaredPermission(tool) ?? registry.specs[tool]?.policy.category);
+  const spec = registry.specs[tool];
+  return asPermissionCategory(
+    declaredPermission(tool) ?? spec?.attributes?.permission ?? spec?.policy.category,
+  );
 }

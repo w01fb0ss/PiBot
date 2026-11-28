@@ -1,10 +1,17 @@
 import { join } from "node:path";
 import { connectorDigest } from "@pibot/brain/kit";
 import type { Connector } from "@pibot/plugins-contract/full";
-import { connectorAuditEvents, RpcError, RpcErrorCodes } from "@pibot/plugins-contract/full";
+import {
+  connectorAuditEvents,
+  connectorStartupSeconds,
+  RpcError,
+  RpcErrorCodes,
+} from "@pibot/plugins-contract/full";
 import type { ConnectorsRepo } from "../../../store/index.ts";
 import type { ConnectorPoolTarget } from "../../pool/pool.ts";
-import { USER_SECRET_SCOPE } from "../connector-import.ts";
+import { canConfigureRemoteKey } from "../connector-app-service.ts";
+import { importedCredentialParts, USER_SECRET_SCOPE } from "../connector-import.ts";
+import { connectorNetworkDecision, connectorWebsites } from "../connector-network.ts";
 import { ConnectorOpenError, openConnectorConnection } from "../connector-runtime.ts";
 import { connectorSecretUses } from "../connector-secrets.ts";
 import type { ConnectorServiceOperations } from "../connector-service.ts";
@@ -115,14 +122,26 @@ export function buildTargetStep(
   }
   const mcp = this.registry.fromInstallation(installation)?.mcp;
   const storedServer = this.deps.connectors.configuration(connector.id);
-  const openTimeoutMs = storedServer.startupTimeoutSec
-    ? storedServer.startupTimeoutSec * 1000
-    : mcp?.openTimeoutMs;
+  const effective = this.registry.effectiveServer(installation, storedServer);
+  const outside =
+    connector.outsideSandbox &&
+    outsideSandboxAvailability(this, connector, effective) === "available";
+  const startupMs = (server: typeof storedServer, fallback: number | undefined) =>
+    server.startupTimeoutSec !== undefined
+      ? server.startupTimeoutSec * 1000
+      : (fallback ?? connectorStartupSeconds(server) * 1000);
+  const service = this;
   return {
     connectorId: connector.id,
     generation,
+    serial:
+      effective.transport === "stdio" &&
+      !outside &&
+      ["darwin", "linux"].includes(this.deps.platform ?? process.platform),
     // A native extension owns its prompt budget; the pool must outlive that first OS grant.
-    ...(openTimeoutMs ? { openTimeoutMs } : {}),
+    get openTimeoutMs() {
+      return startupMs(service.deps.connectors.configuration(connector.id), mcp?.openTimeoutMs);
+    },
     open: async (signal) => {
       const row = this.deps.connectors.get(connector.id);
       if (!row) throw new ConnectorOpenError("not_found", "Connector removed");
@@ -131,6 +150,14 @@ export function buildTargetStep(
       const installation = this.deps.plugins.get(row.pluginInstallationId);
       const mcp = this.registry.fromInstallation(installation)?.mcp;
       const server = this.registry.effectiveServer(installation, storedServer);
+      if (server.transport === "http") {
+        const websites = connectorWebsites({ ...this.deps, registry: this.registry }, row);
+        if (websites.mode === "remote" && !websites.remote.allowed)
+          throw new ConnectorOpenError(
+            "website_approval_required",
+            "MCP endpoint requires approval",
+          );
+      }
       const importedRoots =
         installation?.sourceKind === "directory" && this.deps.dataDir
           ? {
@@ -181,6 +208,23 @@ export function buildTargetStep(
       }
       const bindings = connectorSecretUses(server, row.pluginInstallationId, this.deps.userSecrets);
       const allowedSecretNames = new Set(server.auth.secretNames);
+      const remoteBearer =
+        server.transport === "http" && canConfigureRemoteKey(server)
+          ? await this.apps.remoteKey(row.id, server.url)
+          : undefined;
+      signal.throwIfAborted();
+      const oauth =
+        !remoteBearer &&
+        server.transport === "http" &&
+        (server.auth.kind === "oauth" || canConfigureRemoteKey(server))
+          ? this.apps.oauthStorage(row.id, server.url, () => {
+              signal.throwIfAborted();
+              const latest = this.deps.connectors.get(row.id);
+              if (!latest?.enabled || this.targets.get(row.id)?.generation !== generation)
+                throw new ConnectorOpenError("revision_changed", "Authorization changed");
+            })
+          : undefined;
+      const useOAuth = oauth && (server.auth.kind === "oauth" || !!(await oauth.load()));
       const connection = await openConnectorConnection(
         {
           connector: row,
@@ -189,7 +233,18 @@ export function buildTargetStep(
           reportStartFailure: (failure) => recordStartFailure(this, row.id, failure),
           logStderr: this.deps.logStderr,
           server,
+          ...(server.transport === "stdio" &&
+          !outsideSandbox &&
+          ["darwin", "linux"].includes(this.deps.platform ?? process.platform)
+            ? {
+                sandboxNetwork: (attempt, requestSignal, call) =>
+                  connectorNetworkDecision(this, row.id, generation, attempt, requestSignal, call),
+              }
+            : {}),
           factory: this.deps.factory,
+          proxy: this.deps.proxy,
+          startupTimeoutMs: startupMs(storedServer, mcp?.openTimeoutMs),
+          registerProxySecret: this.deps.registerSecret,
           pluginSecretRequest: this.pluginSecretHandlers(row.pluginInstallationId, () => {
             signal.throwIfAborted();
             if (
@@ -230,16 +285,8 @@ export function buildTargetStep(
           tempDir: this.deps.tempDir,
           platform: (this.deps.platform ?? process.platform) as NodeJS.Platform,
           ...(mcp?.trustedStdio ? { trustedStdio: mcp.trustedStdio } : {}),
-          ...(server.auth.kind === "oauth"
-            ? {
-                oauth: this.apps.oauthStorage(row.id, () => {
-                  signal.throwIfAborted();
-                  const latest = this.deps.connectors.get(row.id);
-                  if (!latest?.enabled || this.targets.get(row.id)?.generation !== generation)
-                    throw new ConnectorOpenError("revision_changed", "Authorization changed");
-                }),
-              }
-            : {}),
+          ...(remoteBearer ? { remoteBearer } : {}),
+          ...(useOAuth ? { oauth } : {}),
         },
         signal,
       );
@@ -264,12 +311,19 @@ export function buildTargetStep(
 }
 
 /** Installation credentials stay owned by connectors; user-assigned names belong to the port. */
-export function readConnectionSecretStep(
+export async function readConnectionSecretStep(
   this: ConnectorServiceOperations,
   name: string,
   signal: AbortSignal,
 ) {
-  if (name.startsWith("IMPORT_")) return this.deps.secrets.get(USER_SECRET_SCOPE, name);
+  if (name.startsWith("IMPORT_")) {
+    return this.deps.secrets.get(USER_SECRET_SCOPE, name, (value) => {
+      for (const part of importedCredentialParts(value, true)) {
+        const safe = part.trim().replace(/^[!\s]+/, "");
+        if (safe.length >= 8 && !/[\0\r\n]/.test(safe)) this.deps.registerSecret?.(safe);
+      }
+    });
+  }
   if (!this.deps.userSecrets)
     throw new ConnectorOpenError("secret_required", "User secret unavailable");
   return this.deps.userSecrets.read(name, signal);

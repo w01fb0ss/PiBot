@@ -1,15 +1,17 @@
 import { randomUUID } from "node:crypto";
-import { once } from "node:events";
-import { createWriteStream } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { mkdir, open, realpath, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { Writable } from "node:stream";
 import { pathToFileURL } from "node:url";
+import { tempCommand } from "../command/command-context.ts";
 import { commandEnvironment } from "../command/environment.ts";
 import { executeHostedCommand } from "../command/foreground-host.ts";
+import { cleanupRecord, type ProcessControl } from "../command/process.ts";
 import { ExecError, type ExecOptions } from "../core/types.ts";
 import { createSandboxConfig } from "../sandbox/sandbox-config.ts";
-import { sensitiveReadBoundary } from "../sandbox/sensitive-paths.ts";
-import { engineCandidates, findEngine } from "./office-convert.ts";
+import { engineCandidates, findEngine, libreOfficePlatformSupported } from "./office-convert.ts";
+import type { createOfficeConvertCleanup } from "./office-convert-cleanup.ts";
 
 const TIMEOUT_MS = 120_000;
 /** Same ceiling as the in-process Office chain; a larger rendering is refused, never truncated. */
@@ -21,14 +23,25 @@ export type OfficeConvertTarget = "pdf" | "docx" | "xlsx" | "pptx";
 
 export type OfficeLibreOfficeReason =
   | "libreoffice_missing"
+  | "libreoffice_platform_unsupported"
   | "libreoffice_isolation_unavailable"
   | "libreoffice_unsupported_format"
   | "libreoffice_failed"
+  | "libreoffice_cleanup_unconfirmed"
   | "libreoffice_timeout";
 
 export type OfficeLibreOfficeResult =
   | { status: "converted"; bytes: Uint8Array }
   | { status: "unavailable"; reason: OfficeLibreOfficeReason };
+
+export interface OfficeConvertInput {
+  bytes: Uint8Array;
+  source: OfficeConvertSource;
+  target: OfficeConvertTarget;
+  signal: AbortSignal;
+  /** Re-checks the user's approval immediately before the sandbox acknowledges dispatch. */
+  assertCurrent(): void;
+}
 
 const LEGACY_TARGETS: Partial<Record<OfficeConvertSource, OfficeConvertTarget>> = {
   doc: "docx",
@@ -53,42 +66,50 @@ function quote(word: string) {
  */
 export async function convertOfficeDocument(
   options: ExecOptions & { dataDir: string },
-  input: {
-    bytes: Uint8Array;
-    source: OfficeConvertSource;
-    target: OfficeConvertTarget;
-    signal: AbortSignal;
-    /** Re-checks the user's approval immediately before the sandbox acknowledges dispatch. */
-    assertCurrent(): void;
-  },
+  input: OfficeConvertInput,
+  cleanup: ReturnType<typeof createOfficeConvertCleanup>,
 ): Promise<OfficeLibreOfficeResult> {
   if (!officeConvertTarget(input.source, input.target))
     return { status: "unavailable", reason: "libreoffice_unsupported_format" };
   if (!input.bytes.length || input.bytes.length > MAX_INPUT_BYTES)
     throw new ExecError("invalid_input");
   const signal = AbortSignal.any([input.signal, AbortSignal.timeout(TIMEOUT_MS)]);
+  // Windows has no command sandbox, and this recipe never falls back to an unisolated run.
+  if (!libreOfficePlatformSupported(options.platform))
+    return { status: "unavailable", reason: "libreoffice_platform_unsupported" };
   const engine = await findEngine(engineCandidates(options.platform, options.env), signal);
   if (!engine) return { status: "unavailable", reason: "libreoffice_missing" };
-  // Windows has no command sandbox, and this recipe never falls back to an unisolated run.
-  if (options.platform !== "darwin" && options.platform !== "linux")
-    return { status: "unavailable", reason: "libreoffice_isolation_unavailable" };
-  const work = await mkdtemp(join(options.tempDir, "office-convert-"));
+  let owner: string | undefined;
+  let retained: ReturnType<typeof cleanupRecord>;
   try {
-    return await convertIn(options, input, work, engine, signal);
+    owner = await cleanup.create();
+    const work = join(owner, "work");
+    await mkdir(work, { mode: 0o700 });
+    const directory = owner;
+    return await convertIn(options, input, work, engine, signal, (tree) =>
+      cleanup.arm(directory, tree),
+    );
   } catch (error) {
+    retained = cleanupRecord(error);
+    if (retained) return { status: "unavailable", reason: "libreoffice_cleanup_unconfirmed" };
     if (input.signal.aborted) throw new ExecError("command_failed", "cancelled");
     if (signal.aborted) return { status: "unavailable", reason: "libreoffice_timeout" };
     if (error instanceof ExecError) {
-      if (["isolation_unavailable", "sandbox_unavailable"].includes(String(error.reason)))
+      if (
+        error.code === "isolation_unavailable" ||
+        ["isolation_unavailable", "sandbox_unavailable"].includes(String(error.reason))
+      )
         return { status: "unavailable", reason: "libreoffice_isolation_unavailable" };
       if (error.reason === "cancelled")
         return { status: "unavailable", reason: "libreoffice_timeout" };
     }
     return { status: "unavailable", reason: "libreoffice_failed" };
   } finally {
-    // The directory only holds a copy of the user's file and one private profile; a failed cleanup
-    // must not turn a finished conversion into an error, and the app temp sweep owns stragglers.
-    await rm(work, { recursive: true, force: true }).catch(() => {});
+    if (owner)
+      await cleanup.finish(
+        owner,
+        retained && { group: retained.group, processes: retained.processes },
+      );
   }
 }
 
@@ -104,6 +125,7 @@ async function convertIn(
   work: string,
   engine: string,
   signal: AbortSignal,
+  armCleanup: (tree: ReturnType<ProcessControl["record"]>) => Promise<void>,
 ): Promise<OfficeLibreOfficeResult> {
   const inbound = join(work, "in");
   const outbound = join(work, "out");
@@ -111,23 +133,26 @@ async function convertIn(
   await Promise.all([inbound, outbound, profile].map((path) => mkdir(path, { mode: 0o700 })));
   const source = join(inbound, `input.${input.source}`);
   await writeFile(source, input.bytes, { mode: 0o600, flag: "wx" });
-  const boundary = await sensitiveReadBoundary(
-    options.platform,
-    [options.systemHome, work],
-    options.env,
-    { botHome: work, dataDir: options.dataDir },
-  );
-  if (!boundary.permitsWriteRoot(work)) throw new ExecError("outside_workplace");
   const sandbox = createSandboxConfig(options);
-  const config = await sandbox.config([work], { allowAll: false, domains: [] }, signal, {
-    botHome: work,
-    dataDir: options.dataDir,
-  });
-  // The fixed recipe has exactly one writable directory; ordinary command roots never apply.
-  config.filesystem.allowWrite = [{ path: work, literal: true }];
-  config.filesystem.gitManifestWriteRoots = [];
-  config.filesystem.allowRead ??= [];
-  config.filesystem.allowRead.push({ path: work, literal: true });
+  // The recipe uses its own temp directory as HOME. Deny the app data tree without granting
+  // access to any Bot home, skills or attachments, and require the private temp to stay writable.
+  const config = await sandbox.config(
+    [],
+    { allowAll: false, domains: [] },
+    signal,
+    { dataDir: options.dataDir },
+    [],
+    false,
+    false,
+    undefined,
+    false,
+    work,
+  );
+  if (
+    config.filesystem.allowWrite.length !== 1 ||
+    !config.filesystem.allowWrite.some((root) => typeof root !== "string" && root.path === work)
+  )
+    throw new ExecError("outside_workplace");
   const env = commandEnvironment(options.platform, options.env, work, work);
   const command = [
     engine,
@@ -144,15 +169,14 @@ async function convertIn(
   ]
     .map(quote)
     .join(" ");
-  const log = createWriteStream(join(work, "convert.log"), { flags: "wx", mode: 0o600 });
+  // Conversion output may contain document data. Keep it out of persistent command logs.
+  const log = new Writable({ write: (_chunk, _encoding, done) => done() });
   try {
-    // Open failures must surface before sandbox preparation starts hiding them.
-    await once(log, "open");
-    await executeHostedCommand({
+    const result = await executeHostedCommand({
       options,
       config,
       allowAll: false,
-      command,
+      command: tempCommand(command, work),
       commandText: "office_convert_libreoffice",
       commandId: randomUUID(),
       cwd: work,
@@ -160,19 +184,33 @@ async function convertIn(
       signal,
       log,
       dispatch: () => input.assertCurrent(),
-      prepared: async () => {
+      prepared: async (record) => {
         input.assertCurrent();
-        signal.throwIfAborted();
-        input.assertCurrent();
+        if (!record) throw new ExecError("command_failed");
+        // The host waits for dispatch, so it cannot start LibreOffice before this record exists.
+        await armCleanup(record());
       },
     });
     signal.throwIfAborted();
+    if (result.exitCode !== 0 || (await realpath(outbound)) !== outbound)
+      return { status: "unavailable", reason: "libreoffice_failed" };
   } finally {
-    log.end();
+    log.destroy();
   }
-  const produced = join(outbound, `input.${input.target}`);
-  const info = await stat(produced).catch(() => undefined);
-  if (!info?.isFile() || !info.size || info.size > MAX_OUTPUT_BYTES)
-    return { status: "unavailable", reason: "libreoffice_failed" };
-  return { status: "converted", bytes: new Uint8Array(await readFile(produced)) };
+  const output = await open(
+    join(outbound, `input.${input.target}`),
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  try {
+    const info = await output.stat();
+    if (!info.isFile() || info.nlink !== 1 || !info.size || info.size > MAX_OUTPUT_BYTES)
+      return { status: "unavailable", reason: "libreoffice_failed" };
+    const buffer = Buffer.alloc(info.size);
+    const { bytesRead } = await output.read({ buffer });
+    signal.throwIfAborted();
+    if (bytesRead !== info.size) return { status: "unavailable", reason: "libreoffice_failed" };
+    return { status: "converted", bytes: buffer };
+  } finally {
+    await output.close();
+  }
 }

@@ -7,12 +7,16 @@ import type { ProcessControl } from "./process.ts";
 
 /** Detach the wait, never the process owner, sandbox, output stream or run temp lease. */
 export async function runPromotableCommand(
-  deps: Pick<CommandDependencies, "lifetime" | "adoptForeground" | "retainCommand">,
+  deps: Pick<
+    CommandDependencies,
+    "lifetime" | "adoptForeground" | "retainCommand" | "waitForForegroundCleanup"
+  >,
   input: RunCommandOptions,
   execute: (
     signal: AbortSignal,
     ready: (control: ProcessControl, logPath: string) => void,
     output: (text: string) => void,
+    exited: () => void,
   ) => Promise<{
     exitCode: number | null;
     truncatedOutput: string;
@@ -87,6 +91,7 @@ export async function runPromotableCommand(
       (text) => {
         if (!trigger) input.onOutput?.(text);
       },
+      () => clearTimeout(timer),
     ),
   );
   const ended = work.then(
@@ -97,14 +102,18 @@ export async function runPromotableCommand(
         reason: signal.aborted ? ("stopped" as const) : ("exited" as const),
       };
     },
-    (error: unknown) => {
+    async (error: unknown) => {
       // Output/log failures after certified OS drain are terminal failures, not live jobs.
       // A missing certificate (including legacy adapters) must retain ownership and leases.
       if (
         !control?.drained?.() ||
         (error instanceof ExecError && error.reason === "cleanup_failed")
-      )
-        throw error;
+      ) {
+        const cleanup =
+          trigger && deps.waitForForegroundCleanup(error, input.runId, control?.record());
+        if (!cleanup) throw error;
+        await cleanup;
+      }
       return { exitCode: null, reason: "failed" as const };
     },
   );
@@ -155,10 +164,11 @@ export async function runPromotableCommand(
     .then(
       (result): CommandResult => ({
         ...result,
-        truncatedOutput: timedOut
-          ? timeoutOutput(result.truncatedOutput, timeoutSec)
-          : result.truncatedOutput,
-        timedOut,
+        truncatedOutput:
+          timedOut && result.exitCode === null
+            ? timeoutOutput(result.truncatedOutput, timeoutSec)
+            : result.truncatedOutput,
+        timedOut: timedOut && result.exitCode === null,
         stopped: !timedOut && signal.aborted,
         durationMs: Math.round(performance.now() - started),
       }),

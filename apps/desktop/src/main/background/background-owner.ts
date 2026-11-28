@@ -53,6 +53,7 @@ import { createWindowsBackgroundSecurity } from "./windows-background-security.t
 
 export async function startBackgroundOwner(options: {
   dataDir: string;
+  dataDirDisplayPath?: string;
   outputDir: string;
   resourcesDir: string;
   version: string;
@@ -111,12 +112,19 @@ export async function startBackgroundOwner(options: {
   let island: ReturnType<typeof createLiveIsland> | undefined;
   // The window whose focus hides the live island. Another client (a second window, the CLI)
   // leaving must not bring the island over a Pi Bot window that is still in front.
-  let focusedClient: unknown;
-  const islandForeground = (client: unknown, focused: boolean) => {
+  let focusedClient: string | undefined;
+  let islandClient: string | undefined;
+  const setForeground = (client: string, focused: boolean) => {
     if (focused) focusedClient = client;
     else if (focusedClient !== client) return;
     else focusedClient = undefined;
+    foreground = focused;
     island?.foreground(focused);
+  };
+  const releaseIsland = (client: string) => {
+    if (islandClient !== client) return;
+    islandClient = undefined;
+    if (!stopped) island?.presentThrough();
   };
   let pendingNavigation: UiNavigation | undefined;
   let preferences = BackgroundPreferencesSchema.parse({});
@@ -343,6 +351,7 @@ export async function startBackgroundOwner(options: {
       env: desktopLaunchEnvironment(
         { dev: options.dev, env: options.originalEnv },
         options.dataDir,
+        options.dataDirDisplayPath,
       ),
     });
     child.on("error", () => options.logger.warn("GUI launch unavailable"));
@@ -600,8 +609,8 @@ export async function startBackgroundOwner(options: {
         ),
       disconnected: async (client, pid) => {
         providerImport.dismiss(client);
-        foreground = false;
-        islandForeground(client, false);
+        setForeground(client, false);
+        releaseIsland(client);
         await clients.disconnected(client, pid);
         syncTray();
       },
@@ -682,6 +691,28 @@ export async function startBackgroundOwner(options: {
             case "attach":
               if (!current || !cycle) throw new Error("background_not_ready");
               await cycle.desktopClient(true, () => clients.attach(client));
+              // Only the desktop window takes the island: a later SDK, CLI or bridge client that
+              // attaches must not take it away from the window the person sees.
+              if (process.platform === "win32" && control.island && islandClient !== client) {
+                // Only the process receiving the island click can reliably activate its window.
+                if (islandClient)
+                  ownedServer.sendToClient(islandClient, { kind: "island", presentation: null });
+                islandClient = client;
+                island?.presentThrough((presentation) => {
+                  if (
+                    !ownedServer.sendToClient(client, { kind: "island", presentation }) &&
+                    presentation
+                  )
+                    options.logger.warn(
+                      JSON.stringify({
+                        module: "live-island",
+                        event: "failed",
+                        platform: process.platform,
+                        reason: "gui_presentation_delivery_failed",
+                      }),
+                    );
+                });
+              }
               // After the attach reply: the window answers on this same socket, whose messages
               // wait behind this handler, so awaiting it here deadlocked every window start.
               setImmediate(() => {
@@ -701,19 +732,17 @@ export async function startBackgroundOwner(options: {
               return state();
             case "detach":
               providerImport.dismiss(client);
-              foreground = false;
-              islandForeground(client, false);
+              setForeground(client, false);
+              releaseIsland(client);
               await clients.detach(client, control.stop === true);
               syncTray();
               return state();
             case "focus":
-              foreground = true;
-              islandForeground(client, true);
+              setForeground(client, true);
               routineHost?.focused(control.at);
               return null;
             case "blur":
-              foreground = false;
-              islandForeground(client, false);
+              setForeground(client, false);
               return null;
             case "ui-ready":
               if (current) await providerImport.present(client, current);
@@ -737,6 +766,11 @@ export async function startBackgroundOwner(options: {
               if (!current) throw new Error("background_not_ready");
               current.navigate(control.target);
               return null;
+            case "island-open": {
+              const target = client === islandClient ? island?.target(control.key) : undefined;
+              if (target && current) current.navigate(target);
+              return null;
+            }
             case "preferences": {
               // The sign-in policy may still be writing the same preferences.
               await managementWork;

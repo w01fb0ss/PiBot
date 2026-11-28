@@ -6,10 +6,15 @@ import {
   connectionConfirmation,
 } from "@pibot/protocol-base";
 import {
+  DISPATCH_FOLDER_CONFIRM,
+  DISPATCH_MODEL_CONFIRM,
   PRIVATE_NETWORK_REASON,
+  SETTINGS_SECURITY_CONFIRM,
+  WINDOWS_FILE_READ_CONFIRMATION,
   WINDOWS_ORDINARY_COMMAND,
   WINDOWS_REQUIRES_APPROVAL,
 } from "./confirmation-reasons.ts";
+import { CONNECTOR_NETWORK_CONFIRMATION } from "./connector-network.ts";
 import { GIT_CONFIGURATION_CONFIRMATION_REASON } from "./git-configuration-policy.ts";
 import { GIT_ENTRY_CONFIRMATION_REASON } from "./git-entry-policy.ts";
 import { GIT_HOOK_CONFIRMATION_REASON } from "./git-hook-policy.ts";
@@ -53,9 +58,11 @@ export function mustAskNow(
       result.reason === "browser_sensitive_confirmation" ||
       result.reason === "browser_secret_confirmation" ||
       result.reason === WINDOWS_REQUIRES_APPROVAL ||
+      result.reason === WINDOWS_FILE_READ_CONFIRMATION ||
       result.reason === WINDOWS_ORDINARY_COMMAND ||
       result.reason === "windows_unisolated" ||
       result.reason === "command_network_confirmation" ||
+      result.reason === CONNECTOR_NETWORK_CONFIRMATION ||
       result.reason === "command_install_confirmation" ||
       result.reason === "command_background_confirmation" ||
       result.reason === CONNECTION_CONFIRMATION_REASON ||
@@ -68,7 +75,12 @@ export function mustAskNow(
       result.reason === GIT_HOOK_CONFIRMATION_REASON ||
       result.reason === GIT_ENTRY_CONFIRMATION_REASON ||
       result.reason === REVEAL_CONFIRMATION_REASON ||
+      result.reason === "video_generation_confirmation" ||
       result.reason === "project_notes_confirmation" ||
+      result.reason === "knowledge_write_confirmation" ||
+      result.reason === SETTINGS_SECURITY_CONFIRM ||
+      result.reason === DISPATCH_FOLDER_CONFIRM ||
+      result.reason === DISPATCH_MODEL_CONFIRM ||
       result.reason === "memory_after_untrusted" ||
       result.reason === "memory_sensitive" ||
       result.reason === OUTSIDE_WRITE_REASON ||

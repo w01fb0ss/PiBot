@@ -1,10 +1,15 @@
 import { type MethodParams, RpcError, RpcErrorCodes } from "@pibot/protocol";
 import { type Peer, useRpc, useRpcEvent } from "@pibot/renderer-kit";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { advanceStatus, backgroundOptions, type Status, startError } from "./import-state.ts";
+import {
+  advanceStatus,
+  backgroundOptions,
+  reviewOptions,
+  type Status,
+  startError,
+} from "./import-state.ts";
 
 export type ImportJob = {
-  botId: string;
   importId: string;
   status?: Status;
   hasProject: boolean;
@@ -15,7 +20,7 @@ export type ImportJob = {
 
 type JobAction = "start" | "cancel" | "undo";
 
-export function useImportJob() {
+export function useImportJob(refreshProjectReviews: () => void) {
   const { peer } = useRpc();
   const [job, setJob] = useState<ImportJob>();
   const [busy, setBusy] = useState<JobAction>();
@@ -115,7 +120,6 @@ export function useImportJob() {
       attempt.current = { id, acknowledged: false };
       setJob({
         importId: id,
-        botId: params.botId,
         hasProject: !!params.projects?.some(({ reviewId }) => reviewId),
         cancelRequested: false,
         startedAt: performance.now(),
@@ -123,7 +127,7 @@ export function useImportJob() {
       const abort = new AbortController();
       startRequest.current = { peer, abort };
       try {
-        apply(await peer.call("import.start", params, { signal: abort.signal }));
+        apply(await peer.call("import.start", params, { ...reviewOptions, signal: abort.signal }));
       } catch (failure) {
         if (
           !abort.signal.aborted &&
@@ -131,8 +135,11 @@ export function useImportJob() {
           (failure.code === RpcErrorCodes.invalidParams ||
             failure.code === RpcErrorCodes.methodNotFound ||
             failure.code === RpcErrorCodes.unsupported)
-        )
-          rejectStart(id, startError(failure));
+        ) {
+          const key = startError(failure);
+          if (key === "conversationImport.error.project_review_changed") refreshProjectReviews();
+          rejectStart(id, key);
+        }
         // When an acknowledgement may be lost, retain this ID and let status settle the result.
       } finally {
         startRequest.current = undefined;
@@ -169,7 +176,6 @@ export function useImportJob() {
     attempt.current = { id: importId, acknowledged: true };
     setJob({
       importId,
-      botId: "",
       status,
       hasProject: !!status.projectFiles,
       cancelRequested: false,

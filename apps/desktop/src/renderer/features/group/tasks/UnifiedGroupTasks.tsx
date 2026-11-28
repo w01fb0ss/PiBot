@@ -76,6 +76,9 @@ export function UnifiedGroupTasks({
             <span className={styles.taskText}>
               <b title={task?.title ?? child?.title}>{task?.title ?? child?.title}</b>
               <strong>{bot?.name ?? t("group.member")}</strong>
+              {task?.modelOverride && (
+                <span>{t("chat.taskModel.current", { model: task.modelOverride.id })}</span>
+              )}
             </span>
             {task ? (
               <>

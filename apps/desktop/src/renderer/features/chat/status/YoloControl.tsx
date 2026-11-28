@@ -1,6 +1,6 @@
 // Show the conversation's YOLO switch and its confirmation.
-import type { ChatPeer } from "@pibot/client-core";
-import { useAction, useT } from "@pibot/renderer-kit";
+import { type ChatPeer, isolationReasonText } from "@pibot/client-core";
+import { useAction, useSettings, useT } from "@pibot/renderer-kit";
 import { Button, Icon, IconButton, IconTile } from "@pibot/ui";
 import { useRef, useState } from "react";
 import { menuKeys, useMenuPopover } from "../../workspace/profile/use-menu-popover.ts";
@@ -28,16 +28,24 @@ export function YoloControl({
   topicBotId?: string;
   topicGroupId?: string;
 }) {
-  const t = useT();
+  const { t, settings } = useSettings();
   const { state, set } = useConversationYolo(peer, conversationId);
+  const notice =
+    state?.isolation.reason === "windows_unisolated"
+      ? isolationReasonText(
+          state.isolation.reason,
+          t,
+          settings?.yoloUnisolatedCommands ?? state.isolation.windowsYoloConsent,
+        )
+      : t("yolo.badgeHint");
   const dmArchive = useTopicArchive(peer, topicBotId, conversationId);
   const groupArchive = useGroupTopicArchive(peer, topicGroupId, conversationId);
   const archive = topicGroupId ? groupArchive : dmArchive;
   const action = useAction();
   const [menu, setMenu] = useState<{ opener: HTMLElement; x: number; y: number }>();
   const [confirmingId, setConfirmingId] = useState<string>();
-  const confirming = !!state && confirmingId === state.conversationId;
-  if (!state && !archive.available) return null;
+  const confirming = confirmingId !== undefined && confirmingId === conversationId;
+  if (!state && !archive.available && !confirming) return null;
   const change = (enabled: boolean) =>
     action.run(
       (signal) => set(enabled, signal),
@@ -46,7 +54,7 @@ export function YoloControl({
   return (
     <span className={styles.control}>
       {state?.enabled && (
-        <span className={styles.badge} role="status" title={t("yolo.badgeHint")}>
+        <span className={styles.badge} role="status" title={notice}>
           <span className={styles.badgeLabel}>{t("yolo.badge")}</span>
           <button
             type="button"
@@ -102,10 +110,11 @@ export function YoloControl({
           {t(action.error ?? archive.error ?? "yolo.failed")}
         </span>
       )}
-      {confirming && state && (
+      {confirming && peer && (
         <YoloConfirmation
-          key={state.conversationId}
-          isolation={state.isolation}
+          key={confirmingId}
+          peer={peer}
+          conversationId={confirmingId}
           group={group}
           close={() => setConfirmingId(undefined)}
           enable={(signal, acknowledged) => set(true, signal, acknowledged)}

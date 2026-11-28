@@ -5,18 +5,21 @@ import {
   type FolderSelection,
   FolderSelectionSchema,
   IdSchema,
+  type ModelOverride,
+  ModelOverrideSchema,
   type Page,
   PageSchema,
   type Conversation as ProtocolConversation,
 } from "@pibot/protocol-base";
 import { transaction } from "../database/database.ts";
+import { modelOverrideProjection } from "../database/model-override.ts";
 import { readPage } from "../database/paging.ts";
 import { TopicFoldersRepo } from "./topic-folders.ts";
 
 export type Conversation = ProtocolConversation;
 export type DmConversation = Conversation & { kind: "dm"; botId: string };
 const columns =
-  "id,kind,bot_id AS botId,pi_session_file AS piSessionFile,group_id AS groupId,thread_of AS threadOf,routine_id AS routineId,workplace_folder_id AS workplaceFolderId,workplace_revision AS workplaceRevision,title,archived_at AS archivedAt,created_at AS createdAt,updated_at AS updatedAt,import_source AS importSource";
+  "id,kind,bot_id AS botId,pi_session_file AS piSessionFile,group_id AS groupId,thread_of AS threadOf,routine_id AS routineId,workplace_folder_id AS workplaceFolderId,workplace_revision AS workplaceRevision,title,archived_at AS archivedAt,created_at AS createdAt,updated_at AS updatedAt,import_source AS importSource,model_override AS modelOverride";
 
 // Staged imports and batches being removed are invisible even while their rows still exist.
 export function visibleImportedRows(column: "import_id" | "c.import_id") {
@@ -27,11 +30,15 @@ export function visibleImportedRows(column: "import_id" | "c.import_id") {
 export const visibleImport = visibleImportedRows("import_id");
 
 export function importProjection(source: unknown) {
-  return typeof source === "string" ? { readOnly: true as const, importSource: source } : {};
+  return typeof source === "string" ? { importSource: source } : {};
 }
 
-function parseConversation({ importSource, ...row }: Record<string, unknown>) {
-  return ConversationSchema.parse({ ...row, ...importProjection(importSource) });
+function parseConversation({ importSource, modelOverride, ...row }: Record<string, unknown>) {
+  return ConversationSchema.parse({
+    ...row,
+    ...importProjection(importSource),
+    ...modelOverrideProjection(modelOverride),
+  });
 }
 export class ConversationsRepo {
   constructor(private readonly db: DatabaseSync) {}
@@ -40,6 +47,42 @@ export class ConversationsRepo {
       .prepare(`SELECT ${columns} FROM conversations WHERE id=? AND ${visibleImport}`)
       .get(id);
     return row ? parseConversation(row) : undefined;
+  }
+  setTopicModel(id: string, override: ModelOverride | null) {
+    this.db
+      .prepare("UPDATE conversations SET model_override=? WHERE id=?")
+      .run(override ? JSON.stringify(ModelOverrideSchema.parse(override)) : null, id);
+  }
+  runModelOverride(scope: {
+    conversationId: string;
+    botId: string;
+    taskId?: string | null;
+    groupId?: string | null;
+  }): ModelOverride | undefined {
+    const row = this.db
+      .prepare(`SELECT COALESCE(t.model_override,c.model_override,parent.model_override) AS modelOverride
+      FROM conversations c
+      LEFT JOIN group_tasks t ON t.id=? AND t.assignee_bot_id=? AND t.group_id=c.group_id
+        AND (t.thread_conversation_id=c.id OR c.id=(SELECT thread_of FROM conversations WHERE id=t.thread_conversation_id))
+      LEFT JOIN conversations parent ON parent.id=c.thread_of AND parent.group_id=c.group_id
+      WHERE c.id=? AND ((c.kind='dm' AND c.bot_id=?) OR c.group_id=?)`)
+      .get(
+        scope.taskId ?? null,
+        scope.botId,
+        scope.conversationId,
+        scope.botId,
+        scope.groupId ?? null,
+      );
+    return modelOverrideProjection(row?.modelOverride).modelOverride;
+  }
+  hasImages(id: string): boolean {
+    return !!this.db
+      .prepare(`SELECT 1 FROM messages m WHERE m.conversation_id=? AND (
+      EXISTS (SELECT 1 FROM attachments a WHERE a.message_id=m.id AND a.kind='image')
+      OR EXISTS (SELECT 1 FROM message_attachment_links l JOIN attachments a ON a.id=l.attachment_id
+        WHERE l.message_id=m.id AND a.kind='image')
+    ) LIMIT 1`)
+      .get(id);
   }
   isInternal(id: string): boolean {
     return !!this.db
@@ -166,7 +209,6 @@ export class ConversationsRepo {
       this.isInternal(topicId)
     )
       throw new TypeError("Unknown topic");
-    if (topic.readOnly) return topic as DmConversation;
     this.db
       .prepare(
         "INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -183,7 +225,6 @@ export class ConversationsRepo {
     return topic?.kind === "dm" &&
       topic.botId === botId &&
       !topic.archivedAt &&
-      !topic.readOnly &&
       !this.isInternal(topic.id)
       ? (topic as DmConversation)
       : this.latestChatTopic(botId);
@@ -236,7 +277,7 @@ export class ConversationsRepo {
   }
   remove(id: string): boolean {
     return transaction(this.db, () => {
-      if (this.get(id)?.readOnly)
+      if (this.get(id)?.importSource)
         this.db
           .prepare("DELETE FROM messages WHERE conversation_id=? AND import_id IS NOT NULL")
           .run(id);

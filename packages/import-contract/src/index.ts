@@ -9,9 +9,22 @@ export const ImportSourceSchema = z.enum([
   "claude-code",
   "codex",
   "cursor",
+  "opencode",
+  "antigravity",
   "gemini",
 ]);
 export type ImportSource = z.infer<typeof ImportSourceSchema>;
+
+export const LocalImportSourceSchema = z.enum([
+  "claude-code",
+  "codex",
+  "cursor",
+  "opencode",
+  "antigravity",
+]);
+export type LocalImportSource = z.infer<typeof LocalImportSourceSchema>;
+
+export const MAX_IMPORT_SELECTION = 50;
 
 const count = z.number().int().nonnegative().safe();
 const memoryScope = z.enum(["user", "bot", "persona"]);
@@ -59,6 +72,8 @@ const preview = ImportCountsSchema.extend({
   through: z.iso.datetime().nullable(),
   projectNotes: count.optional(),
   skippedRecords: count.optional(),
+  /** Single conversations that exceeded per-record limits and were skipped instead of failing. */
+  skippedTooLong: count.optional(),
   exportDetails: ExportDetailsSchema.optional(),
   projects: z.array(ImportProjectSchema).max(200).optional(),
   /** Messages over the per-message limit: imported as a preview with the full text attached. */
@@ -126,13 +141,45 @@ const plan = z.strictObject({
 });
 export type ImportPlan = z.infer<typeof plan>;
 
+export const MAX_IMPORT_TOPIC_REFERENCES = 50;
+
+export const DistillationFailureReasonSchema = z.enum([
+  "timeout",
+  "network",
+  "auth",
+  "quota",
+  "rate_limited",
+  "overloaded",
+  "no_model",
+  "provider",
+  "memory_quota",
+  "internal",
+]);
+export type DistillationFailureReason = z.infer<typeof DistillationFailureReasonSchema>;
+
 export const ImportStatusSchema = ImportCountsSchema.extend({
   importId: IdSchema,
   source: ImportSourceSchema,
   state: z.enum(["running", "completed", "cancelled", "failed", "undoing", "undone"]),
+  /** Openable topics, newest activity first. The topics count covers the entire batch. */
+  importedTopics: z
+    .array(z.strictObject({ topicId: IdSchema, botId: IdSchema }))
+    .max(MAX_IMPORT_TOPIC_REFERENCES)
+    .optional(),
   cleanup: z.enum(["discarding", "undoing"]).optional(),
   cleanupBlocked: z.literal(true).optional(),
-  removed: ImportCountsSchema.optional(),
+  removed: ImportCountsSchema.extend({
+    memories: count.optional(),
+    projectFiles: count.optional(),
+  }).optional(),
+  distillation: z
+    .strictObject({
+      conversations: count,
+      memories: count.optional(),
+      state: z.enum(["completed", "budget", "failed"]),
+      reason: DistillationFailureReasonSchema.optional(),
+    })
+    .optional(),
   memories: count.optional(),
   persona: z.literal(true).optional(),
   /** AGENTS.md files the batch wrote. */
@@ -142,10 +189,14 @@ export const ImportStatusSchema = ImportCountsSchema.extend({
   /** Hand-edited AGENTS.md files and no longer empty folders that undo kept. */
   keptProjectFiles: count.optional(),
   keptFolders: count.optional(),
+  /** Single conversations skipped because they exceeded per-record limits. */
+  skippedTooLong: count.optional(),
   reason: z
     .enum([
       "source_changed",
+      "source_in_use",
       "format",
+      "gemini_html",
       "timeout",
       "target",
       "limit",
@@ -155,6 +206,7 @@ export const ImportStatusSchema = ImportCountsSchema.extend({
       "memory_quota",
       "distillation",
       "project",
+      "project_review_changed",
       "unsupported",
     ])
     .nullable(),
@@ -167,18 +219,94 @@ export const ImportHistoryItemSchema = ImportStatusSchema.extend({
 });
 export type ImportHistoryItem = z.infer<typeof ImportHistoryItemSchema>;
 
+export const ListedConversationSchema = z.strictObject({
+  /** Opaque validated conversation identifier; never a filesystem path. */
+  id: z.string().min(1).max(200),
+  title: z.string().max(200),
+  updatedAt: z.iso.datetime().nullable(),
+  /** Basename or short project label, never an arbitrary full path. */
+  project: z.string().max(200).optional(),
+  /** True when the underlying conversation file was modified within the last 2 minutes. */
+  inProgress: z.boolean().optional(),
+});
+export type ListedConversation = z.infer<typeof ListedConversationSchema>;
+
+export const CannotExportReasonSchema = z.enum([
+  "no_load_session",
+  "agent_unavailable",
+  "agent_unconfirmed",
+  "unsupported",
+]);
+export type CannotExportReason = z.infer<typeof CannotExportReasonSchema>;
+
+export const ImportConversationListSchema = z.strictObject({
+  items: z.array(ListedConversationSchema).max(100),
+  total: count,
+  next: count.nullable(),
+  canExportContent: z.boolean(),
+  cannotExportReason: CannotExportReasonSchema.optional(),
+  hasMemory: z.boolean(),
+  hasProjectRules: z.boolean(),
+});
+export type ImportConversationList = z.infer<typeof ImportConversationListSchema>;
+
 const importId = z.strictObject({ importId: IdSchema });
 const source = z.strictObject({ source: ImportSourceSchema });
 const distillationQuote = z.strictObject({
   quoteId: IdSchema,
   modelId: z.string().min(1).max(256),
-  maxTokens: count,
-  costUsd: z.literal(0),
+  modelName: z.string().min(1).max(256),
+  provider: z.string().min(1).max(256),
+  providerName: z.string().min(1).max(256),
+  local: z.boolean(),
+  conversationCount: count,
+  inputTokens: count,
+  outputTokens: count,
+  costUsd: z.number().nonnegative().nullable(),
 });
+
+export type ImportDistillationQuote = z.infer<typeof distillationQuote>;
 
 export const ImportMethods = {
   "import.detect": { params: source, result: z.strictObject({ available: z.boolean() }) },
-  "import.preview": { params: source, result: preview.nullable() },
+  "import.listConversations": {
+    params: z.strictObject({
+      source: LocalImportSourceSchema,
+      query: z.string().max(200).optional(),
+      cursor: count.optional(),
+      limit: z.number().int().min(1).max(100).optional(),
+    }),
+    result: ImportConversationListSchema,
+  },
+  "import.preview": {
+    params: source.extend({
+      filterLabel: z
+        .string()
+        .trim()
+        .min(1)
+        .max(80)
+        .regex(/^[^\p{Cc}]+$/u)
+        .optional(),
+    }),
+    result: preview.nullable(),
+  },
+  "import.previewSelection": {
+    params: z
+      .strictObject({
+        source: LocalImportSourceSchema,
+        conversationIds: z.array(z.string().min(1).max(200)).max(MAX_IMPORT_SELECTION),
+        includeMemory: z.boolean().optional(),
+        includeProjectRules: z.boolean().optional(),
+      })
+      .refine(
+        (params) =>
+          params.conversationIds.length > 0 ||
+          !!params.includeMemory ||
+          !!params.includeProjectRules,
+        "Select at least one conversation, memory, or project rule",
+      ),
+    result: preview,
+  },
   /** The role comparison uses scope "persona"; memories are reviewed by import.reviewPlan. */
   "import.reviewMemories": {
     params: importId.extend({ botId: IdSchema, scope: memoryScope }),
@@ -187,7 +315,11 @@ export const ImportMethods = {
   /** Memories with their known destinations, the instructions excerpt and the folder choices. */
   "import.reviewPlan": { params: importId, result: plan },
   "import.estimateDistillation": {
-    params: importId.extend({ botId: IdSchema }),
+    params: importId.extend({
+      botId: IdSchema,
+      conversations: z.boolean().optional(),
+      projectKeys: z.array(ImportProjectKeySchema).max(200).optional(),
+    }),
     result: distillationQuote.nullable(),
   },
   /** The AGENTS.md change one project would make in that folder; nothing is written yet. */

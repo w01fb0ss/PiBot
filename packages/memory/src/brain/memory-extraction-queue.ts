@@ -5,6 +5,7 @@ import {
   correctionTopic,
   MemoryExtractionsRepo,
   memoryMaintenanceUsage,
+  transaction,
 } from "@pibot/storage";
 import { correctionSource } from "./memory-correction.ts";
 import { recordCorrectionReceipt } from "./memory-correction-receipt.ts";
@@ -130,22 +131,17 @@ export class MemoryExtractionQueue {
         topic &&
         correctionSource(this.deps.db, conversationId, sourceMessageId, topic.botId, topic.groupId);
       if (!topic || !source) return;
-      // After the caller publishes the finished reply, so this receipt is not overwritten by it.
-      const { botId } = topic;
-      setImmediate(() => {
-        if (!this.stopped) this.noteOwnRun(botId, source.replyId);
-      });
       if (this.repo.enqueue({ ...topic, reason: "correction" })) this.wake();
     } catch (error) {
       this.warn("memory_extraction_correction_failed", error);
     }
   }
-  private noteOwnRun(botId: string, replyId: string) {
+  recordRunReceipt(botId: string, replyId: string) {
     try {
-      const notes = this.deps.memory.anchorRunNotes(botId, replyId);
-      if (!notes.length) return;
-      const message = recordCorrectionReceipt(this.deps.db, replyId, notes, this.deps.redactor);
-      if (message) this.deps.publishReply?.(message, botId);
+      transaction(this.deps.db, () => {
+        const notes = this.deps.memory.anchorRunNotes(botId, replyId);
+        if (notes.length) recordCorrectionReceipt(this.deps.db, replyId, notes, this.deps.redactor);
+      });
     } catch (error) {
       // The note itself is saved; only its receipt under the reply is missing.
       this.warn("memory_correction_receipt_failed", error);

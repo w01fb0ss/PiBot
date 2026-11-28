@@ -1,7 +1,6 @@
 import {
   CHAT_SEARCH_TARGET,
   chatSearchTopicLink,
-  READ_MESSAGES_REFERENCE,
   type ReadMessagesSearchInput,
   type ReadMessagesSearchItem,
   ReadMessagesSearchItemSchema,
@@ -10,6 +9,7 @@ import {
 import { ChatSearchIndex, ChatSearchRepo } from "@pibot/storage";
 import type { ToolRunContext } from "../../core/local-types.ts";
 import type { LocalService } from "../../local-service.ts";
+import { historyImport, historyReferenceText } from "./history-reference.ts";
 
 const clip = (text: string, max: number) => text.slice(0, max).replace(/[\uD800-\uDBFF]$/u, "");
 
@@ -35,7 +35,7 @@ function searchItems(
   const { redactor, logger } = local.deps;
   const items: ReadMessagesSearchItem[] = [];
   let skipped = 0;
-  for (const { messageId, conversationId, title, createdAt, body } of rows) {
+  for (const { messageId, conversationId, title, createdAt, body, importSource } of rows) {
     signal.throwIfAborted();
     const source = groupId
       ? { kind: "group", groupId, conversationId, messageId }
@@ -44,6 +44,7 @@ function searchItems(
       title: clip(redactor.redact(String(title ?? "")), 200),
       createdAt,
       snippet: excerpt(redactor.redact(String(body)), query),
+      importedFrom: historyImport(importSource, createdAt),
       conversationId,
       link: chatSearchTopicLink({
         conversationId: String(conversationId),
@@ -102,7 +103,10 @@ export async function searchMessages(
   const payload = JSON.stringify(result);
   output(payload);
   return {
-    text: `${READ_MESSAGES_REFERENCE}\n${payload}`,
+    text: historyReferenceText(
+      payload,
+      items.some((item) => item.importedFrom),
+    ),
     summary: "read_messages",
     details: { resultCount: items.length },
   };

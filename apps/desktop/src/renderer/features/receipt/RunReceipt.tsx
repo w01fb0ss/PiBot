@@ -1,7 +1,7 @@
 import { receiptBudgetRaise, receiptSections, receiptSummaryChips } from "@pibot/client-core";
 import type { AgentTurnFacts } from "@pibot/external-agents-contract";
 import type { RunReceipt as Receipt } from "@pibot/protocol";
-import { PopupMenu, RevealFileButton, useRpc, useT } from "@pibot/renderer-kit";
+import { PopupMenu, RevealFileButton, useNavigation, useRpc, useT } from "@pibot/renderer-kit";
 import { Button, Chip, type ChipProps, Icon, IconTile } from "@pibot/ui";
 import { memo, useEffect, useId, useRef, useState } from "react";
 import { useBackgroundRun } from "../chat/status/use-background-run.ts";
@@ -56,6 +56,7 @@ export const RunReceipt = memo(function RunReceipt({
   onStoppedChange?(stopped: boolean): void;
 }) {
   const { peer } = useRpc();
+  const { openAudit } = useNavigation();
   const t = useT();
   const id = useId();
   const [open, setOpen] = useState(false);
@@ -172,6 +173,14 @@ export const RunReceipt = memo(function RunReceipt({
                 )}
               </div>
             ))}
+            {data.outcome === "failed" && (
+              <Button
+                variant="ghost"
+                onClick={() => openAudit(data.botId, data.groupId ?? undefined)}
+              >
+                {t("receipt.viewActivity")}
+              </Button>
+            )}
             <p className={styles.footnote}>{t("receipt.footnote")}</p>
           </div>
         )}

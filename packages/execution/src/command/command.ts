@@ -6,6 +6,11 @@ import {
   type RunCommandOptions,
 } from "../core/types.ts";
 import type { GitInitialization } from "../git/git-init-args.ts";
+import { createOfficeConvertCleanup } from "../native-apps/office-convert-cleanup.ts";
+import {
+  convertOfficeDocument,
+  type OfficeConvertInput,
+} from "../native-apps/office-convert-recipe.ts";
 import { createSandboxProfiles } from "../sandbox/sandbox-profiles.ts";
 import { createViolationMonitor } from "../sandbox/violation-monitor.ts";
 import { verifyWorkspace } from "../sandbox/workspace.ts";
@@ -23,9 +28,12 @@ import { secretOutputRedactor } from "./secret-output.ts";
 
 /** How long a command whose caller gave up may take to confirm its own cleanup. */
 const CLEANUP_GRACE_MS = 10_000;
+// A Windows tree kill can take 20 s, followed by a 10 s fallback snapshot and log finalization.
+const WINDOWS_CLEANUP_GRACE_MS = 32_000;
 
 /** One owner per brain; each isolated command runs in its own SRT host process. */
 export function createExec(options: ExecOptions) {
+  const windows = options.platform === "win32";
   // The SDK uses these settings from its actual host environment; removing them only from a
   // snapshot would leave debug output or the TMPDIR override active.
   UnsafeSandboxEnvironmentError.assertSafe(options.env);
@@ -33,6 +41,7 @@ export function createExec(options: ExecOptions) {
   const temps = createCommandTemps(options.tempDir);
   const violations = createViolationMonitor(options.platform, options.helperArgs?.violations);
   const lifetime = new AbortController();
+  const officeCleanup = createOfficeConvertCleanup(options, lifetime.signal);
   // ps / lsof / PowerShell for the background monitor run with the same clean environment.
   const toolEnv = () =>
     commandEnvironment(options.platform, options.env, options.systemHome, options.tempDir);
@@ -60,12 +69,15 @@ export function createExec(options: ExecOptions) {
    */
   const heldPins: string[] = [];
   const releaseHeldPins = () => {
-    for (const runId of heldPins.splice(0)) temps.unpin(runId);
+    for (const runId of heldPins.splice(0)) {
+      if (background.drainFailed(runId)) heldPins.push(runId);
+      else temps.unpin(runId);
+    }
   };
   const unpin = (runId: string) => {
-    if (!background.drainFailed()) return temps.unpin(runId);
+    if (!background.drainFailed(runId)) return temps.unpin(runId);
     heldPins.push(runId);
-    void background.whenHealthy().then(releaseHeldPins, () => {
+    void background.whenHealthy(undefined, runId).then(releaseHeldPins, () => {
       // Closing: dispose removes every folder, pinned or not.
     });
   };
@@ -80,7 +92,7 @@ export function createExec(options: ExecOptions) {
       background.failDrain(error, jobId, record, runId);
     },
     // The background instance owns the retry; a copy here would outlive its recovery.
-    drainFailed: () => background.drainFailed(),
+    drainFailed: background.drainFailed,
     retainCommand(work, runId) {
       temps.pin(runId);
       track(
@@ -93,6 +105,17 @@ export function createExec(options: ExecOptions) {
           .finally(() => unpin(runId)),
         runId,
       );
+    },
+    waitForForegroundCleanup(error, runId, record) {
+      if (!windows) return;
+      if (!background.drainFailed(runId))
+        background.failDrain(
+          new ExecError("command_failed", "cleanup_failed"),
+          undefined,
+          cleanupRecord(error) ?? record,
+          runId,
+        );
+      return background.whenHealthy(undefined, runId);
     },
     adoptForeground(job) {
       promoted.set(job.id, job);
@@ -113,6 +136,7 @@ export function createExec(options: ExecOptions) {
    * new commands wait only while this cleanup stays unconfirmed, and the pause ends by itself.
    */
   function pauseUntilSettled(work: Promise<unknown>) {
+    if (windows) return;
     const error = new ExecError("command_failed", "cleanup_unconfirmed");
     void withDeadline(work, CLEANUP_GRACE_MS, error).catch((failure: unknown) => {
       // Only the deadline proves the cleanup is unconfirmed; a settled command reported its own.
@@ -140,6 +164,17 @@ export function createExec(options: ExecOptions) {
       throw new ExecError("closed");
   }
   return {
+    convertOfficeDocument(input: OfficeConvertInput & { dataDir: string; runId: string }) {
+      available(input.runId);
+      return track(
+        convertOfficeDocument(
+          { ...options, dataDir: input.dataDir },
+          { ...input, signal: AbortSignal.any([input.signal, lifetime.signal]) },
+          officeCleanup,
+        ),
+        input.runId,
+      );
+    },
     activitySnapshot: () => ({
       runningCommands: active.size,
       backgroundTasks: background.activeCount(),
@@ -181,12 +216,16 @@ export function createExec(options: ExecOptions) {
         })
         .finally(() => unpin(input.runId));
       track(raw, input.runId);
-      return commandDeadline(raw, input.timeoutSec, signal, commandLifetime).catch(
-        (error: unknown) => {
-          if (active.has(raw)) pauseUntilSettled(raw);
-          throw error;
-        },
-      );
+      return commandDeadline(
+        raw,
+        input.timeoutSec,
+        signal,
+        commandLifetime,
+        windows ? WINDOWS_CLEANUP_GRACE_MS : CLEANUP_GRACE_MS,
+      ).catch((error: unknown) => {
+        if (active.has(raw)) pauseUntilSettled(raw);
+        throw error;
+      });
     },
     writeBackground(input: {
       jobId: string;
@@ -242,8 +281,8 @@ export function createExec(options: ExecOptions) {
         // (automatic checks, then the person's "Check again") instead of failing its drain: a
         // failed drain kept the run's folder lease until a restart, so every later step of that
         // folder timed out (Windows test 2026-11-21). Closing rejects the wait.
-        if (background.drainFailed()) {
-          await background.whenHealthy(signal);
+        if (background.drainFailed(runId)) {
+          await background.whenHealthy(signal, runId);
           releaseHeldPins();
         }
         await temps.releaseRun(runId);
@@ -253,6 +292,10 @@ export function createExec(options: ExecOptions) {
     },
     /** Commands are paused because a cleanup is unconfirmed: still checking, or out of checks. */
     commandPause: () => background.pauseState(),
+    windowsCommandCleanupPending: (runId?: string) =>
+      windows &&
+      (background.drainFailed(runId) ||
+        (runId !== undefined && [...active.values()].includes(runId))),
     /** The person asked to check again; proof is required exactly as for the automatic checks. */
     recheckCommandPause: () => background.recheck(),
     background: {

@@ -1,4 +1,4 @@
-// Projects only human-visible text from Claude Code, Codex, and Cursor transcripts.
+// Projects visible text and concise tool and attachment metadata from local transcripts.
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
@@ -9,8 +9,8 @@ import {
   type ProjectRef,
   previewMessage,
 } from "../adapter.ts";
+import { attachmentParts, ImportedToolParts, MAX_HISTORY_PARTS } from "../history-parts.ts";
 import { LONG_MESSAGE_CHARS } from "../limits.ts";
-import type { LocalSource } from "./locations.ts";
 import { jsonLines, OVERSIZED_LINE } from "./text.ts";
 
 const date = z.iso.datetime({ offset: true });
@@ -22,15 +22,25 @@ const envelope = z.object({
   timestamp: z.string().optional(),
   isMeta: z.boolean().optional(),
   isSidechain: z.boolean().optional(),
-  message: z.object({ role: z.string().optional(), content: z.unknown() }).optional(),
+  message: z
+    .object({
+      role: z.string().optional(),
+      content: z.unknown(),
+      attachments: z.array(z.unknown()).optional(),
+    })
+    .optional(),
   payload: z
     .object({
       type: z.string(),
       message: z.string().optional(),
+      name: z.string().optional(),
+      call_id: z.string().max(256).optional(),
+      attachments: z.array(z.unknown()).optional(),
       item: z
         .object({
           type: z.string(),
           content: z.unknown(),
+          attachments: z.array(z.unknown()).optional(),
           moderation: z.object({ moderated: z.boolean() }).nullish(),
         })
         .optional(),
@@ -38,9 +48,11 @@ const envelope = z.object({
     .optional(),
 });
 
+type TranscriptSource = "claude-code" | "codex" | "cursor";
+
 type Message = Extract<ImportRecord, { kind: "message" }>;
 const LIMIT = LONG_MESSAGE_CHARS;
-const names: Record<LocalSource, string> = {
+const names: Record<TranscriptSource, string> = {
   "claude-code": "Claude Code",
   codex: "Codex",
   cursor: "Cursor",
@@ -54,16 +66,28 @@ function blockText(raw: unknown, type = "text") {
   return texts.map((block) => block.text).join("\n");
 }
 
-type Variant = "plain" | "legacy" | "paginated";
+type Variant = "plain" | "legacy" | "paginated" | "tool";
 
-function codexMessage(row: z.output<typeof envelope>) {
+function codexMessage(row: z.output<typeof envelope>, tools: ImportedToolParts) {
   const event = row.payload;
-  if (row.type !== "event_msg" || !event) return;
+  if (!event) return;
+  if (row.type === "response_item") {
+    const part =
+      event.type === "function_call" || event.type === "custom_tool_call"
+        ? tools.call(event.name, event.call_id)
+        : event.type === "function_call_output" || event.type === "custom_tool_call_output"
+          ? tools.result(event.call_id, event.name)
+          : undefined;
+    if (part)
+      return { variant: "tool" as const, role: "assistant", text: "", historyParts: [part] };
+  }
+  if (row.type !== "event_msg") return;
   if (event.type === "user_message" || event.type === "agent_message") {
     return {
       variant: "legacy" as const,
       role: event.type === "user_message" ? "user" : "assistant",
       text: event.message,
+      historyParts: attachmentParts(event.attachments ?? []),
     };
   }
   const item = event.item;
@@ -76,52 +100,71 @@ function codexMessage(row: z.output<typeof envelope>) {
       text: Array.isArray(item.content)
         ? blockText(item.content, user ? "text" : "Text")
         : undefined,
+      historyParts: [
+        ...tools.blocks(item.content),
+        ...attachmentParts(item.attachments ?? []),
+      ].slice(0, MAX_HISTORY_PARTS),
     };
   }
 }
 
-function plainMessage(row: z.output<typeof envelope>, source: LocalSource) {
+function plainMessage(
+  row: z.output<typeof envelope>,
+  source: TranscriptSource,
+  tools: ImportedToolParts,
+) {
   const actor = source === "cursor" ? row.role : row.type;
   if (row.message?.role && row.message.role !== actor) return;
-  return { variant: "plain" as const, role: actor, text: blockText(row.message?.content) };
+  return {
+    variant: "plain" as const,
+    role: actor,
+    text: blockText(row.message?.content),
+    historyParts: [
+      ...tools.blocks(row.message?.content),
+      ...attachmentParts(row.message?.attachments ?? []),
+    ].slice(0, MAX_HISTORY_PARTS),
+  };
 }
 
 function message(
-  source: LocalSource,
+  source: TranscriptSource,
   raw: unknown,
+  tools: ImportedToolParts,
   modifiedAt?: string,
 ): { variant: Variant; record: Message } | undefined {
   const parsed = envelope.safeParse(raw);
   if (!parsed.success) return;
   const row = parsed.data;
   if (row.isMeta || row.isSidechain) return;
-  const entry = source === "codex" ? codexMessage(row) : plainMessage(row, source);
-  if (!entry?.text?.trim()) return;
+  const entry = source === "codex" ? codexMessage(row, tools) : plainMessage(row, source, tools);
+  if (!entry || (!entry.text?.trim() && !entry.historyParts?.length)) return;
   const actor = role.safeParse(entry.role);
   if (!actor.success) return;
   const timestamp = date.safeParse(row.timestamp ?? (source === "cursor" ? modifiedAt : undefined));
   if (!timestamp.success) throw new ImportFailure("format");
-  if (entry.text.length > LIMIT) throw new ImportFailure("limit");
+  if ((entry.text?.length ?? 0) > LIMIT) throw new ImportFailure("limit");
   return {
     variant: entry.variant,
     record: {
       kind: "message",
       role: actor.data,
-      text: entry.text,
+      text: entry.text ?? "",
+      ...(entry.historyParts?.length ? { historyParts: entry.historyParts } : {}),
       createdAt: new Date(timestamp.data).toISOString(),
     },
   };
 }
 
 async function* messages(
-  source: LocalSource,
+  source: TranscriptSource,
   input: ImportInput,
   signal: AbortSignal,
   onRow?: (raw: unknown) => void,
 ) {
+  const tools = new ImportedToolParts();
   for await (const raw of jsonLines(input, signal)) {
     onRow?.(raw);
-    const item = message(source, raw, input.modifiedAt);
+    const item = message(source, raw, tools, input.modifiedAt);
     if (item) yield item;
   }
 }
@@ -151,7 +194,7 @@ export function localProject(raw: unknown): ProjectRef | undefined {
 type Span = { createdAt: string; updatedAt: string; count: number };
 
 async function* read(
-  source: LocalSource,
+  source: TranscriptSource,
   input: ImportInput,
   signal: AbortSignal,
   oversized?: () => void,
@@ -175,21 +218,26 @@ async function* read(
   }
   // Paginated Codex files keep structured turn items instead of the legacy UI events.
   const preferred = spans.has("paginated") ? "paginated" : source === "codex" ? "legacy" : "plain";
-  const span = spans.get(preferred);
+  const span = spans.get(preferred) ?? spans.get("tool");
   if (!span) throw new ImportFailure("format");
+  const toolSpan = spans.get("tool");
+  if (toolSpan && toolSpan !== span) {
+    if (toolSpan.createdAt < span.createdAt) span.createdAt = toolSpan.createdAt;
+    if (toolSpan.updatedAt > span.updatedAt) span.updatedAt = toolSpan.updatedAt;
+  }
   yield {
     kind: "topic" as const,
-    title: names[source],
+    title: input.title?.trim().slice(0, 200) || names[source],
     createdAt: span.createdAt,
     updatedAt: span.updatedAt,
     ...(project ? { project } : {}),
   };
   for await (const { variant, record } of messages(source, input, signal)) {
-    if (variant === preferred) yield record;
+    if (variant === preferred || variant === "tool") yield record;
   }
 }
 
-export function transcriptAdapter(source: LocalSource): ImportAdapter {
+export function transcriptAdapter(source: TranscriptSource): ImportAdapter {
   return {
     async *detect(signal) {
       signal.throwIfAborted();

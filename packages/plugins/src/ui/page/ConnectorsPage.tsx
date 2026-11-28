@@ -17,11 +17,10 @@ import {
 import { Button, Chip, Icon, PageHeading, pageTone, Tabs } from "@pibot/ui";
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AppSetup } from "../setup/AppSetup.tsx";
-import { CustomMcp } from "../setup/CustomMcp.tsx";
 import { ImportPlugin } from "../setup/ImportPlugin.tsx";
 import { UninstallPlugin } from "../setup/UninstallPlugin.tsx";
 import { useConnectorOperations } from "../shell/operations.ts";
-import { useConnectorPage, useConnectorRead } from "../shell/remote.ts";
+import { connectorError, useConnectorPage, useConnectorRead } from "../shell/remote.ts";
 import { ConnectorDetails } from "./ConnectorDetails.tsx";
 import { ConnectorFeedback } from "./ConnectorFeedback.tsx";
 import { ConnectorPanel } from "./ConnectorPanel.tsx";
@@ -29,7 +28,9 @@ import { runsOutsideSandbox } from "./connection-state.ts";
 import { type AddChoice, AddMenu } from "./connections/AddMenu.tsx";
 import {
   BringBar,
+  type BringOverAssignmentTargets,
   BringOverDialog,
+  type BringOverEnableResult,
   BringOverSummary,
   EmptyState,
   type ListKind,
@@ -38,7 +39,11 @@ import { ConnectionPanel, needsKey } from "./connections/ConnectionPanel.tsx";
 import styles from "./connections/connections.module.css";
 import { Faces, letterTone, monogram, resolveAccess } from "./connections/Faces.tsx";
 import { localText } from "./connections/local-text.ts";
-import { SkillImportDialog } from "./connections/SkillImport.tsx";
+import {
+  type ImportedRuntimeSkill,
+  RuntimePrepareSuggestions,
+  SkillImportDialog,
+} from "./connections/SkillImport.tsx";
 import { SkillsTab } from "./connections/SkillsTab.tsx";
 import { TokensDialog, type TokensSlot } from "./connections/TokensDialog.tsx";
 import { offeredIn, useDiscovery } from "./connections/use-discovery.ts";
@@ -161,6 +166,8 @@ export function ConnectorsPage({
   const workspace = useWorkspace();
   const link = navigation.view.connection;
   const skillLink = navigation.view.skillConnection;
+  const knowledgeLink = navigation.view.knowledgeSourceId;
+  const tokensLink = navigation.view.tokens;
   const closeSkillLink = () => navigation.navigate({ name: "connectors" });
   const { peer } = useRpc();
   const heading = useRef<HTMLHeadingElement>(null);
@@ -175,10 +182,13 @@ export function ConnectorsPage({
       target?.focus({ preventScroll: true });
     };
   }, []);
-  const [selectedTab, setTabState] = useState<Tab>(() => (skillLink ? "skills" : rememberedTab()));
-  const tab = skillLink ? "skills" : selectedTab;
+  const [selectedTab, setTabState] = useState<Tab>(() =>
+    skillLink ? "skills" : knowledgeLink ? "knowledge" : rememberedTab(),
+  );
+  const tab = skillLink ? "skills" : knowledgeLink ? "knowledge" : selectedTab;
   const setTab = (next: Tab) => {
-    if (skillLink) closeSkillLink();
+    cancelSetup();
+    if (skillLink || knowledgeLink) closeSkillLink();
     setTabState(next);
     // A details panel belongs to the tab it was opened from (second-Mac test).
     setPanel(undefined);
@@ -189,7 +199,10 @@ export function ConnectorsPage({
       // Remembering the tab is a convenience only.
     }
   };
-  const [showSecrets, setShowSecrets] = useState(false);
+  const [localTokens, setLocalTokens] = useState<{ secretName?: string }>();
+  // A deep link takes effect in the same render that hides the details drawer.
+  const tokens = tokensLink ?? localTokens;
+  const openTokens = (secretName?: string) => setLocalTokens({ secretName });
   const [snapshot, setSnapshot] = useState(0);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const changed = useCallback(() => {
@@ -272,15 +285,40 @@ export function ConnectorsPage({
     knowledgeError,
   );
   const [adding, setAdding] = useState<BuiltinApp>();
-  const [importing, setImporting] = useState<{ text: string }>();
-  const [customMcp, setCustomMcp] = useState(false);
+  const [importing, setImporting] = useState<
+    | { text: string }
+    | { custom?: boolean }
+    | { selectionId: string; discoveryKey: string }
+    | { bringOverKey: string; discoveryKey: string }
+  >();
+  const [setupBusy, setSetupBusy] = useState(false);
+  const [setupError, setSetupError] = useState<ReturnType<typeof connectorError>>();
+  const setupAbort = useRef<AbortController | undefined>(undefined);
+  const mounted = useRef(true);
+  const cancelSetup = useCallback(() => {
+    setupAbort.current?.abort();
+    setupAbort.current = undefined;
+    setSetupBusy(false);
+  }, []);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      setupAbort.current?.abort();
+      setupAbort.current = undefined;
+    };
+  }, []);
   const [writingSkill, setWritingSkill] = useState(false);
   // The link dialog is its own step; a link lands in the same preview as a picked folder.
   const [linking, setLinking] = useState(false);
   const [knowledgeAdd, setKnowledgeAdd] = useState<KnowledgeAddRequest>();
   const [bringing, setBringing] = useState<{ tab?: "mcp" | "skills" }>();
   const [results, setResults] = useState<BringOverResult[]>();
-  const [manage, setManage] = useState<string | undefined>(link?.connectorId);
+  const [resultsBatch, setResultsBatch] = useState(0);
+  const [importedRuntimes, setImportedRuntimes] = useState<ImportedRuntimeSkill[]>([]);
+  const [manage, setManage] = useState<string | undefined>(
+    tokensLink ? undefined : link?.connectorId,
+  );
   const [panel, setPanel] = useState<string>();
   // The summary row vanishes as soon as removal lands, so the name shown while the panel is open
   // is captured when it opens rather than looked up live (it fell back to 「扩展」 otherwise).
@@ -297,9 +335,10 @@ export function ConnectorsPage({
     return () => clearTimeout(timer);
   }, [removedName]);
   useEffect(() => {
+    if (tokensLink) return;
     if (link?.connectorId) setManage(link.connectorId);
     else if (link && apps.value) setAdding(apps.value.items.find((app) => app.id === link.id));
-  }, [link, apps.value]);
+  }, [link, tokensLink, apps.value]);
   const appItems = apps.value?.items ?? [];
   const summaries = summariesRead.value?.items ?? [];
   const connectors = connectorsRead.value?.items ?? [];
@@ -320,7 +359,7 @@ export function ConnectorsPage({
     connectors.filter((connector) => connector.pluginInstallationId === installationId);
   // Application packages are shown as app cards; ordinary imported packages remain MCP/skills.
   const mcpItems = [
-    ...byKind("json"),
+    ...byKind("json").filter((summary) => !summary.managedByKnowledge),
     ...byKind("directory").filter(
       (summary) => !summary.application && connectorsOf(summary.installationId).length > 0,
     ),
@@ -361,10 +400,104 @@ export function ConnectorsPage({
   };
   const access = (installationId: string) =>
     summaries.find((summary) => summary.installationId === installationId)?.access;
+  const setupDiscoveredPlugin = async (key: string) => {
+    if (!peer || setupBusy) return;
+    if (discovery.rows().find((row) => row.key === key)?.kind === "mcp") {
+      setImporting({ bringOverKey: key, discoveryKey: key });
+      return;
+    }
+    const controller = new AbortController();
+    setupAbort.current = controller;
+    setSetupBusy(true);
+    setSetupError(undefined);
+    try {
+      const { selectionId } = await peer.call(
+        "connections.adoptBringOver",
+        { key },
+        { signal: controller.signal },
+      );
+      if (controller.signal.aborted || !mounted.current) {
+        await peer.call("plugins.cancelPreview", { selectionId }, { timeoutMs: 5_000 });
+        return;
+      }
+      setBringing(undefined);
+      setImporting({ selectionId, discoveryKey: key });
+    } catch (failure) {
+      if (controller.signal.aborted || !mounted.current) return;
+      setSetupError(connectorError(failure));
+    } finally {
+      if (setupAbort.current === controller) {
+        setupAbort.current = undefined;
+        if (mounted.current) setSetupBusy(false);
+      }
+    }
+  };
+  const enableAndAssignBroughtOver = async (
+    installationIds: string[],
+    action: { targets: BringOverAssignmentTargets } | { retryId: string },
+  ): Promise<BringOverEnableResult> => {
+    const result: BringOverEnableResult = {
+      assigned: new Map(),
+      errors: new Map(),
+    };
+    if (!peer || !installationIds.length) return result;
+    setSetupError(undefined);
+    const timeoutMs = hostPlatform() === "win32" ? 330_000 : 30_000;
+    for (const installationId of installationIds) {
+      try {
+        // Query connectors by installationId directly so installations beyond the first 100
+        // connectors on the page are still assigned and enabled.
+        const { items: rows } = await peer.call(
+          "connectors.list",
+          { installationId, limit: 100 },
+          { timeoutMs: 30_000 },
+        );
+        const first = rows[0];
+        if (!first) continue;
+        if ("targets" in action) {
+          await peer.call(
+            "connectors.update",
+            {
+              id: first.id,
+              expectedRevision: first.revision,
+              access: { mode: "selected", ...action.targets },
+            },
+            { timeoutMs: 30_000 },
+          );
+          result.assigned.set(installationId, action.targets);
+        }
+        for (const connector of rows) {
+          if ("retryId" in action && action.retryId !== connector.id) continue;
+          if (connector.enabled && !["disabled", "error"].includes(connector.status)) {
+            result.errors.set(connector.id, undefined);
+            continue;
+          }
+          // Saving the installation-wide grant advances every connector's revision once.
+          const revision = connector.revision + ("targets" in action ? 1 : 0);
+          try {
+            const operation = await peer.call(
+              "connectors.setEnabled",
+              { id: connector.id, expectedRevision: revision, enabled: true },
+              { timeoutMs },
+            );
+            operations.track(operation.operationId, connector.pluginInstallationId, connector.id);
+            result.errors.set(connector.id, undefined);
+          } catch (failure) {
+            result.errors.set(connector.id, connectorError(failure));
+          }
+        }
+      } catch (failure) {
+        setSetupError(connectorError(failure));
+      }
+    }
+    changed();
+    return result;
+  };
   const choose = (choice: AddChoice) => {
+    cancelSetup();
     if (choice === "bringOver") setBringing({});
-    else if (choice === "mcp") setCustomMcp(true);
-    else if (choice === "plugin") setImporting({ text: "" });
+    else if (choice === "mcp") setImporting({ custom: true });
+    else if (choice === "plugin") setImporting({});
     else if (choice === "link") setLinking(true);
     else if (choice === "skill") setWritingSkill(true);
     else {
@@ -591,7 +724,7 @@ export function ConnectorsPage({
         </div>
         {/* Tokens sit beside 添加 and open as a dialog (maintainers 2026-10-31). */}
         <div className={styles.headerActions}>
-          <Button variant="secondary" onClick={() => setShowSecrets(true)}>
+          <Button variant="secondary" onClick={() => openTokens()}>
             <Icon name="key" size={14} />
             {t("connections.tokens.title")}
           </Button>
@@ -606,7 +739,20 @@ export function ConnectorsPage({
           />
         </div>
       </header>
-      {showSecrets && <TokensDialog secrets={secrets} close={() => setShowSecrets(false)} />}
+      {tokens && (
+        <TokensDialog
+          key={tokens.secretName ?? ""}
+          secrets={secrets}
+          initialSecret={tokens.secretName}
+          close={() => {
+            setLocalTokens(undefined);
+            if (tokensLink) {
+              setManage(link?.connectorId);
+              navigation.navigate({ name: "connectors", ...(link ? { connection: link } : {}) });
+            }
+          }}
+        />
+      )}
       <Tabs
         className={styles.tabs}
         label={t("connectors.title")}
@@ -620,7 +766,27 @@ export function ConnectorsPage({
       />
       <div className={styles.scroll}>
         <div className={styles.body} role="tabpanel">
-          {results && <BringOverSummary results={results} rows={discovery.rows()} />}
+          {results && (
+            <BringOverSummary
+              key={resultsBatch}
+              results={results}
+              rows={discovery.rows()}
+              setupPlugin={(key) => void setupDiscoveredPlugin(key)}
+              setupBusy={setupBusy}
+              setupError={setupError}
+              bots={bots}
+              groups={groups}
+              connectors={connectors}
+              snapshot={snapshot}
+              operations={operations.rows}
+              openConnector={(id) => setManage(id)}
+              enableAndAssign={enableAndAssignBroughtOver}
+            />
+          )}
+          <RuntimePrepareSuggestions
+            skills={importedRuntimes}
+            beforeOpen={() => setImportedRuntimes([])}
+          />
           {removedName && (
             <p role="status" className={styles.note}>
               {t("connectors.removedNamed", { name: removedName })}
@@ -675,6 +841,7 @@ export function ConnectorsPage({
               // Maintainers 2026-11-13: a kept request was replayed on every visit to this tab, so a
               // connected Notion re-ran its add and opened its panel; it is used once.
               requestHandled={() => setKnowledgeAdd(undefined)}
+              initialOpen={knowledgeLink}
               bots={bots}
               groups={groups}
               detection={detected.value}
@@ -707,23 +874,35 @@ export function ConnectorsPage({
           }}
         />
       )}
-      {customMcp && (
-        <CustomMcp
-          close={() => setCustomMcp(false)}
-          preview={(text) => {
-            setCustomMcp(false);
-            setImporting({ text });
-          }}
-        />
-      )}
       {importing && (
         <ImportPlugin
-          initialText={importing.text}
-          close={() => setImporting(undefined)}
-          changed={changed}
-          connected={(connectorId) => {
+          initialText={"text" in importing ? importing.text : undefined}
+          custom={"custom" in importing ? importing.custom : false}
+          bringOverKey={"bringOverKey" in importing ? importing.bringOverKey : undefined}
+          initialSelectionId={"selectionId" in importing ? importing.selectionId : undefined}
+          broughtOverImported={
+            "discoveryKey" in importing
+              ? (installationId) => {
+                  const key = importing.discoveryKey;
+                  setResults((current) => [
+                    ...(current ?? []).filter((item) => item.key !== key),
+                    { key, outcome: "imported", installationId },
+                  ]);
+                }
+              : undefined
+          }
+          close={() => {
             setImporting(undefined);
-            setManage(connectorId);
+          }}
+          changed={() => {
+            changed();
+            if ("discoveryKey" in importing) void discovery.load();
+          }}
+          connected={(installationId, connectorIds) => {
+            setImporting(undefined);
+            if (connectorIds.length === 1 && connectorIds[0]) setManage(connectorIds[0]);
+            else setPanel(installationId);
+            void discovery.load();
           }}
         />
       )}
@@ -731,21 +910,38 @@ export function ConnectorsPage({
         <WriteSkillPanel writer={skillWriter} bots={bots} close={() => setWritingSkill(false)} />
       )}
       {linking && (
-        <SkillImportDialog bots={bots} close={() => setLinking(false)} imported={changed} />
+        <SkillImportDialog
+          bots={bots}
+          close={() => setLinking(false)}
+          imported={changed}
+          openTokens={() => openTokens()}
+        />
       )}
       {bringing && (
         <BringOverDialog
           tab={bringing.tab}
           discovery={discovery}
           bots={bots}
-          close={() => setBringing(undefined)}
-          done={(value) => {
+          setupPlugin={(key) => void setupDiscoveredPlugin(key)}
+          setupBusy={setupBusy}
+          setupError={setupError}
+          clearSetupError={() => setSetupError(undefined)}
+          openTokens={() => openTokens()}
+          close={() => {
+            cancelSetup();
+            setSetupError(undefined);
+            setBringing(undefined);
+          }}
+          done={(value, runtimes) => {
             setResults(value);
+            setResultsBatch((batch) => batch + 1);
+            setSetupError(undefined);
+            setImportedRuntimes(runtimes ?? []);
             setBringing(undefined);
           }}
         />
       )}
-      {panelSummary && (
+      {panelSummary && !tokens && (
         <ConnectionPanel
           key={panelSummary.installationId}
           summary={panelSummary}
@@ -758,7 +954,7 @@ export function ConnectorsPage({
           close={() => setPanel(undefined)}
         />
       )}
-      {manage && (
+      {manage && !tokens && (
         <ConnectorDetails
           key={manage}
           id={manage}
@@ -768,8 +964,12 @@ export function ConnectorsPage({
           snapshot={snapshot}
           operations={operations}
           remove={manageSummary && (() => startUninstall(manageSummary))}
+          openTokens={openTokens}
           changed={changed}
-          close={() => setManage(undefined)}
+          close={() => {
+            setManage(undefined);
+            if (link) navigation.navigate({ name: "connectors" });
+          }}
         />
       )}
       {uninstalling && uninstallTarget && (

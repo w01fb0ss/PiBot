@@ -3,7 +3,7 @@ import { lstat, mkdir, mkdtemp, open, readFile, rename, rm, writeFile } from "no
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { readScannedFile, zipEntries } from "@pibot/brain/kit";
-import { withPublicDownload } from "@pibot/execution";
+import { SKILL_PYTHON_MIRROR, withPublicDownload } from "@pibot/execution";
 
 // Astral uv 0.13.7: https://github.com/astral-sh/uv/releases/tag/0.13.7
 // Digests are copied from each adjacent official release asset's .sha256 file.
@@ -119,7 +119,7 @@ interface Flight {
 }
 
 export class SkillUv {
-  private flight?: Flight;
+  private readonly flights = new Map<boolean, Flight>();
   readonly release: ReturnType<typeof asset>;
   private readonly root: string;
   readonly path: string;
@@ -135,26 +135,40 @@ export class SkillUv {
     this.path = join(this.root, UV_VERSION, platform === "win32" ? "uv.exe" : "uv");
   }
 
-  async ensure(signal: AbortSignal): Promise<void> {
+  async ensure(signal: AbortSignal, useMirror = false): Promise<void> {
     signal.throwIfAborted();
-    if (this.flight?.controller.signal.aborted) {
-      await this.flight.done.catch(() => undefined);
+    // Serialize publication across download sources while keeping the caller's choice on retry.
+    const other = this.flights.get(!useMirror);
+    if (other) {
+      try {
+        await this.wait(other, signal);
+        return;
+      } catch {
+        signal.throwIfAborted();
+        // The other source failed. Try the one selected on this card.
+      }
+    }
+    let flight = this.flights.get(useMirror);
+    if (flight?.controller.signal.aborted) {
+      await flight.done.catch(() => undefined);
       signal.throwIfAborted();
+      return this.ensure(signal, useMirror);
     }
-    if (!this.flight) {
+    if (!flight) {
       const controller = new AbortController();
-      const flight: Flight = {
-        controller,
-        waiters: 0,
-        done: this.install(
-          AbortSignal.any([controller.signal, AbortSignal.timeout(180_000)]),
-        ).finally(() => {
-          if (this.flight === flight) this.flight = undefined;
-        }),
-      };
-      this.flight = flight;
+      const done = this.install(
+        AbortSignal.any([controller.signal, AbortSignal.timeout(180_000)]),
+        useMirror,
+      ).finally(() => {
+        this.flights.delete(useMirror);
+      });
+      flight = { controller, waiters: 0, done };
+      this.flights.set(useMirror, flight);
     }
-    const flight = this.flight;
+    await this.wait(flight, signal);
+  }
+
+  private async wait(flight: Flight, signal: AbortSignal) {
     flight.waiters++;
     let detach: (() => void) | undefined;
     try {
@@ -175,7 +189,7 @@ export class SkillUv {
     }
   }
 
-  private async install(signal: AbortSignal) {
+  private async install(signal: AbortSignal, useMirror: boolean) {
     const release = this.release;
     if (!release) throw new SkillUvError("uv_download_failed");
     const versionDir = join(this.root, UV_VERSION);
@@ -197,14 +211,21 @@ export class SkillUv {
       try {
         await withPublicDownload(
           {
-            url: release.url,
-            hosts: DOWNLOAD_HOSTS,
+            url: useMirror
+              ? release.url.replace(
+                  "https://github.com/astral-sh/",
+                  `https://${SKILL_PYTHON_MIRROR}/github/`,
+                )
+              : release.url,
+            hosts: useMirror ? new Set([...DOWNLOAD_HOSTS, SKILL_PYTHON_MIRROR]) : DOWNLOAD_HOSTS,
             method: "GET",
             signal,
             proxy: this.proxy?.(),
             uvRelease: true,
           },
           async (response) => {
+            if ([407, 502, 503, 504].includes(response.status))
+              throw new SkillUvError("uv_network_failed");
             if (!response.ok || !response.body) throw new SkillUvError("uv_download_failed");
             const file = await open(archive, "wx", 0o600);
             try {

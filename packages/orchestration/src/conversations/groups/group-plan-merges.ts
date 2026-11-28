@@ -1,6 +1,7 @@
 import type { StepMerge } from "@pibot/brain/orchestration-kit";
 import { type GroupWorkflowRunRecord, MessagesRepo, transaction } from "@pibot/storage";
 import { stepMerged, stepTaskId } from "./group-plan-step-workspaces.ts";
+import { planStepTitles } from "./group-plan-summary.ts";
 import type { GroupService } from "./group-service.ts";
 import { progressOf } from "./group-workflow-progress.ts";
 import { type WorkflowEngine, workflowOf } from "./group-workflow-snapshot.ts";
@@ -238,10 +239,9 @@ export class GroupPlanMerges {
     if (!step || !record || !group || this.noted.has(context.taskId as string)) return;
     this.noted.add(context.taskId as string);
     if (this.noted.size > 500) this.noted.delete(this.noted.values().next().value as string);
-    const title =
-      workflowOf(record).contract.steps?.find((item) => item.id === step.stepId)?.title ??
-      step.stepId;
-    const zh = this.service.deps.chat.currentLanguage() === "zh";
+    const language = this.service.deps.chat.currentLanguage();
+    const title = planStepTitles(workflowOf(record).contract.steps, language)(step.stepId);
+    const zh = language === "zh";
     const why = turnsReason(reason, zh);
     // Maintainers 2026-11-21: without Git the plan offers to install it, once, at this point.
     const plan = record.budgetRootRunId ?? record.id;

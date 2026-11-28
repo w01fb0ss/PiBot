@@ -1,4 +1,4 @@
-import { OFFICIAL_RELAY_URL, type RemoteSettings } from "@pibot/remote-contract";
+import { OFFICIAL_RELAY_URL, RelayUrlSchema, type RemoteSettings } from "@pibot/remote-contract";
 import {
   layoutStyles,
   SettingsBack,
@@ -9,7 +9,7 @@ import {
   SettingsPage,
   SettingsRow,
   SettingsSection,
-  useT,
+  useSettings,
 } from "@pibot/renderer-kit";
 import { Button, Chip, IconTile, SegmentedControl, Switch, TextField } from "@pibot/ui";
 import { useEffect, useState } from "react";
@@ -17,44 +17,48 @@ import { DeviceRow } from "../devices/DeviceRow.tsx";
 import { EndpointCapabilities } from "../devices/EndpointCapabilities.tsx";
 import { OfflineModels } from "../devices/OfflineModels.tsx";
 import { RunnerControl } from "../devices/RunnerControl.tsx";
+import { CopyPairCode } from "../pairing/CopyPairCode.tsx";
 import { Pairing } from "../pairing/Pairing.tsx";
 import { DirectSettings } from "./DirectSettings.tsx";
 import styles from "./remote.module.css";
 import { StunPrivacy } from "./StunPrivacy.tsx";
 import { useRemoteSettings } from "./use-remote.ts";
 
+const RUNNER_DOWNLOAD = {
+  zh: "https://pibot.space/cn/download/",
+  en: "https://pibot.space/en/download/",
+} as const;
+
 export function RemoteSettingsPage() {
-  const t = useT();
+  const { t, language } = useSettings();
   const remote = useRemoteSettings();
   const [draft, setDraft] = useState<RemoteSettings>();
   const [selectedId, setSelectedId] = useState<string>();
   const [addMenu, setAddMenu] = useState(false);
   const [runnerInput, setRunnerInput] = useState(false);
-  // Only a self-hosted relay is named; the official relay adds nothing to the code or the note.
-  const runnerRelayHost =
-    remote.pair?.kind === "runner" ? remote.pair.payload?.split("@")[1] : undefined;
-  const runnerStatus =
-    remote.pair?.kind !== "runner"
-      ? undefined
-      : remote.pair.status === "paired"
-        ? t("remote.runner.addedNamed", {
-            name: remote.devices.find((device) => device.id === remote.pair?.deviceId)?.name ?? "",
-          })
-        : remote.pair.status === "waiting"
-          ? remote.pair.relayProblem === "unreachable"
-            ? t("remote.runner.relayUnreachable")
-            : remote.pair.relayProblem === "tls"
-              ? t("remote.runner.relayTls")
-              : remote.pair.relayProblem === "certificate"
-                ? t("remote.runner.relayCertificate")
-                : t("remote.runner.waiting")
-          : remote.pair.status === "expired"
-            ? t("remote.runner.expired")
-            : remote.pair.status === "failed"
-              ? t("remote.error.pairFailed")
-              : undefined;
+  const runnerPair = remote.pair?.kind === "runner" ? remote.pair : undefined;
+  const runnerStatus = !runnerPair
+    ? undefined
+    : runnerPair.status === "paired"
+      ? t("remote.runner.addedNamed", {
+          name: remote.devices.find((device) => device.id === runnerPair.deviceId)?.name ?? "",
+        })
+      : runnerPair.status === "waiting"
+        ? runnerPair.relayProblem === "unreachable"
+          ? t("remote.runner.relayUnreachable")
+          : runnerPair.relayProblem === "tls"
+            ? t("remote.runner.relayTls")
+            : runnerPair.relayProblem === "certificate"
+              ? t("remote.runner.relayCertificate")
+              : t("remote.runner.waiting")
+        : runnerPair.status === "expired"
+          ? t("remote.runner.expired")
+          : runnerPair.status === "failed"
+            ? t("remote.error.pairFailed")
+            : undefined;
   const [runnerCode, setRunnerCode] = useState("");
   const [runnerDialog, setRunnerDialog] = useState(false);
+  const [relayEdited, setRelayEdited] = useState(false);
   useEffect(() => {
     if (!runnerDialog || remote.pair?.status !== "paired") return;
     const timer = setTimeout(() => {
@@ -68,6 +72,16 @@ export function RemoteSettingsPage() {
   }, [remote.settings]);
   const edit = (patch: Partial<RemoteSettings>) =>
     setDraft((old) => (old ? { ...old, ...patch } : old));
+  const submitRunner = () => {
+    const code = runnerCode.trim();
+    if (code.length < 25) return;
+    void remote.addRunner(code).then((added) => {
+      if (added) {
+        setRunnerCode("");
+        setRunnerDialog(false);
+      }
+    });
+  };
   /**
    * Maintainers 2026-11-12/13: every setting takes effect as it is changed, with no save or confirm
    * step (a confirmation banner far from the row made changes look lost). A change that sends
@@ -107,6 +121,9 @@ export function RemoteSettingsPage() {
         </SettingsLine>
       </SettingsPage>
     );
+  const validRelay = RelayUrlSchema.safeParse(draft.relayUrl).success;
+  const relayError = draft.relay === "custom" && relayEdited && !validRelay;
+  const pairingAvailable = remote.status?.pairingAvailable;
   const selected = remote.devices.find((device) => device.id === selectedId);
   const pathLabel = (device: (typeof remote.devices)[number]) => {
     const connection = device.kind === "runner" ? device.runnerConnection : undefined;
@@ -143,11 +160,18 @@ export function RemoteSettingsPage() {
         <strong>{device.name}</strong>
         <span>
           <i className={device.online ? styles.onlineDot : styles.offlineDot} />
-          {device.online ? t("remote.online") : t("remote.offline")} · {pathLabel(device)}
+          {device.online ? `${t("remote.online")} · ${pathLabel(device)}` : t("remote.offline")}
         </span>
       </span>
       {device.kind === "runner" && device.isolation && !device.isolation.available && (
-        <Chip tone="warn">{t("remote.runner.commandApproval")}</Chip>
+        <Chip tone="warn">
+          {t(
+            device.isolation.reason === "windows_unisolated" ||
+              device.isolation.reason === "acp_editor_terminal_unisolated"
+              ? "isolation.warning"
+              : "remote.runner.commandsBlocked",
+          )}
+        </Chip>
       )}
       <span className={styles.deviceChevron} aria-hidden="true">
         ›
@@ -156,30 +180,26 @@ export function RemoteSettingsPage() {
   );
   const phones = remote.devices.filter((device) => device.kind === "phone");
   const runners = remote.devices.filter((device) => device.kind === "runner");
-  const errorLine = remote.error && (
-    <SettingsLine
-      role="alert"
-      tone="danger"
-      action={
-        <Button
-          variant="secondary"
-          onClick={() => {
-            void remote.reload();
-          }}
-        >
-          {t("remote.retry")}
-        </Button>
-      }
-    >
-      {t(
-        remote.error === "stale"
-          ? "remote.stale"
-          : remote.error === "failed"
-            ? "remote.failed"
-            : `remote.error.${remote.error}`,
-      )}
-    </SettingsLine>
-  );
+  const errorLine = (retry: () => void, label = t("remote.retry")) =>
+    remote.error && (
+      <SettingsLine
+        role="alert"
+        tone="danger"
+        action={
+          <Button variant="secondary" disabled={remote.busy} onClick={retry}>
+            {label}
+          </Button>
+        }
+      >
+        {t(
+          remote.error === "stale"
+            ? "remote.stale"
+            : remote.error === "failed"
+              ? "remote.failed"
+              : `remote.error.${remote.error}`,
+        )}
+      </SettingsLine>
+    );
   if (selected) {
     // The device card, then its details one tab at a time.
     const tabs =
@@ -189,7 +209,7 @@ export function RemoteSettingsPage() {
     const current = (tabs as readonly string[]).includes(tab) ? tab : "capabilities";
     return (
       <SettingsPage>
-        {errorLine}
+        {errorLine(() => void remote.reload())}
         <SettingsBack label={t("remote.devices")} onClick={() => setSelectedId(undefined)} />
         <div className={layoutStyles.card}>
           <DeviceRow
@@ -198,12 +218,6 @@ export function RemoteSettingsPage() {
             rename={(id, name) => void remote.rename(id, name)}
             revoke={remote.revoke}
           />
-          {selected.kind === "runner" &&
-            !selected.online &&
-            selected.isolation &&
-            !selected.isolation.available && (
-              <SettingsLine tone="warn">{t("remote.runner.commandApproval")}</SettingsLine>
-            )}
         </div>
         <SegmentedControl
           label={selected.name}
@@ -243,13 +257,13 @@ export function RemoteSettingsPage() {
         <p className={layoutStyles.lead}>{t("remote.lead")}</p>
         <div className={styles.addDeviceWrap}>
           <Button
-            disabled={remote.busy || !remote.status?.pairingAvailable}
+            disabled={remote.busy || !pairingAvailable}
             aria-expanded={addMenu}
             onClick={() => setAddMenu((value) => !value)}
           >
             {t("remote.addDevice")}
           </Button>
-          {addMenu && (
+          {addMenu && pairingAvailable && !remote.busy && (
             <div className={styles.addDeviceMenu}>
               <button
                 type="button"
@@ -269,6 +283,7 @@ export function RemoteSettingsPage() {
                   setAddMenu(false);
                   setRunnerDialog(true);
                   setRunnerInput(false);
+                  setRunnerCode("");
                   void remote.add("runner");
                 }}
               >
@@ -279,18 +294,28 @@ export function RemoteSettingsPage() {
           )}
         </div>
       </div>
-      {errorLine}
+      {(!runnerDialog || remote.errorScope !== "runner") &&
+        errorLine(
+          () => (remote.errorScope === "phone" ? void remote.add() : void remote.reload()),
+          remote.errorScope === "phone" ? t("remote.tryAgain") : undefined,
+        )}
       <SettingsHero
         icon="laptop"
         title={draft.desktopName}
         note={
-          remote.status ? (
-            <>
-              <i className={draft.enabled ? styles.onlineDot : styles.offlineDot} />
-              {t(`remote.status.${remote.status.reason}`)}
-            </>
+          draft.enabled && remote.busy && remote.status?.reason === "off" ? (
+            <span role="status">{t("remote.waitingForConnection")}</span>
           ) : (
-            t("remote.enabled")
+            remote.status && (
+              <span role="status">
+                <i className={draft.enabled ? styles.onlineDot : styles.offlineDot} />
+                {t(
+                  draft.enabled && remote.status.reason === "connecting"
+                    ? "remote.waitingForConnection"
+                    : `remote.status.${remote.status.reason}`,
+                )}
+              </span>
+            )
           )
         }
       >
@@ -302,7 +327,13 @@ export function RemoteSettingsPage() {
         />
       </SettingsHero>
       <p className={layoutStyles.note}>{t("remote.disclosure")}</p>
+      <SettingsFold title={t("remote.privacyDetails")}>
+        <SettingsLine>{t("remote.disclosureDetails")}</SettingsLine>
+      </SettingsFold>
       {!draft.enabled && <SettingsLine>{t("remote.enableBeforePair")}</SettingsLine>}
+      {draft.enabled && !remote.status && (
+        <SettingsLine role="status">{t("remote.waitingForConnection")}</SettingsLine>
+      )}
       {runnerDialog && (
         <div className={layoutStyles.card}>
           <SettingsRow
@@ -317,77 +348,99 @@ export function RemoteSettingsPage() {
                   label={t("remote.runner.code")}
                   value={runnerCode}
                   maxLength={1152}
+                  autoComplete="off"
+                  spellCheck={false}
                   onChange={(event) => setRunnerCode(event.target.value)}
                 />
                 <Button
-                  disabled={remote.busy || runnerCode.length < 25}
-                  onClick={() => {
-                    const code = runnerCode;
-                    void remote.addRunner(code).then((added) => {
-                      if (added) {
-                        setRunnerCode("");
-                        setRunnerDialog(false);
-                      }
-                    });
-                  }}
+                  disabled={remote.busy || runnerCode.trim().length < 25}
+                  onClick={submitRunner}
                 >
                   {t("remote.runner.add")}
                 </Button>
               </div>
             ) : (
               <div className={styles.runnerCode}>
-                <p className={styles.runnerNote}>{t("remote.runner.howTo")}</p>
-                <TextField
-                  label={t("remote.runner.code")}
-                  value={remote.pair?.payload ?? ""}
-                  readOnly
-                />
+                <p className={styles.runnerNote}>{t("remote.runner.role")}</p>
+                <ol className={styles.runnerNote}>
+                  <li>
+                    <a href={RUNNER_DOWNLOAD[language]} target="_blank" rel="noreferrer">
+                      {t("remote.runner.download")}
+                    </a>
+                  </li>
+                  <li>{t("remote.runner.openTray")}</li>
+                  <li>{t("remote.runner.pasteCode")}</li>
+                </ol>
+                {runnerPair?.payload && (
+                  <>
+                    <TextField
+                      label={t("remote.runner.code")}
+                      value={runnerPair.payload}
+                      readOnly
+                    />
+                    <p className={styles.runnerNote}>{t("remote.shareCodeWarning")}</p>
+                  </>
+                )}
                 <div className={styles.actions}>
-                  <Button
-                    variant="secondary"
-                    disabled={!remote.pair?.payload}
-                    onClick={() => void navigator.clipboard.writeText(remote.pair?.payload ?? "")}
-                  >
-                    {t("remote.runner.copyCode")}
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    disabled={remote.busy}
-                    onClick={() => void remote.add("runner")}
-                  >
-                    {t("remote.runner.newCode")}
-                  </Button>
+                  {runnerPair?.payload && (
+                    <CopyPairCode
+                      key={runnerPair.id}
+                      code={runnerPair.payload}
+                      disabled={remote.busy}
+                    />
+                  )}
+                  {(runnerPair || remote.errorScope !== "runner") &&
+                    runnerPair?.status !== "paired" && (
+                      <Button
+                        variant="secondary"
+                        disabled={remote.busy}
+                        onClick={() => void remote.add("runner")}
+                      >
+                        {t("remote.newPairCode")}
+                      </Button>
+                    )}
                 </div>
-                <p className={styles.runnerNote}>
-                  {t("remote.runner.generatedNote")}
-                  {runnerRelayHost ? t("remote.runner.viaRelay", { host: runnerRelayHost }) : ""}
-                </p>
-                {runnerStatus && (
-                  <p
-                    className={styles.runnerNote}
-                    role={remote.pair?.relayProblem ? "alert" : undefined}
-                  >
+                {runnerStatus ? (
+                  <p className={styles.runnerNote} role="status">
                     {runnerStatus}
                   </p>
-                )}
+                ) : remote.busy && !remote.error ? (
+                  <p className={styles.runnerNote} role="status">
+                    {t("remote.runner.creating")}
+                  </p>
+                ) : null}
+                <details className={styles.runnerNote}>
+                  <summary>{t("remote.advanced")}</summary>
+                  <p>{t("remote.runner.commandLine")}</p>
+                  <code>pibot runner pair &quot;{t("remote.runner.code")}&quot;</code>
+                </details>
               </div>
             )}
+            {remote.errorScope === "runner" &&
+              errorLine(
+                () => (runnerInput ? submitRunner() : void remote.add("runner")),
+                t("remote.tryAgain"),
+              )}
             <div className={styles.actions}>
               <Button
-                variant="ghost"
+                variant="secondary"
                 disabled={remote.busy}
                 onClick={() => {
                   if (!runnerInput) void remote.cancel();
                   else void remote.add("runner");
+                  remote.clearActionError();
                   setRunnerInput(!runnerInput);
                 }}
               >
                 {t(runnerInput ? "remote.runner.useGenerated" : "remote.runner.useLegacy")}
               </Button>
               <Button
-                variant="ghost"
+                variant="secondary"
+                disabled={remote.busy}
                 onClick={() => {
+                  remote.clearActionError();
                   void remote.cancel();
+                  setRunnerCode("");
                   setRunnerDialog(false);
                 }}
               >
@@ -399,7 +452,12 @@ export function RemoteSettingsPage() {
       )}
       {!runnerDialog && remote.pair && remote.pair.kind !== "runner" && (
         <div className={layoutStyles.card}>
-          <Pairing pair={remote.pair} busy={remote.busy} cancel={() => void remote.cancel()} />
+          <Pairing
+            pair={remote.pair}
+            busy={remote.busy}
+            cancel={() => void remote.cancel()}
+            retry={() => void remote.add()}
+          />
         </div>
       )}
       <SettingsSection title={`${t("remote.phones")} · ${phones.length}`}>
@@ -440,10 +498,11 @@ export function RemoteSettingsPage() {
               { value: "official", label: t("remote.official") },
               { value: "custom", label: t("remote.custom") },
             ]}
-            onValueChange={(relay) =>
-              // A custom relay is saved once its address is entered (on leaving the field).
-              relay === "custom" && !draft.relayUrl ? edit({ relay }) : commit({ relay })
-            }
+            onValueChange={(relay) => {
+              setRelayEdited(false);
+              if (relay === "custom" && !validRelay) edit({ relay });
+              else commit({ relay });
+            }}
           />
         </SettingsRow>
         {draft.relay === "custom" && (
@@ -454,12 +513,38 @@ export function RemoteSettingsPage() {
               value={draft.relayUrl ?? ""}
               maxLength={2048}
               disabled={remote.busy}
-              onChange={(e) => edit({ relayUrl: e.target.value || null })}
+              aria-invalid={relayError}
+              onChange={(e) => {
+                setRelayEdited(true);
+                edit({ relayUrl: e.target.value || null });
+              }}
               onBlur={() => {
-                if (draft.relayUrl && draft.relayUrl !== remote.settings?.relayUrl)
+                setRelayEdited(true);
+                if (
+                  validRelay &&
+                  (remote.settings?.relay !== "custom" ||
+                    draft.relayUrl !== remote.settings.relayUrl)
+                )
                   commit({ relay: "custom", relayUrl: draft.relayUrl });
               }}
             />
+            {relayError && (
+              <SettingsLine
+                role="alert"
+                tone="danger"
+                action={
+                  <Button
+                    variant="secondary"
+                    disabled={remote.busy}
+                    onClick={() => commit({ relay: "official" })}
+                  >
+                    {t("remote.official")}
+                  </Button>
+                }
+              >
+                {t("remote.error.relayInvalid")}
+              </SettingsLine>
+            )}
           </SettingsRow>
         )}
         <SettingsRow icon="edit" tone="blue" label={t("remote.desktopName")} stacked>

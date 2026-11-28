@@ -4,18 +4,10 @@ import { useRpc, useRpcEvent, useT } from "@pibot/renderer-kit";
 import { Button, Icon } from "@pibot/ui";
 import { useEffect, useState } from "react";
 import type { z } from "zod";
-import styles from "../chat.module.css";
+import { browserExtensionStores } from "../../../app/browser-extension-store.ts";
 import lively from "../tools/lively.module.css";
 
 type Status = z.infer<typeof BrowserExtensionStatusSchema>;
-type BrowserId = NonNullable<Status["defaultBrowser"]>["id"];
-
-const CHROME_STORE = "https://chromewebstore.google.com/detail/jfaelafpdicbnlnbngicngehehafpmbk";
-const FIREFOX_STORE = "https://addons.mozilla.org/firefox/addon/pibot-browser/";
-const STORES: Partial<Record<BrowserId, string>> = {
-  chrome: CHROME_STORE,
-  firefox: FIREFOX_STORE,
-};
 const WAIT_MS = 3 * 60_000;
 const STATUS_POLL_MS = 2_000;
 const STATUS_TIMEOUT_MS = 5_000;
@@ -86,14 +78,8 @@ export function BrowserExtensionInstallCard({
 
   if (!status || optedOut || dismissed || phase === "closed") return null;
   const id = status.defaultBrowser?.id;
-  const store = id ? STORES[id] : undefined;
+  const store = id ? browserExtensionStores[id] : undefined;
   if (phase === "ready" && status.extension === "connected") return null;
-  if (phase === "ready" && id === "edge")
-    return (
-      <p className={styles.systemLine} role="note">
-        {t("browserExtension.install.edgeFallback")}
-      </p>
-    );
   if (!store) return null;
   const browser = status.defaultBrowser?.name ?? "";
 
@@ -127,12 +113,13 @@ export function BrowserExtensionInstallCard({
     >
       <header>
         <Icon name="globe" size={16} />
-        <span>{title}</span>
+        <strong>{title}</strong>
       </header>
       <div className={lively.extensionBody}>
         {phase === "ready" && (
           <>
             <p>{t("browserExtension.install.description")}</p>
+            {id === "edge" && <p>{t("settings.browserExtensionEdgeHelp")}</p>}
             <ol>
               <li>{t("browserExtension.install.step.open", { browser })}</li>
               <li>
@@ -148,7 +135,12 @@ export function BrowserExtensionInstallCard({
         )}
         {phase === "waiting" && <p>{t("browserExtension.install.waiting", { browser })}</p>}
         {phase === "success" && <p>{t("browserExtension.install.successNote")}</p>}
-        {phase === "failed" && <p>{t("browserExtension.install.failedNote")}</p>}
+        {phase === "failed" && (
+          <p>
+            {t("browserExtension.install.failedNote")}
+            {id !== "firefox" && ` ${t("settings.browserExtensionStoreHelp")}`}
+          </p>
+        )}
       </div>
       <footer>
         {(phase === "ready" || phase === "failed") && (

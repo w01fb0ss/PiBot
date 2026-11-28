@@ -14,6 +14,7 @@ import {
   scriptLanguage,
   scriptRun,
   shebangProgram,
+  skillTokenScript,
 } from "./scripts.ts";
 
 /** What judging a script run may use, beyond the command words. */
@@ -60,6 +61,7 @@ export function collectInvocations(
       continue;
     }
     let { offset, directory } = task;
+    let queryOnly = false;
     while (offset < task.words.length && budget.check()) {
       let program = task.words[offset++] ?? "";
       const word = program;
@@ -87,8 +89,10 @@ export function collectInvocations(
             (program === "env" && parsed.flags.size)
           )
             uncertain(result, "wrapper_options");
-          if (program === "command" && (parsed.flags.has("-v") || parsed.flags.has("-V")))
+          if (program === "command" && (parsed.flags.has("-v") || parsed.flags.has("-V"))) {
+            queryOnly = true;
             uncertain(result, "wrapper_query");
+          }
           if (program === "env") {
             const change = optionValues(parsed, "-C", "--chdir").at(-1);
             if (change !== undefined) directory = prefix(directory, change);
@@ -112,6 +116,13 @@ export function collectInvocations(
       }
       const args = task.words.slice(offset);
       const run = scriptRun(program, args);
+      if (!queryOnly && run?.kind === "file") {
+        const entryPoint = run.language
+          ? run.path
+          : (skillTokenScript({ program: word, args }) ?? run.path);
+        result.scriptEntryPoints ??= [];
+        result.scriptEntryPoints.push(prefix(directory, entryPoint));
+      }
       if (
         run &&
         judgeScript(

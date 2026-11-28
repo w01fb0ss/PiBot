@@ -128,12 +128,12 @@ export class ImportProjects {
       .get(importId);
   }
 
-  settle(importId: string, position: number, state: "restored" | "kept") {
+  settle(importId: string, position: number, state: "restored" | "kept", removed = false) {
     this.db
       .prepare(`UPDATE import_project_notes
-      SET before_text='',root='',device='',inode='',written_hash='',state=?
+      SET before_text='',root='',device='',inode='',written_hash='',state=?,removed=?
       WHERE import_id=? AND position=? AND state='pending'`)
-      .run(state, importId, position);
+      .run(state, removed ? 1 : 0, importId, position);
   }
 
   /** Recorded before mkdir, so a crash in between still leaves a receipt to clean up. */
@@ -161,6 +161,20 @@ export class ImportProjects {
         WHERE import_id=? AND state='pending' ORDER BY length(path) DESC, path DESC`)
       .all(importId)
       .map((row) => folder.parse(row));
+  }
+
+  continuedUsesFolder(importId: string, path: string) {
+    return !!this.db
+      .prepare(`SELECT 1 FROM conversations c JOIN working_folders f
+      ON f.bot_id=c.bot_id AND f.path=?
+      WHERE c.import_id=? AND EXISTS (
+        SELECT 1 FROM messages WHERE conversation_id=c.id AND import_id IS NULL
+      ) AND (c.workplace_folder_id=f.id OR EXISTS (
+        SELECT 1 FROM topic_folders r WHERE r.conversation_id=c.id AND r.folder_id=f.id
+      ) OR EXISTS (
+        SELECT 1 FROM topic_writable_folders w WHERE w.conversation_id=c.id AND w.folder_id=f.id
+      )) LIMIT 1`)
+      .get(path, importId);
   }
 
   settleFolder(importId: string, path: string, state: "removed" | "kept") {

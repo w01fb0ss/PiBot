@@ -44,7 +44,7 @@ Chats, settings, Bots, memory and audit records are stored in the local data fol
 
 API keys and sign-in tokens are encrypted with the system secret store and don't appear in plain text in the data folder. Uninstalling Pi Bot doesn't delete the data folder; to remove everything, quit Pi Bot and delete that folder yourself.
 
-Pi Bot doesn't read or write other tools' data folders (such as the pi command-line tool's). **Bring over from other AI tools** on the Connections page only takes a read-only look at their settings when you click it.
+To bring in settings from other AI tools, use **Bring over from other AI tools** on the Connections page. To bring in chats, use **Import from another AI** in the avatar menu. These actions read the source settings or conversations without changing them. If you choose to import project notes too, Pi Bot shows the proposed change to the destination folder before writing it.
 
 ## Clear caches and old records
 

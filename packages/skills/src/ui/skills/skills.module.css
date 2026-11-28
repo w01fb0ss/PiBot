@@ -477,7 +477,7 @@
   margin: 2px 0 6px;
   max-height: 260px;
 }
-/* Editor: the file list beside the text, or above it where the panel is narrow. */
+/* Editor: place the skill instructions before the attachments on narrow panels. */
 .editorLayout {
   container-type: inline-size;
 }
@@ -488,11 +488,14 @@
 }
 @container (min-width: 560px) {
   .editorGrid {
-    grid-template-columns: minmax(170px, 220px) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) minmax(170px, 220px);
     align-items: start;
   }
 }
 .editorFiles {
+  border: 0;
+  margin: 0;
+  padding: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -656,4 +659,18 @@
   border-color: transparent;
   border-radius: 10px;
   background: var(--tert);
+}
+
+.field select {
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--b2);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+}
+
+.field select:focus-visible {
+  outline-color: var(--b3);
 }

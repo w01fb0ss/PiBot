@@ -4,7 +4,11 @@ import { AgentError } from "../core/errors.ts";
 
 // The envelope is bounded before JSON decoding, including unknown supplier fields.
 const BODY_LIMIT = 72 * 1024 * 1024;
-export async function imageJson(response: Response, signal: AbortSignal): Promise<unknown> {
+export async function imageJson(
+  response: Response,
+  signal: AbortSignal,
+  limit = BODY_LIMIT,
+): Promise<unknown> {
   if (!response.ok) {
     await response.body?.cancel();
     throw new AgentError(
@@ -19,11 +23,11 @@ export async function imageJson(response: Response, signal: AbortSignal): Promis
     );
   }
   const length = Number(response.headers.get("content-length"));
-  if (length > BODY_LIMIT) {
+  if (length > limit) {
     await response.body?.cancel();
     throw new AgentError("provider_error");
   }
-  const body = await boundedBody(response, BODY_LIMIT, signal);
+  const body = await boundedBody(response, limit, signal);
   // Once EOF arrived, validation may preserve a complete paid output for managed retention.
   // Partial/cancelled bodies still fail JSON/image validation; reads above remain abortable.
   try {

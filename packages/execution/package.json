@@ -27,9 +27,11 @@
     "./credentials": "./src/credentials/system-credential-store.ts",
     "./html-text": "./src/web/html-text.ts",
     "./web-address": "./src/web/web-address.ts",
+    "./markdown-files": "./src/files/markdown-files.ts",
     "./file-identity": "./src/core/file-identity.ts",
     "./host-environment": "./src/command/host-environment.ts",
     "./isolation-remedy": "./src/sandbox/isolation-remedy.ts",
+    "./isolation-probe": "./src/sandbox/isolation-probe.ts",
     "./linux-userns": "./src/sandbox/linux-userns.ts",
     "./resource-manifest": "./src/core/resource-manifest.ts"
   },

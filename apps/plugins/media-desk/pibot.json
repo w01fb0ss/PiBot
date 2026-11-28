@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "media-desk",
+  "order": 70,
+  "card": {
+    "name": {
+      "zh": "自媒体工作台",
+      "en": "Media Desk"
+    },
+    "category": "documents",
+    "platforms": ["darwin", "win32", "linux"],
+    "description": {
+      "zh": "从一句话灵感生成口播脚本或文章、标题、封面与配图提示词、分镜脚本，并从样稿提炼写作风格",
+      "en": "Turn one idea into a voiceover script or article, titles, cover and illustration prompts, a storyboard, and an extracted writing style"
+    },
+    "modes": []
+  }
+}

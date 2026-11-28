@@ -30,6 +30,8 @@ export const BackgroundStopReasonSchema = z.enum([
   "restart",
   "restart_unverified",
   "time_limit",
+  /** Its process was gone; the person removed it through Pi's repair. */
+  "orphaned",
 ]);
 export const BackgroundCommandSchema = z.strictObject({
   id: IdSchema,

@@ -38,7 +38,8 @@ export const endpointsZh = {
   endpointsNext: "下一页",
   endpointsScopeEdit: "范围",
   endpointsScopeLimit: "最多可选 {count} 个。",
-  endpointsScopeHint: "群聊须同时符合 Bot 和群组范围。保存仅修改控制平面的范围。",
+  endpointsScopeHint:
+    "群聊须同时符合 Bot 和群组范围。保存后会更新哪些 Bot 和群组可以使用这项能力。",
   endpointsBiometricHint: "开启或扩大范围需要面容或指纹确认。",
   endpointsBiometricPrompt: "确认更改「{name}」的访问权限",
   endpointsConfirm: "更改「{name}」？",
@@ -92,7 +93,7 @@ export const endpointsEn: Record<keyof typeof endpointsZh, string> = {
   endpointsScopeEdit: "Scope",
   endpointsScopeLimit: "Select up to {count}.",
   endpointsScopeHint:
-    "Group conversations must match both lists. Saving changes access on the control plane.",
+    "Group conversations must match both lists. Saving updates which Bots and groups can use this capability.",
   endpointsBiometricHint: "Enabling or widening access requires face or fingerprint confirmation.",
   endpointsBiometricPrompt: "Confirm access changes for “{name}”",
   endpointsConfirm: "Change “{name}”?",

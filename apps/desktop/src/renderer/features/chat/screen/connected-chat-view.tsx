@@ -19,6 +19,7 @@ import { AttachmentDropOverlay } from "../composer/Attachments.tsx";
 import { userBubbleStyle } from "../messages/user-bubble.ts";
 import { AgentAccountStatusBand } from "../status/AgentAccountStatusBand.tsx";
 import { YoloControl } from "../status/YoloControl.tsx";
+import { ModelOverrideControl } from "../topics/ModelOverrideControl.tsx";
 import { TopicMenu } from "../topics/TopicMenu.tsx";
 import { importedTopicLabel } from "../topics/use-topic-title.ts";
 import { renderChatComposer } from "./chat-composer-view.tsx";
@@ -28,6 +29,7 @@ import type { ChatScreenModel } from "./chat-screen-model.ts";
 export function renderConnectedChat(screen: ChatScreenModel) {
   const {
     peer,
+    controller,
     visible,
     disconnected,
     t,
@@ -99,16 +101,44 @@ export function renderConnectedChat(screen: ChatScreenModel) {
             />
           )
         }
+        modelOverride={
+          actualTopicId &&
+          state.bot &&
+          state.bot.kind !== "agent" &&
+          !isDraft &&
+          !topic.locked &&
+          !topic.readOnly && (
+            <ModelOverrideControl
+              key={actualTopicId}
+              peer={peer}
+              kind="topic"
+              category={state.bot.category ?? "chat"}
+              catalog={state.bot.category === "image" ? undefined : state.models}
+              override={topic.modelOverride}
+              disabled={disconnected}
+              save={async (override) => {
+                await peer.call("chat.topicModel.set", { conversationId: actualTopicId, override });
+                topic.retry();
+                void controller.checkContextHint();
+              }}
+            />
+          )
+        }
         agentBadge={
           // Only where it applies: an empty slot would leave a stray separator (X2).
-          state.bot?.kind === "agent" && hostPlatform() === "win32" ? (
+          topic.importSource ? (
+            <>
+              <span className={styles.subtitleText}>
+                {importedTopicLabel(t, topic.importSource)}
+              </span>
+              {state.bot?.kind === "agent" && hostPlatform() === "win32" && <UnisolatedBadge />}
+            </>
+          ) : state.bot?.kind === "agent" && hostPlatform() === "win32" ? (
             <UnisolatedBadge />
           ) : undefined
         }
         folders={
-          topic.readOnly ? (
-            <span className={styles.subtitleText}>{importedTopicLabel(t, topic.importSource)}</span>
-          ) : topic.locked ? (
+          topic.locked ? (
             <span className={styles.subtitleText}>
               {t(topic.error ? "chat.topicUnavailable" : "common.loading")}
             </span>
@@ -135,7 +165,7 @@ export function renderConnectedChat(screen: ChatScreenModel) {
           )
         }
         panelOpen={panelOpen}
-        newTopicDisabled={!topic.readOnly && sendingBlocked}
+        newTopicDisabled={sendingBlocked}
         changes={
           !topic.locked && (
             <div className={sidePaneStyles.pills}>

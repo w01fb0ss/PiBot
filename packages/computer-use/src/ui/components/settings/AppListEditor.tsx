@@ -3,7 +3,11 @@ import { useT } from "@pibot/renderer-kit";
 import { Button } from "@pibot/ui";
 import { useState } from "react";
 import styles from "../computer.module.css";
-import { isDesktopApp } from "../presentation.ts";
+import {
+  installedAppsUnavailableText,
+  isDesktopApp,
+  isInstalledAppsRetryable,
+} from "../presentation.ts";
 import { AppPicker, type PickerApp } from "./AppPicker.tsx";
 import { isBlocking, useBlocklist, useInstalledApps } from "./use-apps.ts";
 
@@ -93,7 +97,15 @@ export function AppListEditor({
           )}
           {installed.data?.supported === false && (
             <p className={styles.listNote}>
-              {t("computerUse.picker.unsupported", { reason: installed.data.reason })}
+              {installedAppsUnavailableText(installed.data.reason, t)}
+              {isInstalledAppsRetryable(installed.data.reason) && (
+                <>
+                  {" "}
+                  <Button variant="ghost" onClick={installed.reload}>
+                    {t("common.retry")}
+                  </Button>
+                </>
+              )}
             </p>
           )}
           {installed.error && (

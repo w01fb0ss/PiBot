@@ -1,31 +1,18 @@
 import { UnsafeSandboxEnvironmentError } from "@pibot/execution/host-environment";
 
-const BUSINESS_CODES = new Set([
-  "invalid_arguments",
-  "runner_already_running",
-  "runner_lock_invalid",
-  "runner_lock_recovery_busy",
-  "passphrase_required",
-  "passphrase_invalid",
-  "identity_corrupt",
-  "system_credentials_failed",
-  "drain_incomplete",
-  "cancelled",
-  "runner_already_paired",
-  "runner_pair_failed",
-  "invalid_relay",
-  "pairing_relay_mismatch",
-  "invalid_pairing",
-]);
+import { isRunnerMessageCode, type RunnerMessageCode, runnerMessages } from "./messages.ts";
 
-type RunnerFailure =
-  | { code: string; messageZh?: string; messageEn?: string }
-  | {
-      code: "unsafe_sandbox_environment";
-      variables: UnsafeSandboxEnvironmentError["variables"];
-      messageZh: string;
-      messageEn: string;
-    };
+type RunnerFailure = {
+  code: RunnerMessageCode;
+  messageZh: string;
+  messageEn: string;
+  variables?: UnsafeSandboxEnvironmentError["variables"];
+};
+
+function message(code: RunnerMessageCode): RunnerFailure {
+  const { zh, en } = runnerMessages[code];
+  return { code, messageZh: zh, messageEn: en };
+}
 
 export function runnerFailure(error: unknown): RunnerFailure {
   if (error instanceof UnsafeSandboxEnvironmentError) {
@@ -45,20 +32,13 @@ export function runnerFailure(error: unknown): RunnerFailure {
       messageEn: `Runner refused to start: ${reasons.map(({ en }) => en).join("; ")}. Remove ${names} from the launching shell or service environment, then start the runner again.`,
     };
   }
-  if (error instanceof Error && error.message === "pairing_relay_mismatch")
-    return {
-      code: "pairing_relay_mismatch",
-      messageZh: "配对码中的中继与 --relay 不一致，请移除 --relay 或在电脑上重新生成配对码。",
-      messageEn:
-        "The code relay differs from --relay. Remove --relay or generate a new code on the computer.",
-    };
-  if (error instanceof Error && BUSINESS_CODES.has(error.message)) return { code: error.message };
+  if (error instanceof Error && isRunnerMessageCode(error.message)) return message(error.message);
   // The runtime puts the startup failure first and still reports cleanup failures separately.
   if (error instanceof AggregateError) {
     const primary = runnerFailure(error.errors[0]);
-    return primary.code === "internal" ? { code: "lifecycle_failed" } : primary;
+    return primary.code === "internal" ? message("lifecycle_failed") : primary;
   }
-  return { code: "internal" };
+  return message("internal");
 }
 
 export function runnerErrorCode(error: unknown): string {

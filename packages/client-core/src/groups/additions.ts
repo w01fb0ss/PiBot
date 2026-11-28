@@ -15,6 +15,7 @@ export async function append(
   run: { id: string; botId: string },
   mode: ChatAdditionMode,
   targetBotId?: string,
+  onUnavailable?: () => Promise<boolean>,
 ) {
   if (
     !this.active ||
@@ -38,6 +39,7 @@ export async function append(
     ...(attachments.length ? { attachments } : {}),
   };
   this.publish({ sending: true, requestError: undefined });
+  let fallback = false;
   try {
     const message = await this.peer.call("groups.append", params, {
       signal: this.lifetime.signal,
@@ -61,39 +63,52 @@ export async function append(
     return accepted;
   } catch (error) {
     if (generation !== this.generation || this.lifetime.signal.aborted) return false;
-    const known =
+    // Live run cannot accept an in-run append in this phase and nothing persisted: release the
+    // sending flag first, then queue the message as the next turn of the same group topic.
+    if (
+      onUnavailable &&
       error instanceof RpcError &&
-      new Set<number>([
-        RpcErrorCodes.busy,
-        RpcErrorCodes.invalidParams,
-        RpcErrorCodes.noModel,
-        RpcErrorCodes.imageUnsupported,
-        RpcErrorCodes.attachmentInvalid,
-        RpcErrorCodes.scannedPdfUnsupported,
-        RpcErrorCodes.attachmentConversion,
-      ]).has(error.code);
-    if (!known)
-      this.uncertainAppend = {
-        groupId: params.groupId,
-        conversationId: params.conversationId,
-        botId: params.botId,
-        requestId,
-      };
-    const reason =
-      error instanceof RpcError &&
-      ["append_full", "append_duplicate", "append_target_required"].includes(error.message)
-        ? (error.message as "append_full" | "append_duplicate" | "append_target_required")
-        : error instanceof RpcError &&
-            error.code !== RpcErrorCodes.busy &&
-            error.code !== RpcErrorCodes.invalidParams
-          ? groupRequestError(error)
-          : "append_unavailable";
-    this.publish({ requestError: known ? reason : "uncertain", appendUncertain: !known });
-    this.schedule();
-    return false;
+      error.code === RpcErrorCodes.busy &&
+      error.message === "append_unavailable"
+    ) {
+      fallback = true;
+    } else {
+      const known =
+        error instanceof RpcError &&
+        new Set<number>([
+          RpcErrorCodes.busy,
+          RpcErrorCodes.invalidParams,
+          RpcErrorCodes.noModel,
+          RpcErrorCodes.imageUnsupported,
+          RpcErrorCodes.attachmentInvalid,
+          RpcErrorCodes.scannedPdfUnsupported,
+          RpcErrorCodes.attachmentConversion,
+        ]).has(error.code);
+      if (!known)
+        this.uncertainAppend = {
+          groupId: params.groupId,
+          conversationId: params.conversationId,
+          botId: params.botId,
+          requestId,
+        };
+      const reason =
+        error instanceof RpcError &&
+        ["append_full", "append_duplicate", "append_target_required"].includes(error.message)
+          ? (error.message as "append_full" | "append_duplicate" | "append_target_required")
+          : error instanceof RpcError &&
+              error.code !== RpcErrorCodes.busy &&
+              error.code !== RpcErrorCodes.invalidParams
+            ? groupRequestError(error)
+            : "append_unavailable";
+      this.publish({ requestError: known ? reason : "uncertain", appendUncertain: !known });
+      this.schedule();
+      return false;
+    }
   } finally {
     if (generation === this.generation) this.publish({ sending: false });
   }
+  if (fallback && onUnavailable) return onUnavailable();
+  return false;
 }
 
 export async function confirmAppend(this: GroupSession) {

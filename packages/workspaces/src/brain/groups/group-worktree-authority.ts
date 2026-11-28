@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { AgentError } from "@pibot/agent";
 import type { WorkspaceLocal as LocalService, ToolRunContext } from "@pibot/brain/kit";
 import { allowedByYolo } from "@pibot/brain/kit";
 import { sensitiveReadBoundary } from "@pibot/execution";
@@ -6,6 +7,31 @@ import { containsPath, explainPolicyResult, type PolicyResult } from "@pibot/pol
 import { ToolCallsRepo } from "@pibot/storage";
 import { RpcError, type WorkspaceSnapshot } from "@pibot/workspaces-contract/full";
 import { auditYolo, authorizationSnapshot, runPermissions, runYolo } from "../runtime.ts";
+
+export class UnansweredWorktreeApproval extends AgentError {
+  constructor() {
+    super("permission_denied");
+  }
+}
+
+const approvalInterruptionCodes = new Set([
+  "approval_expired",
+  "approval_paused",
+  "approval_cancelled",
+  "aborted",
+]);
+
+function approvalInterrupted(error: unknown, signal: AbortSignal) {
+  if (typeof error === "string") return approvalInterruptionCodes.has(error);
+  const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+  return (
+    (typeof code === "string" && approvalInterruptionCodes.has(code)) ||
+    (error instanceof Error &&
+      (approvalInterruptionCodes.has(error.message) ||
+        error.name === "AbortError" ||
+        (error === signal.reason && error.name === "TimeoutError")))
+  );
+}
 
 /** Derived management capabilities exist only for one checked lifecycle operation. */
 export async function groupWorktreeAuthority(
@@ -15,6 +41,7 @@ export async function groupWorktreeAuthority(
   writes: string[],
   signal: AbortSignal,
   stage: "create" | "integrate" | "discard",
+  options?: { planStep: true },
 ) {
   const actor = { ...context, signal };
   const snapshot = authorizationSnapshot(local, actor.botId, actor);
@@ -160,12 +187,21 @@ export async function groupWorktreeAuthority(
                     : "Integrate this parallel task's work into the group workspace",
           },
         );
+      } catch (error) {
+        if (options?.planStep && approvalInterrupted(error, signal))
+          throw new UnansweredWorktreeApproval();
+        throw error;
       } finally {
         calls.update(record.id, {
           status: status === "allowed" ? "done" : "blocked",
           finishedAt: new Date().toISOString(),
         });
       }
+      if (
+        options?.planStep &&
+        (status === "expired" || status === "auto_denied" || status === "cancelled")
+      )
+        throw new UnansweredWorktreeApproval();
       if (status !== "allowed") throw new RpcError(-32602, "group_workspace_not_approved");
     }
   }

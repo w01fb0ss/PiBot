@@ -74,6 +74,7 @@ export function RpcProvider({ children }: { children: ReactNode }) {
       value={{
         ...value,
         consumeNavigation,
+        registerSkillDrop: window.pibotSkillDrop,
       }}
     >
       {children}

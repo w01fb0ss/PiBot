@@ -11,10 +11,12 @@ import {
   type Port,
   RpcError,
 } from "@pibot/protocol";
+import type { KeyboardEvent } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ComposerDraftProvider } from "./composer/composer-drafts.tsx";
 import { shouldSend } from "./composer/input.ts";
+import { NextReplyField, useNextReplySuggestion } from "./composer/NextReplySuggestion.tsx";
 import { ChatScreen } from "./index.tsx";
 import { externalUrl, Markdown } from "./messages/Markdown.tsx";
 
@@ -475,6 +477,46 @@ describe("chat controller over a typed fake brain", () => {
 });
 
 describe("renderer", () => {
+  it("offers the inline command help and accepts it with Tab only at the end of the draft", () => {
+    const edit = vi.fn();
+    const draft = "/Team Calendar ";
+    let onKeyDown: ReturnType<typeof useNextReplySuggestion>["onKeyDown"] | undefined;
+    function Fixture() {
+      const suggestion = useNextReplySuggestion({
+        text: draft,
+        completion: "help",
+        messages: [],
+        topics: [],
+        notices: [],
+        hidden: false,
+        edit,
+        textarea: { current: null },
+      });
+      onKeyDown = suggestion.onKeyDown;
+      return (
+        <NextReplyField suggestion={suggestion}>
+          <textarea value={draft} readOnly />
+        </NextReplyField>
+      );
+    }
+    const html = renderToStaticMarkup(<Fixture />);
+    expect(html).toContain('data-completion="true"');
+    expect(html).toContain("<kbd>Tab</kbd>");
+    expect(html).toContain(`${draft}help`);
+    const tab = (caret: number) =>
+      ({
+        key: "Tab",
+        nativeEvent: { isComposing: false },
+        currentTarget: { selectionStart: caret, selectionEnd: caret },
+        preventDefault: vi.fn(),
+        stopPropagation: vi.fn(),
+      }) as unknown as KeyboardEvent<HTMLTextAreaElement>;
+    expect(onKeyDown?.(tab(0), false)).toBe(false);
+    expect(onKeyDown?.(tab(draft.length), true)).toBe(false);
+    expect(onKeyDown?.(tab(draft.length), false)).toBe(true);
+    expect(edit).toHaveBeenCalledExactlyOnceWith(`${draft}help`);
+  });
+
   it.each(["zh", "en"] as const)(
     "renders the empty state and chat controls with the model moved out of the header in %s",
     async (language) => {

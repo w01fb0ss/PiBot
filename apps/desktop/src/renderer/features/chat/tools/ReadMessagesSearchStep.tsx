@@ -8,6 +8,7 @@ import {
 } from "@pibot/renderer-kit";
 import { Button } from "@pibot/ui";
 import { useRef } from "react";
+import { importedTopicLabel } from "../topics/use-topic-title.ts";
 
 function readSearchOutput(output: string) {
   try {
@@ -65,6 +66,9 @@ export function ReadMessagesSearchStep({ output }: { output: string }) {
               <Button variant="ghost" disabled={!peer || action.busy} onClick={() => open(item)}>
                 {item.title || t("tool.searchHistoryOpen")}
               </Button>{" "}
+              {item.importedFrom && (
+                <span>{importedTopicLabel(t, item.importedFrom.source)} · </span>
+              )}
               <time dateTime={item.createdAt}>{date.format(new Date(item.createdAt))}</time>
               <p>{item.snippet}</p>
             </li>

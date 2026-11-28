@@ -1,7 +1,7 @@
 export const messageActionsZh = {
   "messages.retry": "从这里重来",
   "messages.retryHint":
-    "新建话题，原话题完整保留。所选消息和附件将放入新话题草稿，不会自动发送。新话题不继承 YOLO 或一次性审批。",
+    "新建话题，原话题完整保留。所选消息和附件将放入新话题草稿，不会自动发送。新话题不继承自动批准模式或一次性审批。",
   "messages.retryFiles": "将恢复 {count} 个文件到该消息之前；原话题之后对这些文件的改动会被撤回。",
   "messages.retryNoFiles": "这次只分支会话，不恢复工作文件夹；文件保持当前状态。",
   "messages.retryExternal": "检查点只恢复已捕获的文件，不撤销外部发送或其他系统操作。",
@@ -71,7 +71,7 @@ export const messageActionsZh = {
 export const messageActionsEn: Record<keyof typeof messageActionsZh, string> = {
   "messages.retry": "Retry from here",
   "messages.retryHint":
-    "Create a new topic and keep the original intact. The selected text and attachments become an unsent draft. YOLO and one-time approvals are not inherited.",
+    "Create a new topic and keep the original intact. The selected text and attachments become an unsent draft. Auto-approve mode and one-time approvals are not inherited.",
   "messages.retryFiles":
     "Restore {count} files to before this message. Later changes to these files in the original topic will be undone.",
   "messages.retryNoFiles":

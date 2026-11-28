@@ -1,5 +1,6 @@
 // Settles extraction candidates, coverage, diagnostics and the optional chat receipt.
 
+import type { MemoryDraftResult } from "@pibot/agent";
 import { memoryNoted } from "@pibot/protocol-base";
 import {
   AuditRepo,
@@ -20,7 +21,7 @@ export function settleExtraction(
   health: BackgroundTaskHealthRepo,
   row: MemoryExtraction,
   source: ExtractionSource,
-  result: { draft: unknown; tokens: number; costUsd?: number },
+  result: MemoryDraftResult,
   replyId?: string,
 ) {
   const reply = replyId ? new MessagesRepo(deps.db).get(replyId) : undefined;
@@ -43,13 +44,19 @@ export function settleExtraction(
   repo.diagnostics(row.id, counts);
   const accepted = counts.applied + counts.proposed;
   audit(deps, row, source.messageCount, accepted);
-  const failed = counts.raw && !accepted && !counts.reasons.candidate_duplicate;
+  // Repeating a waiting card or one the person undid is a deliberate skip, not a fault.
+  const failed =
+    counts.raw &&
+    !accepted &&
+    !counts.reasons.candidate_duplicate &&
+    !counts.reasons.candidate_undone;
   repo.finish(row.id, {
     status: failed ? "failed" : "done",
     coverageMessageId: replyId ? null : source.watermarkId,
     tokens: result.tokens,
     costUsd: result.costUsd,
     candidates: accepted,
+    fallback: failed ? undefined : result.fallback,
     error: !counts.raw
       ? "no_candidates"
       : !counts.valid

@@ -6,15 +6,21 @@ import { ChatSearchIndex } from "../conversations/chat-search-index.ts";
 import {
   type Conversation,
   ConversationsRepo,
+  visibleImport,
   visibleImportedRows,
 } from "../conversations/conversations.ts";
+import { readTransaction } from "../database/database.ts";
 import { GroupsRepo } from "../groups/groups.ts";
-import { MessagesRepo } from "../workspace/repositories.ts";
 
 // One page may scan for at most this long, so a rare word in a large history answers with what it
 // found so far plus a cursor instead of holding the brain; "load more" continues from there.
 const PAGE_BUDGET_MS = 120;
 const SCAN_CHUNK = 400;
+/** Probe at most this many FTS hits before switching to newest-first indexed scan. */
+const FTS_DIRECT_LIMIT = 400;
+const SNIPPET_CHARS = 200;
+const SNIPPET_LEAD = 40;
+const RAW_WINDOW = 600;
 
 const visible = `c.archived_at IS NULL AND c.internal_task_id IS NULL
   AND ${visibleImportedRows("c.import_id")}
@@ -35,6 +41,43 @@ function decode(cursor: string | undefined): Cursor | undefined {
   return CursorSchema.parse(JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")));
 }
 
+function trimSurrogateEdges(text: string, start: number, end: number) {
+  let s = start;
+  let e = end;
+  if (s > 0 && text.charCodeAt(s) >= 0xdc00 && text.charCodeAt(s) <= 0xdfff) s--;
+  if (e < text.length && text.charCodeAt(e - 1) >= 0xd800 && text.charCodeAt(e - 1) <= 0xdbff) e++;
+  return [s, e] as const;
+}
+
+/** Bounded excerpt around the first match so large message bodies never cross RPC. */
+function buildSnippet(content: string, query: string): string {
+  const folded = content.toLowerCase();
+  const needle = query.toLowerCase();
+  const hit = folded.length === content.length ? folded.indexOf(needle) : -1;
+  const rawStart = hit >= 0 ? Math.max(0, hit - SNIPPET_LEAD * 2) : 0;
+  const rawEnd = Math.min(content.length, rawStart + RAW_WINDOW);
+  const [sliceStart, sliceEnd] = trimSurrogateEdges(content, rawStart, rawEnd);
+  const cleaned = content
+    .slice(sliceStart, sliceEnd)
+    .replace(/```[^\n]*/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  if (cleaned.length <= SNIPPET_CHARS) {
+    return `${sliceStart > 0 ? "…" : ""}${cleaned}${sliceEnd < content.length ? "…" : ""}`;
+  }
+  const cFolded = cleaned.toLowerCase();
+  const cHit = cFolded.length === cleaned.length ? cFolded.indexOf(needle) : -1;
+  const winEnd = Math.min(
+    cleaned.length,
+    Math.max(0, (cHit >= 0 ? cHit : 0) - SNIPPET_LEAD) + SNIPPET_CHARS,
+  );
+  const winStart = Math.max(0, winEnd - SNIPPET_CHARS);
+  const [s, e] = trimSurrogateEdges(cleaned, winStart, winEnd);
+  const prefix = sliceStart > 0 || s > 0 ? "…" : "";
+  const suffix = sliceEnd < content.length || e < cleaned.length ? "…" : "";
+  return `${prefix}${cleaned.slice(s, e).trim()}${suffix}`;
+}
+
 export class SearchRepo {
   constructor(private readonly db: DatabaseSync) {}
   query(input: {
@@ -46,8 +89,7 @@ export class SearchRepo {
       pattern = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
     const from = decode(cursor);
     const bots = new BotsRepo(this.db),
-      groups = new GroupsRepo(this.db),
-      messages = new MessagesRepo(this.db);
+      groups = new GroupsRepo(this.db);
     // Chats are few and fully listed on the first page; later pages only continue the messages.
     const botRows = from
       ? []
@@ -70,19 +112,20 @@ export class SearchRepo {
             `SELECT id FROM conversations c WHERE ${visible} AND kind IN ('dm','group') AND title LIKE ? ESCAPE '\\' ORDER BY updated_at DESC,id DESC LIMIT ?`,
           )
           .all(pattern, limit);
-    const page =
+    const page = readTransaction(this.db, () =>
       Array.from(query).length >= 3 && !new ChatSearchIndex(this.db).pending()
-        ? this.indexed(query, limit, from)
-        : this.scanned(pattern, limit, from);
+        ? this.indexed(query, pattern, limit, from)
+        : this.scanned(pattern, limit, from),
+    );
     const conversations = new ConversationsRepo(this.db),
-      found = page.ids.map((id) => messages.get(id)).filter((m) => m !== undefined),
-      pick = ({ id, kind, botId, groupId, title, readOnly, importSource }: Conversation) => ({
+      found = this.loadMessages(page.ids, query),
+      pick = ({ id, kind, botId, groupId, title, importSource }: Conversation) => ({
         id,
         kind,
         botId,
         groupId,
         title,
-        ...(readOnly ? { readOnly, importSource } : {}),
+        ...(importSource ? { importSource } : {}),
       });
     return {
       topics: topics
@@ -100,17 +143,70 @@ export class SearchRepo {
     };
   }
 
-  /** Three or more characters: the trigram index of chats (redacted text) finds every match. */
-  private indexed(query: string, limit: number, from: Cursor | undefined) {
+  private loadMessages(
+    ids: string[],
+    query: string,
+  ): KernelMethodResults["search.query"]["messages"] {
+    if (!ids.length) return [];
+    const placeholders = ids.map(() => "?").join(",");
     const rows = this.db
       .prepare(
-        `SELECT m.id,m.created_at AS at,m.rowid AS row FROM chat_search_fts
-        JOIN chat_search_documents d ON d.rowid=chat_search_fts.rowid
-        JOIN messages m ON m.id=d.message_id JOIN conversations c ON c.id=m.conversation_id
-        WHERE chat_search_fts MATCH $match AND ${visible} ${from ? seek : ""} ${order} LIMIT $limit`,
+        `SELECT id, import_id IS NOT NULL AS imported, conversation_id AS conversationId, role,
+          content, status, run_id AS runId, error_code AS errorCode, bot_id AS botId,
+          created_at AS createdAt, updated_at AS updatedAt
+        FROM messages WHERE id IN (${placeholders}) AND ${visibleImport}`,
       )
+      .all(...ids);
+    const byId = new Map(rows.map((row) => [String(row.id), row]));
+    const schema = KernelMethods["search.query"].result.shape.messages.element;
+    const found: KernelMethodResults["search.query"]["messages"] = [];
+    for (const id of ids) {
+      const row = byId.get(id);
+      if (!row) continue;
+      const snippet = buildSnippet(String(row.content ?? ""), query);
+      found.push(
+        schema.parse({
+          id: String(row.id),
+          conversationId: String(row.conversationId),
+          role: row.role,
+          content: snippet,
+          snippet,
+          status: row.status,
+          runId: row.runId,
+          errorCode: row.errorCode,
+          botId: row.botId,
+          usage: null,
+          createdAt: row.createdAt,
+          updatedAt: row.updatedAt,
+          ...(row.imported === 1 ? { imported: true } : {}),
+        }),
+      );
+    }
+    return found;
+  }
+
+  /** Three or more characters: probe the trigram index with a cap before sorting by time. */
+  private indexed(query: string, pattern: string, limit: number, from: Cursor | undefined) {
+    const cap = Math.max(FTS_DIRECT_LIMIT, limit + 1);
+    const matched = this.db
+      .prepare("SELECT rowid FROM chat_search_fts WHERE chat_search_fts MATCH $match LIMIT $cap")
       .all({
         $match: `body:"${query.replaceAll('"', '""')}"`,
+        $cap: cap + 1,
+      }) as { rowid: number }[];
+    if (!matched.length) return { ids: [], next: null };
+    // High-frequency term: avoid joining and temp-sorting tens of thousands of FTS hits;
+    // the newest-first scan over the created_at index finds the top page in milliseconds.
+    if (matched.length > cap) return this.scanned(pattern, limit, from);
+    const placeholders = matched.map((_, index) => `$r${index}`).join(",");
+    const rows = this.db
+      .prepare(
+        `SELECT m.id,m.created_at AS at,m.rowid AS row FROM chat_search_documents d
+        JOIN messages m ON m.id=d.message_id JOIN conversations c ON c.id=m.conversation_id
+        WHERE d.rowid IN (${placeholders}) AND ${visible} ${from ? seek : ""} ${order} LIMIT $limit`,
+      )
+      .all({
+        ...Object.fromEntries(matched.map(({ rowid }, index) => [`$r${index}`, Number(rowid)])),
         $limit: limit + 1,
         ...(from ? { $at: from.at, $row: from.row } : {}),
       }) as Position[];

@@ -1,0 +1,68 @@
+.path {
+  display: block;
+  margin: 4px 0 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--b1);
+  border-radius: 8px;
+  background: var(--side);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.usageRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-top: 6px;
+  color: var(--text2);
+  font-size: 12px;
+}
+.link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.link:hover:not(:disabled) {
+  text-decoration: underline;
+}
+.link:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.cleanupControls {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.estimate {
+  margin: 6px 0 0;
+  color: var(--text2);
+  font-size: 12px;
+}
+.errorRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-top: 6px;
+  color: var(--danger);
+  font-size: 12px;
+}
+.inlineError {
+  color: var(--danger);
+}

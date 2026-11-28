@@ -4,8 +4,8 @@ import styles from "./Tabs.module.css";
 export interface TabOption<T extends string> {
   value: T;
   label: string;
-  /** A count after the label ("项目 3"); absent hides it. */
-  count?: number;
+  /** A count after the label ("项目 3", or "50+" for a paged list); absent hides it. */
+  count?: number | string;
 }
 
 export interface TabsProps<T extends string> {

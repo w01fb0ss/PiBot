@@ -39,6 +39,8 @@ export const CATEGORY_LOOK: Record<Category, [IconName, Tone]> = {
   agent_delegation: ["bot", "teal"],
   bot_management: ["users", "violet"],
   work_dispatch: ["arrow", "blue"],
+  pi_repair: ["shield", "green"],
+  settings_change: ["settings", "blue"],
 };
 
 export function LevelRow({

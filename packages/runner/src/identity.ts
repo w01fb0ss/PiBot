@@ -283,7 +283,7 @@ export interface RunnerIdentity {
 export interface RunnerIdentityOptions {
   /** Private identity subdirectory directly under the runner data root. */
   directory: string;
-  passphrase(): Promise<string>;
+  passphrase(creating: boolean): Promise<string>;
   /**
    * A headless start that supplied PIBOT_RUNNER_PASSPHRASE chose the encrypted file for a NEW
    * identity. Without this a server whose Secret Service exists but cannot be used unattended
@@ -350,17 +350,17 @@ export async function openRunnerIdentity(options: RunnerIdentityOptions): Promis
     }
     backend = "system";
   } else if (metadata?.backend === "file") {
-    seed = await decryptSeed(encryptedPath, await options.passphrase());
+    seed = await decryptSeed(encryptedPath, await options.passphrase(false));
     backend = "file";
   } else if (await exists(encryptedPath)) {
     // Encryption is committed before metadata. Recover that exact seed after a crash instead of
     // creating a different system identity when a keychain appears between launches.
-    seed = await decryptSeed(encryptedPath, await options.passphrase());
+    seed = await decryptSeed(encryptedPath, await options.passphrase(false));
     backend = "file";
   } else if (options.preferFile) {
     const candidate = randomBytes(32);
     try {
-      await encryptSeed(encryptedPath, candidate, await options.passphrase());
+      await encryptSeed(encryptedPath, candidate, await options.passphrase(true));
       seed = candidate;
     } catch (error) {
       candidate.fill(0);
@@ -381,7 +381,7 @@ export async function openRunnerIdentity(options: RunnerIdentityOptions): Promis
           : new RunnerIdentityError("system_credentials_failed");
       const candidate = randomBytes(32);
       try {
-        await encryptSeed(encryptedPath, candidate, await options.passphrase());
+        await encryptSeed(encryptedPath, candidate, await options.passphrase(true));
         seed = candidate;
       } catch (fileError) {
         candidate.fill(0);

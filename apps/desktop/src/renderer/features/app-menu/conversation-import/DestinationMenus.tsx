@@ -12,11 +12,13 @@ const MENU_WIDTH = 300;
 /** A chip that opens the app menu right-aligned under it, kept inside the dialog. */
 function ChipMenu({
   label,
+  title,
   chip,
   disabled,
   children,
 }: {
   label: string;
+  title?: string;
   chip: ReactNode;
   disabled?: boolean;
   children(close: () => void): ReactNode;
@@ -29,7 +31,7 @@ function ChipMenu({
         type="button"
         className={styles.chip}
         aria-label={label}
-        title={label}
+        title={title ?? label}
         aria-haspopup="menu"
         aria-expanded={!!menu}
         disabled={disabled}
@@ -169,7 +171,12 @@ export function DestinationChip({
 
 export type ProjectTargets = Plan["projects"][number];
 
-/** How a folder target reads on its chip and in the menu. */
+function pathBasename(path: string) {
+  const parts = path.split(/[\\/]+/u).filter(Boolean);
+  return parts.at(-1) ?? path;
+}
+
+/** How a folder target reads in the menu (full display path). */
 export function folderLabel(
   folder: FolderTarget,
   plan: Plan,
@@ -184,6 +191,33 @@ export function folderLabel(
   return target.newExists
     ? target.newDisplay
     : t("conversationImport.folderNew", { path: target.newDisplay });
+}
+
+/** Short folder name (basename) for the compact preview chip so the folder name isn't clipped. */
+function folderChipLabel(
+  folder: FolderTarget,
+  plan: Plan,
+  target: ProjectTargets | undefined,
+  t: ReturnType<typeof useT>,
+) {
+  if (folder.kind === "folder") {
+    const entry = plan.folders.find(({ id }) => id === folder.folderId);
+    return entry ? entry.name || pathBasename(entry.display) : "";
+  }
+  if (folder.kind === "source") return target?.source ? pathBasename(target.source) : "";
+  if (folder.kind === "home") return t("folders.home");
+  if (!target) return "";
+  const base = pathBasename(target.newDisplay);
+  return target.newExists ? base : t("conversationImport.folderNew", { path: base });
+}
+
+/** Full display path shown in the folder chip tooltip. */
+function folderFullPath(folder: FolderTarget, plan: Plan, target: ProjectTargets | undefined) {
+  if (folder.kind === "folder")
+    return plan.folders.find(({ id }) => id === folder.folderId)?.display;
+  if (folder.kind === "source") return target?.source;
+  if (folder.kind === "new") return target?.newDisplay;
+  return undefined;
 }
 
 /** 放进 [folder ▾]: used work folders, the project's own folder, ~/Documents/<name>, or pick. */
@@ -204,9 +238,11 @@ export function FolderChip({
 }) {
   const t = useT();
   const folderTile = <IconTile icon="folder" tone="orange" size="lg" />;
+  const fullPath = folderFullPath(value, plan, target);
   return (
     <ChipMenu
       label={t("conversationImport.folderMenu")}
+      title={fullPath ?? t("conversationImport.folderMenu")}
       disabled={disabled}
       chip={
         <>
@@ -216,7 +252,7 @@ export function FolderChip({
             className={styles.folderIcon}
           />
           <span className={styles.chipLabel} dir="auto">
-            {folderLabel(value, plan, target, t)}
+            {folderChipLabel(value, plan, target, t)}
           </span>
         </>
       }

@@ -213,10 +213,8 @@ export const permissionOptionKind = z.enum([
 export const permissionOption = z.looseObject({
   optionId: id,
   name: label,
-  kind: z
-    .string()
-    .max(40)
-    .transform((value) => permissionOptionKind.catch("reject_once").parse(value)),
+  // Selecting an option returns its opaque ID. Only accept kinds whose effect ACP defines.
+  kind: permissionOptionKind,
 });
 export const requestPermissionParams = z.looseObject({
   sessionId: id,

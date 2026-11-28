@@ -7,6 +7,7 @@ import { teamExportFilename } from "../host/team-file-io.ts";
 export function createGuiHost(
   window: BrowserWindow,
   port: Port,
+  takeSkillDrop: (params: { dropId: string }) => string[] | null,
   setUpdateProxy: (url: string | null | undefined) => Promise<void>,
 ) {
   const peer = createPeer(port, { methods: GuiHostMethods, events: {} });
@@ -45,7 +46,11 @@ export function createGuiHost(
             : kind === "skill-import"
               ? skillDialogOptions
               : kind === "file"
-                ? { properties: ["openFile"], defaultPath: params.defaultPath }
+                ? {
+                    properties: ["openFile"],
+                    defaultPath: params.defaultPath,
+                    ...(params.filters?.length ? { filters: params.filters } : {}),
+                  }
                 : kind === "plugin-file"
                   ? {
                       properties: ["openFile"],
@@ -61,6 +66,10 @@ export function createGuiHost(
     } finally {
       busy = false;
     }
+  });
+  peer.handle("gui.skills.takeDrop", async (params) => {
+    check();
+    return takeSkillDrop(params);
   });
   peer.handle("gui.openPath", async ({ path }) => {
     check();

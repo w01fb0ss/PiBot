@@ -5,12 +5,13 @@ import {
   BinaryPublicationError,
   ExecError,
   libreOfficeInstalled,
+  libreOfficePlatformSupported,
   owningWriteRoot,
   probeOfficeConverter,
 } from "@pibot/execution";
 import type { OfficeFormat, OfficeToolInput } from "@pibot/office-contract/full";
 import { officeAuthor } from "./author.ts";
-import { executeConvert } from "./convert-execute.ts";
+import { executeConvert, LIBREOFFICE_NOTES } from "./convert-execute.ts";
 import { OFFICE_FAILURES, OfficeError } from "./errors.ts";
 import { officeFileContext } from "./file-context.ts";
 import { readOfficeImages } from "./images.ts";
@@ -87,9 +88,11 @@ export async function executeOffice(
               "pptx→markdown outline",
               "markdown outline→pptx",
             ],
-            libreOffice: libreOfficeInstalled(local.deps.platform, local.deps.env)
-              ? "available: docx/xlsx/pptx/doc/xls/ppt→pdf and doc/xls/ppt→ooxml run one fixed headless LibreOffice recipe inside the command sandbox"
-              : "not installed: docx/xlsx/pptx/doc/xls/ppt→pdf and doc/xls/ppt→ooxml need LibreOffice on this computer; Pi Bot never installs it for you",
+            libreOffice: !libreOfficePlatformSupported(local.deps.platform)
+              ? LIBREOFFICE_NOTES.libreoffice_platform_unsupported
+              : libreOfficeInstalled(local.deps.platform, local.deps.env)
+                ? "available: docx/xlsx/pptx/doc/xls/ppt→pdf and doc/xls/ppt→ooxml run one fixed headless LibreOffice recipe inside the command sandbox"
+                : "not installed: docx/xlsx/pptx/doc/xls/ppt→pdf and doc/xls/ppt→ooxml need LibreOffice on this computer; Pi Bot never installs it for you",
           },
           render:
             local.deps.host.office?.render &&

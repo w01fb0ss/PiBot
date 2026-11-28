@@ -15,7 +15,8 @@ export function sameMemoryRevision(a: Memory | null, b: Memory | null) {
 }
 
 export class SimilarMemoryError extends Error {
-  constructor(readonly memory: Memory) {
+  /** Without a memory, the match is a proposal that is still waiting for the person. */
+  constructor(readonly memory?: Memory) {
     super("memory_similar");
   }
 }
@@ -71,6 +72,21 @@ export function similarMemoryId(db: DatabaseSync, owner: MemoryOwner, text: stri
   return candidates.find((row) => similar(normalized, normalizeMemory(String(row.text))))?.id as
     | string
     | undefined;
+}
+
+/**
+ * Two sources (the Bot's memory_add and background extraction, say) proposing the same new note
+ * left two identical cards waiting; the second adds nothing the person has not been asked yet.
+ */
+export function similarPendingAdd(db: DatabaseSync, owner: MemoryOwner, text: string) {
+  const normalized = normalizeMemory(text);
+  return db
+    .prepare(
+      `SELECT text FROM scoped_memory_proposals WHERE scope=? AND owner_id=? AND status='pending'
+      AND action='add' ORDER BY created_at DESC LIMIT 50`,
+    )
+    .all(owner.scope, owner.ownerId)
+    .some((row) => similar(normalized, normalizeMemory(String(row.text))));
 }
 
 export function migrateMemorySearch(db: DatabaseSync) {

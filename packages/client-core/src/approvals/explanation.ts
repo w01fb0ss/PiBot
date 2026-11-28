@@ -39,6 +39,9 @@ const reasonKeys: Record<string, TranslationKey> = {
   bot_attachment: "policy.reason.bot_attachment",
   category_unavailable: "policy.reason.category_unavailable",
   pi_manager_main_only: "policy.reason.pi_manager_main_only",
+  pi_repair_confirm: "policy.reason.pi_repair_confirm",
+  settings_security_confirm: "policy.reason.settings_security_confirm",
+  settings_security_unattended: "policy.reason.settings_security_unattended",
   connector_metadata: "policy.reason.connector_metadata",
   connector_draft_only: "policy.reason.connector_draft_only",
   routine_preauth_unavailable: "policy.reason.routine_preauth_unavailable",
@@ -66,6 +69,10 @@ const reasonKeys: Record<string, TranslationKey> = {
   invalid_image_recipient: "policy.reason.invalid_image_recipient",
   configured_image_service: "policy.reason.configured_image_service",
   paid_generation_confirmation: "policy.reason.paid_generation_confirmation",
+  video_generation_confirmation: "policy.reason.video_generation_confirmation",
+  video_model_unavailable: "policy.reason.video_model_unavailable",
+  video_default_unavailable: "policy.reason.video_default_unavailable",
+  video_no_models: "policy.reason.video_no_models",
   configured_search_endpoint: "policy.reason.configured_search_endpoint",
   own_local_service: "policy.reason.own_local_service",
   private_network_confirmation: "policy.reason.private_network_confirmation",
@@ -106,6 +113,7 @@ const reasonKeys: Record<string, TranslationKey> = {
   secret_write_out: "policy.reason.secret_write_out",
   connector_unavailable: "policy.reason.connector_unavailable",
   connector_tool_denied: "policy.reason.connector_tool_denied",
+  connector_network_confirmation: "policy.reason.connector_network_confirmation",
   connector_confirmation_required: "policy.reason.connector_confirmation_required",
   connector_read_only_mode: "policy.reason.connector_read_only_mode",
   connector_access: "policy.reason.connector_access",
@@ -187,6 +195,7 @@ const reasonKeys: Record<string, TranslationKey> = {
   permission_narrowed: "policy.reason.permission_narrowed",
   invalid_tool_input: "policy.reason.invalid_tool_input",
   tool_authorization_refused: "policy.reason.tool_authorization_refused",
+  pi_dispatch_model_unavailable: "policy.reason.pi_dispatch_model_unavailable",
   stopped: "policy.reason.stopped",
 };
 
@@ -235,6 +244,7 @@ export function approvalExplanation(
     (step) =>
       ["allow", "ask", "deny"].includes(step.effect) && step.code !== "current_policy_decision",
   );
+  const summaryReason = last ? explain(last) : undefined;
   return {
     summary: last
       ? t(
@@ -243,15 +253,14 @@ export function approvalExplanation(
             : last.effect === "allow"
               ? "policy.whyAllowed"
               : "policy.whyAsk",
-          { reason: explain(last) },
+          { reason: summaryReason ?? "" },
         )
       : "",
     label: t("policy.details"),
-    steps: chain.map((step) =>
-      t("policy.step", {
-        reason: explain(step),
-        effect: t(`policy.effect.${step.effect}`),
-      }),
-    ),
+    steps: chain.flatMap((step) => {
+      const reason = explain(step);
+      if (step.effect === last?.effect && reason === summaryReason) return [];
+      return [t("policy.step", { reason, effect: t(`policy.effect.${step.effect}`) })];
+    }),
   };
 }

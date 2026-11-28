@@ -9,9 +9,10 @@ import {
 } from "../adapter.ts";
 import { LONG_MESSAGE_CHARS } from "../limits.ts";
 import { jsonArray } from "./json-array.ts";
-import { zipMember } from "./zip-member.ts";
+import { zipTakeoutGeminiMember } from "./zip-member.ts";
 
 const ENTRY = "Takeout/My Activity/Gemini Apps/MyActivity.json";
+const MAX_JSON_BYTES = 512 * 1024 * 1024;
 const geminiNames = new Set([
   "gemini",
   "gemini apps",
@@ -19,6 +20,10 @@ const geminiNames = new Set([
   "gemini 应用",
   "gemini应用",
   "gemini 应用活动",
+  "gemini 應用程式",
+  "gemini應用程式",
+  "gemini アプリ",
+  "gemini-apps",
   "bard",
 ]);
 const text = z.string().trim().min(1);
@@ -64,7 +69,8 @@ function answerText(html: string) {
 }
 
 function isGeminiName(value: string) {
-  return geminiNames.has(value.trim().toLowerCase());
+  const lower = value.trim().toLowerCase();
+  return geminiNames.has(lower) || /\bgemini\b/.test(lower);
 }
 
 function replyText(structured: unknown) {
@@ -93,13 +99,36 @@ function classify(raw: unknown) {
   return { userText, answer, createdAt: new Date(time).toISOString() };
 }
 
+async function isZipFile(file: {
+  size: number;
+  read(offset: number, length: number): Promise<Buffer>;
+}) {
+  if (file.size < 4) return false;
+  const sig = (await file.read(0, 4)).readUInt32LE(0);
+  return sig === 0x04034b50 || sig === 0x06054b50;
+}
+
+async function* fileChunks(
+  file: { size: number; read(offset: number, length: number): Promise<Buffer> },
+  signal: AbortSignal,
+) {
+  const chunk = 64 * 1024;
+  for (let offset = 0; offset < file.size; offset += chunk) {
+    signal.throwIfAborted();
+    yield await file.read(offset, Math.min(chunk, file.size - offset));
+  }
+}
+
 async function* activityRecords(
   input: ImportInput,
   signal: AbortSignal,
 ): AsyncIterable<ImportRecord | { kind: "skipped" }> {
   if (!input.file) throw new ImportFailure("unsupported");
   for await (const file of input.file(signal)) {
-    for await (const item of jsonArray(zipMember(file, ENTRY, signal), signal)) {
+    const zip = await isZipFile(file);
+    if (!zip && file.size > MAX_JSON_BYTES) throw new ImportFailure("limit");
+    const stream = zip ? zipTakeoutGeminiMember(file, ENTRY, signal) : fileChunks(file, signal);
+    for await (const item of jsonArray(stream, signal)) {
       const turn = classify(item);
       if (!turn) {
         yield { kind: "skipped" };

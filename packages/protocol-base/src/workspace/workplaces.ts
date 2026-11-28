@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { WorkspaceSnapshot } from "../core/boundaries.ts";
-import { ExecutionLocationTargetSchema } from "../core/boundaries.ts";
+import { AbsolutePathSchema, ExecutionLocationTargetSchema } from "../core/boundaries.ts";
 import { IdSchema } from "../core/ids.ts";
 
 const text = z.string().min(1);
@@ -9,6 +9,7 @@ const count = z.number().int().nonnegative().safe();
 export const WorkingFolderSchema = z.strictObject({
   id: IdSchema,
   path: text,
+  displayPath: AbsolutePathSchema.optional(),
   location: ExecutionLocationTargetSchema.optional(),
   name: text,
   role: z.enum(["primary", "readonly", "writable"]).optional(),
@@ -129,6 +130,8 @@ export type RunnerBrowse = z.infer<typeof RunnerBrowseSchema>;
 /** A run's resolved workplace; pure contract used by collaboration and capability ports. */
 export interface ResolvedWorkplace {
   value: Workplaces;
+  /** Display spellings for roots that the policy workplace keeps separately, such as group folders. */
+  displayFolders?: readonly { path: string; displayPath?: string }[];
   cwd: string;
   roots: string[];
   home: string;

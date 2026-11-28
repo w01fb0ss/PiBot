@@ -60,7 +60,7 @@ export function LiveIslandSettings({
         </SettingsLine>
       )}
       <SettingsRow
-        icon="island"
+        icon="eye"
         tone="violet"
         label={t("liveIsland.content")}
         note={t("liveIsland.contentNote")}
@@ -77,7 +77,7 @@ export function LiveIslandSettings({
         />
       </SettingsRow>
       <SettingsRow
-        icon="island"
+        icon="check"
         tone="violet"
         label={t("liveIsland.kinds")}
         note={t("liveIsland.kindsNote")}

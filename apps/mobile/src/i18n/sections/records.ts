@@ -2,6 +2,8 @@
 // outcomes and fact labels come from the desktop's shared catalog (@pibot/i18n activity/audit).
 export const recordsZh = {
   records: "记录",
+  viewRecords: "查看记录",
+  viewRunRecord: "查看本次运行记录",
   recordsNote: "电脑上的运行记录 · 只读 · 最近 3 天",
   recordsOffline: "电脑离线，显示的是上次同步的记录。",
   recordFilterAll: "全部",
@@ -42,7 +44,7 @@ export const recordsZh = {
   recordStarted: "开始时间",
   recordFinished: "结束时间",
   recordDuration: "用时",
-  recordError: "错误代码",
+  recordError: "失败原因",
   recordStatus: "状态",
   recordPlace: "所在聊天",
   recordCommand: "完整命令",
@@ -50,6 +52,8 @@ export const recordsZh = {
 } as const;
 export const recordsEn: Record<keyof typeof recordsZh, string> = {
   records: "Records",
+  viewRecords: "View records",
+  viewRunRecord: "View this run’s record",
   recordsNote: "Run records from your computer · read-only · last 3 days",
   recordsOffline: "Computer offline. Showing the last synced records.",
   recordFilterAll: "All",
@@ -93,7 +97,7 @@ export const recordsEn: Record<keyof typeof recordsZh, string> = {
   recordStarted: "Started",
   recordFinished: "Finished",
   recordDuration: "Duration",
-  recordError: "Error code",
+  recordError: "Reason",
   recordStatus: "Status",
   recordPlace: "Chat",
   recordCommand: "Full command",

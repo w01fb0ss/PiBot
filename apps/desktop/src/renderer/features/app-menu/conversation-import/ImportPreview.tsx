@@ -1,9 +1,9 @@
 import { useT } from "@pibot/renderer-kit";
 import { Button, Tabs } from "@pibot/ui";
 import { Fragment, type ReactNode, useState } from "react";
-import { ChatRows, MemoryRows, RoleRows } from "./ContentRows.tsx";
+import { ChatRows, formatQuoteCost, MemoryRows, RoleRows } from "./ContentRows.tsx";
 import styles from "./conversation-import.module.css";
-import { localSources, marks, type Preview } from "./import-state.ts";
+import { localSources, marks, type Preview, sourceLogos } from "./import-state.ts";
 import { ProjectRows } from "./ProjectRows.tsx";
 import type { ImportDraft } from "./use-import-draft.ts";
 
@@ -30,8 +30,6 @@ export function ImportPreview({
 }) {
   const t = useT();
   const { plan } = draft;
-  const projectChats = (preview.projects ?? []).reduce((sum, { topics }) => sum + topics, 0);
-  const otherChats = preview.topics - projectChats;
   const tabs = plan
     ? [
         ...(preview.projects?.length
@@ -48,11 +46,11 @@ export function ImportPreview({
               {
                 value: "memories" as const,
                 label: t("conversationImport.tab.memories"),
-                count: plan.memories.length,
+                count: draft.memories.filter((memory) => draft.memoryOn(memory)).length,
               },
             ]
           : []),
-        ...(otherChats > 0
+        ...(preview.topics > 0
           ? [
               {
                 value: "chats" as const,
@@ -73,59 +71,82 @@ export function ImportPreview({
   // The fixture source only exists in tests; it has no tile of its own.
   const source = preview.source === "fixture" ? undefined : preview.source;
   const local = !!source && localSources.has(source);
+  const logo = source ? sourceLogos[source] : undefined;
   return (
-    <div className={styles.preview}>
-      <div className={styles.strip}>
-        <span className={styles.monogram} aria-hidden="true">
-          {source ? marks[source] : "?"}
-        </span>
-        <span className={styles.stripText}>
-          <strong>
-            {t(local ? "conversationImport.sourceLocal" : "conversationImport.sourceExport", {
-              source: t(`conversationImport.source.${preview.source}`),
-            })}
-          </strong>
-          <small>
-            {from && through ? `${t("conversationImport.dateRange", { from, through })} · ` : ""}
-            {t("conversationImport.readLocally")}
-          </small>
-        </span>
-      </div>
-      {!plan ? (
-        <p className={styles.intro} role="status">
-          {t("conversationImport.loading.plan")}
-        </p>
-      ) : tabs.length === 0 ? (
-        <p className={styles.intro}>{t("conversationImport.empty")}</p>
-      ) : (
-        <>
-          {tabs.length > 1 && (
-            <Tabs
-              className={styles.tabs}
-              label={t("conversationImport.preview")}
-              tabs={tabs}
-              value={tab ?? "projects"}
-              onValueChange={setTab}
-            />
+    <div className={styles.preview} data-dialog-body="split">
+      <div className={styles.scrollBody}>
+        <div className={styles.strip}>
+          {logo ? (
+            <img className={styles.stripLogo} src={logo} alt="" aria-hidden="true" />
+          ) : (
+            <span className={styles.monogram} aria-hidden="true">
+              {source ? marks[source] : "?"}
+            </span>
           )}
-          <div className={styles.panel} role={tabs.length > 1 ? "tabpanel" : undefined}>
-            {tab === "projects" && (
-              <ProjectRows draft={draft} preview={preview} plan={plan} disabled={disabled} />
+          <span className={styles.stripText}>
+            <strong>
+              {t(local ? "conversationImport.sourceLocal" : "conversationImport.sourceExport", {
+                source: t(`conversationImport.source.${preview.source}`),
+              })}
+            </strong>
+            <small>
+              {from && through ? `${t("conversationImport.dateRange", { from, through })} · ` : ""}
+              {t("conversationImport.readLocally")}
+            </small>
+          </span>
+        </div>
+        {!plan ? (
+          <p className={styles.intro} role="status">
+            {t("conversationImport.loading.plan")}
+          </p>
+        ) : tabs.length === 0 ? (
+          <p className={styles.intro}>{t("conversationImport.empty")}</p>
+        ) : (
+          <>
+            {tabs.length > 1 && (
+              <Tabs
+                className={styles.tabs}
+                label={t("conversationImport.preview")}
+                tabs={tabs}
+                value={tab ?? "projects"}
+                onValueChange={setTab}
+              />
             )}
-            {tab === "memories" && <MemoryRows draft={draft} plan={plan} disabled={disabled} />}
-            {tab === "chats" && (
-              <>
-                <ChatRows draft={draft} preview={preview} disabled={disabled} />
-                <RoleRows draft={draft} plan={plan} disabled={disabled} />
-              </>
-            )}
-            {tab === "role" && <RoleRows draft={draft} plan={plan} disabled={disabled} />}
-          </div>
-        </>
-      )}
-      <PreviewNotes preview={preview} />
-      {error}
+            <div className={styles.panel} role={tabs.length > 1 ? "tabpanel" : undefined}>
+              {tab === "projects" && (
+                <ProjectRows draft={draft} preview={preview} plan={plan} disabled={disabled} />
+              )}
+              {tab === "memories" && <MemoryRows draft={draft} plan={plan} disabled={disabled} />}
+              {tab === "chats" && (
+                <>
+                  <ChatRows draft={draft} preview={preview} disabled={disabled} />
+                  <RoleRows draft={draft} plan={plan} disabled={disabled} />
+                </>
+              )}
+              {tab === "role" && <RoleRows draft={draft} plan={plan} disabled={disabled} />}
+            </div>
+          </>
+        )}
+        <PreviewNotes preview={preview} />
+        {error}
+      </div>
       <footer className={styles.footer}>
+        {draft.distillationOn && draft.quote && (
+          <p className={styles.footerDisclosure} role="status">
+            {draft.quote.local
+              ? t("conversationImport.confirmDistilLocal", { model: draft.quote.modelName })
+              : draft.quote.costUsd === null
+                ? t("conversationImport.confirmDistilCloudUnknown", {
+                    provider: draft.quote.providerName,
+                    model: draft.quote.modelName,
+                  })
+                : t("conversationImport.confirmDistilCloud", {
+                    provider: draft.quote.providerName,
+                    model: draft.quote.modelName,
+                    cost: formatQuoteCost(draft.quote.costUsd),
+                  })}
+          </p>
+        )}
         <span className={styles.summary} role="status">
           <Summary draft={draft} preview={preview} />
         </span>
@@ -181,6 +202,7 @@ function PreviewNotes({ preview }: { preview: Preview }) {
   const t = useT();
   const fields = [
     ["longMessages", preview.longMessages],
+    ["skippedTooLong", preview.skippedTooLong],
     ["skippedRecords", preview.skippedRecords],
     ["skippedAttachments", preview.exportDetails?.skippedAttachments],
     ["skippedFiles", preview.exportDetails?.skippedFiles],

@@ -1,7 +1,13 @@
 // The brain kernel uses these wire contracts before product capabilities are composed.
 import { z } from "zod";
 import { ProxyAddressSchema } from "../app/network-proxy.ts";
-import { AcpEvents, AcpMethods } from "../execution/independent-background.ts";
+import { ImageGenerationOptionsSchema, MAX_GENERATED_IMAGES } from "../chat/media.ts";
+import {
+  AcpEvents,
+  AcpMethods,
+  FileDialogFilterSchema,
+} from "../execution/independent-background.ts";
+import { SkillDropPathsSchema } from "../skills/skill-drop.ts";
 import {
   AbsolutePathSchema,
   AgentErrorCodeSchema,
@@ -77,7 +83,6 @@ import {
   KnowledgeDetectHostMethods,
   KnowledgeOpenHostMethods,
   MAX_ATTACHMENTS,
-  MAX_REPLY_ATTACHMENTS,
   MemoryEvents,
   MemoryMethods,
   MessageActionMethods,
@@ -168,7 +173,7 @@ export const KernelEvents = {
     ...ChatRouteFields,
     runId: IdSchema,
     messageId: IdSchema,
-    attachments: z.array(AttachmentSchema).max(MAX_REPLY_ATTACHMENTS),
+    attachments: z.array(AttachmentSchema).max(MAX_GENERATED_IMAGES),
   }),
   "chat.done": z.strictObject({
     ...ChatRouteFields,
@@ -238,12 +243,14 @@ export const KernelEventEnvelopeSchema = z.discriminatedUnion("method", [
   eventSchema("groups.resources.changed"),
   eventSchema("inbox.changed"),
   eventSchema("sidebar.changed"),
+  eventSchema("sidebar.topicsChanged"),
   eventSchema("runtime.health"),
   eventSchema("runtime.commands"),
   eventSchema("runtime.activeRuns"),
   eventSchema("runtime.liveActivity"),
   eventSchema("continuations.pending"),
   eventSchema("chat.notice"),
+  eventSchema("chat.dependencyNotice"),
   eventSchema("backgroundCommands.changed"),
   eventSchema("conversations.yolo.changed"),
   eventSchema("autoCheck.changed"),
@@ -310,6 +317,21 @@ export const KernelMethods = {
       piVersion: name,
     }),
   },
+  "app.openDataDir": { params: noParams, result: z.null() },
+  "app.storageInfo": {
+    params: noParams,
+    result: z.strictObject({
+      totalBytes: count,
+      categories: z.strictObject({
+        databaseBytes: count,
+        botsAndMediaBytes: count,
+        runtimesBytes: count,
+        logsAndCacheBytes: count,
+        otherBytes: count,
+      }),
+      truncated: z.boolean(),
+    }),
+  },
   "network.getConfig": { params: noParams, result: NetworkProxyConfigSchema },
   "network.setConfig": { params: NetworkProxySetSchema, result: NetworkProxyConfigSchema },
   "network.test": { params: noParams, result: NetworkProxyTestSchema },
@@ -367,6 +389,7 @@ export const KernelMethods = {
         attachmentIds: z.array(IdSchema).max(MAX_ATTACHMENTS).optional(),
         workplace: FolderSelectionSchema.optional(),
         mentions: z.array(IdSchema).max(6).optional(),
+        imageGeneration: ImageGenerationOptionsSchema.optional(),
       })
       .strict()
       .refine(
@@ -375,7 +398,8 @@ export const KernelMethods = {
           (!p.newTopic || (!!p.botId && !p.topicId && !p.groupId && !p.threadId)) &&
           (!p.workplace || !!p.newTopic) &&
           (!p.initialMode || !!p.newTopic) &&
-          (!p.mentions || (!!p.groupId && !p.threadId)),
+          (!p.mentions || (!!p.groupId && !p.threadId)) &&
+          (!p.imageGeneration || (!!p.botId && !p.groupId && !p.threadId)),
         "Invalid chat target",
       )
       .refine(
@@ -390,6 +414,7 @@ export const KernelMethods = {
         .max(6)
         .optional(),
       quote: MessageQuoteSchema.optional(),
+      localReply: MessageSchema.optional(),
       userMessageId: IdSchema,
       assistantMessageId: IdSchema,
       runId: IdSchema,
@@ -465,8 +490,18 @@ export const KernelHostMethods = {
     result: AbsolutePathSchema.nullable(),
   },
   "host.pickFile": {
-    params: z.union([noParams, z.strictObject({ defaultPath: AbsolutePathSchema.optional() })]),
+    params: z.union([
+      noParams,
+      z.strictObject({
+        defaultPath: AbsolutePathSchema.optional(),
+        filters: z.array(FileDialogFilterSchema).max(10).optional(),
+      }),
+    ]),
     result: AbsolutePathSchema.nullable(),
+  },
+  "host.skills.takeDrop": {
+    params: z.strictObject({ dropId: IdSchema }),
+    result: SkillDropPathsSchema.nullable(),
   },
   "host.skills.pickFile": { params: noParams, result: AbsolutePathSchema.nullable() },
   "host.memoryDreamActivity": {

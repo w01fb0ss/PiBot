@@ -18,6 +18,8 @@ export const runtimeZh = {
   "runtime.auditCommandsPaused": "命令已暂停：上一条命令未确认停下",
   "runtime.auditCommandsStuck": "命令仍暂停：自动检查没能确认，需要再检查或重启",
   "runtime.auditCommandsRecovered": "已确认上一条命令停下，命令恢复",
+  "runtime.commandCleanupUnconfirmed": "Pi Bot 未能确认一条命令已停下。你可以继续运行其他命令。",
+  "runtime.auditCommandCleanupConfirmed": "已确认命令停下",
   "runtime.continuationPrompt": "有未完成的自动接续，是否继续？",
   "runtime.continuationResume": "继续",
   "runtime.continuationDiscard": "放弃",
@@ -34,6 +36,11 @@ export const runtimeZh = {
   "runtime.continuationStopped.authority_narrowed": "自动接续已停止：来源或权限已经变了",
   "runtime.continuationStopped.restart_dropped": "重启前的自动接续没有继续：条件已经变了",
   "runtime.attachmentDeliveryMissing": "这一轮没有实际发送文件或截图。",
+  "runtime.groupVerification.choose_reviewer": "等待统筹安排另一位成员独立核对成果。",
+  "runtime.groupVerification.direct_completion": "你选择了由统筹直接完成，因此未安排独立核对。",
+  "runtime.groupVerification.paused": "群组已暂停，独立核对尚未开始。",
+  "runtime.groupVerification.round_limit": "群组的自动回合已用完，独立核对尚未开始。",
+  "runtime.groupVerification.unavailable": "独立核对无法开始。请检查群组成员、权限和预算。",
 };
 export const runtimeEn: Record<keyof typeof runtimeZh, string> = {
   "runtime.drainFailedBot":
@@ -57,6 +64,9 @@ export const runtimeEn: Record<keyof typeof runtimeZh, string> = {
   "runtime.auditCommandsStuck":
     "Commands still paused: automatic checks couldn't confirm; check again or restart",
   "runtime.auditCommandsRecovered": "Previous command confirmed stopped; commands resumed",
+  "runtime.commandCleanupUnconfirmed":
+    "Pi Bot couldn't confirm that a command stopped. You can still run other commands.",
+  "runtime.auditCommandCleanupConfirmed": "Command confirmed stopped",
   "runtime.continuationPrompt": "Some automatic follow-ups didn't finish. Continue them?",
   "runtime.continuationResume": "Continue",
   "runtime.continuationDiscard": "Discard",
@@ -79,4 +89,14 @@ export const runtimeEn: Record<keyof typeof runtimeZh, string> = {
   "runtime.continuationStopped.restart_dropped":
     "The follow-up from before the restart didn't continue: things changed",
   "runtime.attachmentDeliveryMissing": "No file or screenshot was actually sent in this turn.",
+  "runtime.groupVerification.choose_reviewer":
+    "Waiting for the coordinator to assign another member to review the results independently.",
+  "runtime.groupVerification.direct_completion":
+    "You chose to have the coordinator finish the work directly, so no independent review was scheduled.",
+  "runtime.groupVerification.paused":
+    "The group is paused. The independent review is still pending.",
+  "runtime.groupVerification.round_limit":
+    "The group reached its automatic round limit before the independent review could start.",
+  "runtime.groupVerification.unavailable":
+    "The independent review could not start. Check the group members, permissions, and budget.",
 };

@@ -49,6 +49,7 @@ export const AgentErrorCodeSchema = z.enum([
   // A listener failed while consuming a model event. Keep this distinct from provider failures so
   // a routine can report a stable diagnostic instead of the unhelpful bare `internal` code.
   "session_event_handler_failed",
+  "repeated_tool_failure",
   // The run was stopped by the program before any request (not by the user).
   "context_too_large",
   "context_unavailable",
@@ -68,6 +69,7 @@ export const AgentErrorCodeSchema = z.enum([
   // is not signed in (the user signs in in the agent's own terminal command); Windows needs the
   // per-agent "run unisolated" confirmation first; the agent broke the protocol or exited.
   "agent_unavailable",
+  "agent_group_task_required",
   // The topic's folder cannot be used by the agent (the Bot's default folder can).
   "agent_folder_required",
   "agent_login_required",
@@ -87,6 +89,7 @@ export type AgentErrorCode = z.infer<typeof AgentErrorCodeSchema>;
  */
 export const AGENT_SETUP_ERROR_CODES: ReadonlySet<string> = new Set<AgentErrorCode>([
   "agent_unavailable",
+  "agent_group_task_required",
   "agent_folder_required",
   "agent_login_required",
   "agent_unconfirmed",

@@ -17,6 +17,7 @@ export const phoneMethods = [
   "topics.list",
   "groups.topics.list",
   "chat.history",
+  "chat.dependencyNotices",
   "groups.topics.history",
   "chat.send",
   "chat.abort",
@@ -35,6 +36,9 @@ export const phoneMethods = [
   "groups.plan.progress",
   "groups.workflow.resolve",
   "groups.plan.resolve",
+  // A plan waiting for the user's choice shows in the phone's inbox with the desktop card's
+  // choices (Maintainers 2026-11-25); the brain checks each against the plan's current state.
+  "groups.plan.choose",
   // Maintainers 2026-11-20: the sheet's pause / continue button (only `paused`, narrowed below).
   "groups.update",
   "continuations.list",
@@ -50,7 +54,13 @@ export const phoneMethods = [
   "runs.receipt",
   // The default Pi's hand-off receipts under its reply (names, status, a short excerpt).
   "teams.dispatches",
+  // The default Pi's health-check list card under its reply (ids, names, states, reason codes).
+  "teams.healthReports",
+  // A fix tapped on that card (Pi then repairs it with the usual approval card).
+  "teams.healthRepair",
   "approvals.pending",
+  "approvals.groupTimeline",
+  "approvals.groupFocus",
   "approvals.resolve",
   "inbox.list",
   "inbox.counts",
@@ -138,6 +148,7 @@ const phoneReads = new Set<string>([
   "topics.list",
   "groups.topics.list",
   "chat.history",
+  "chat.dependencyNotices",
   "groups.topics.history",
   "chat.runs",
   "execution.tasks.list",
@@ -155,7 +166,11 @@ const phoneReads = new Set<string>([
   "routines.summary",
   "runs.receipt",
   "teams.dispatches",
+  // The default Pi's health-check list card under its reply (ids, names, states, reason codes).
+  "teams.healthReports",
   "approvals.pending",
+  "approvals.groupTimeline",
+  "approvals.groupFocus",
   "inbox.list",
   "inbox.counts",
   "devices.self",
@@ -205,6 +220,7 @@ export const isPhoneRead = (method: string) => phoneReads.has(method);
 export const isPhoneMethod = (method: string) => Object.hasOwn(methodTable, method);
 const phoneEvents = Object.freeze([
   "chat.message",
+  "chat.dependencyNotice",
   "chat.delta",
   "chat.activity",
   "chat.done",
@@ -214,6 +230,7 @@ const phoneEvents = Object.freeze([
   "approval.requested",
   "approval.resolved",
   "teams.dispatch.changed",
+  "teams.health.changed",
   "execution.task.changed",
   "execution.todo.changed",
   "execution.changed",

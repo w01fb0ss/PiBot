@@ -94,11 +94,15 @@ export async function authorizeDelegatedAction(
     return { allowed: true, reason: result.reason };
   }
   let answeredByYolo = false;
+  const isolation =
+    options.unisolated && call.tool === "run_command" && local.deps.platform === "win32"
+      ? { available: false, reason: "windows_unisolated" }
+      : { available: !options.unisolated };
   const status = await local.approvals.request(
     cardScope(context, options.cardContext, signal),
     call,
     options.cardContext ? { ...result, canRemember: false } : result,
-    { available: !options.unisolated },
+    isolation,
     judge,
     undefined,
     {
@@ -134,27 +138,36 @@ export async function askForUnmappedAction(
     signal: AbortSignal;
     title(language: "zh" | "en"): string;
     detail: string;
+    cwd?: string;
+    unisolatedCommand?: boolean;
     cardContext?: ToolRunContext;
   },
 ): Promise<DelegatedDecision> {
+  const windowsDirectRun = options.unisolatedCommand && local.deps.platform === "win32";
+  const reason = windowsDirectRun ? WINDOWS_REQUIRES_APPROVAL : "external_agent_request";
   const result: PolicyResult = explainPolicyResult(
     {
       decision: "ask",
-      reason: "external_agent_request",
+      reason,
       risk: "normal",
       category: "run_command",
-      facts: [{ kind: "warning", value: options.detail.slice(0, 500) }],
+      facts: [
+        ...(options.detail
+          ? [{ kind: "warning" as const, value: options.detail.slice(0, 500) }]
+          : []),
+        ...(options.cwd ? [{ kind: "cwd" as const, value: options.cwd }] : []),
+      ],
       canRemember: false,
       explanation: [],
     },
     "boundary",
-    "external_agent_request",
+    reason,
   );
   const status = await local.approvals.request(
     cardScope(context, options.cardContext, options.signal),
     call,
     result,
-    { available: true },
+    windowsDirectRun ? { available: false, reason: "windows_unisolated" } : { available: true },
     async () => result,
     undefined,
     undefined,

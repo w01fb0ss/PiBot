@@ -1,7 +1,12 @@
 import { constants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
-import { sameFile } from "@pibot/execution";
+import {
+  matchesPathSpelling,
+  sameFile,
+  samePathSpelling,
+  windowsMappedPath,
+} from "@pibot/execution";
 
 import type { WorkspaceFileAccess } from "../../resources/workplaces/workspace-files.ts";
 
@@ -16,15 +21,34 @@ export async function deliveryFile(
   if (files?.remote) return files.read(root, path, signal, maxBytes);
   signal.throwIfAborted();
   const base = await realpath(root);
-  if (base !== resolve(root)) return undefined;
-  const target = resolve(base, path);
+  if (!(await matchesPathSpelling(resolve(root), base))) return undefined;
+  const lexical = resolve(base, path);
+  const target =
+    process.platform === "win32" && isAbsolute(path) && !inside(base, lexical)
+      ? await windowsMappedPath(lexical, realpath)
+      : lexical;
+  if (!inside(base, target)) return undefined;
+  // Confirm a DOS-device remap before opening the projected canonical path.
+  if (target !== lexical && !samePathSpelling(await realpath(lexical), target)) return undefined;
+  return readDeliveryFile(base, target, signal, maxBytes);
+}
+
+function inside(base: string, target: string) {
   const rel = relative(base, target);
-  if (!rel || isAbsolute(rel) || rel === ".." || rel.startsWith(`..${sep}`)) return undefined;
+  return !!rel && !isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`);
+}
+
+async function readDeliveryFile(
+  base: string,
+  target: string,
+  signal: AbortSignal,
+  maxBytes?: number,
+) {
   // Exact (bigint) identities: number stats round NTFS file IDs and can alias two files.
   const before = await lstat(target, { bigint: true });
   if (!before.isFile() || before.nlink !== 1n) return undefined;
   let parent = target;
-  while (parent !== base) {
+  while (relative(base, parent)) {
     const info = await lstat(parent);
     if (info.isSymbolicLink()) return undefined;
     parent = dirname(parent);
@@ -40,7 +64,8 @@ export async function deliveryFile(
     const info = await file.stat({ bigint: true });
     if (!info.isFile() || info.nlink !== 1n || !sameFile(info, before)) return undefined;
     const current = await lstat(target, { bigint: true });
-    if ((await realpath(target)) !== target || !sameFile(current, info)) return undefined;
+    if (!samePathSpelling(await realpath(target), target) || !sameFile(current, info))
+      return undefined;
     const fileSize = Number(info.size);
     if (maxBytes === undefined) return { size: fileSize };
     if (fileSize > maxBytes) return { size: fileSize };

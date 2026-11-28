@@ -5,13 +5,15 @@ import {
   receiptSections,
 } from "@pibot/client-core";
 import { GroupExecutionReceiptSchema, type Message, Methods } from "@pibot/protocol";
+import { useRouter } from "expo-router";
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { useRuntime, useSharedText } from "../../../runtime/context.tsx";
+import { useRuntime, useSharedText, useText } from "../../../runtime/context.tsx";
 import { useCachedValue } from "../../../runtime/use-cached-value.ts";
 import { monoFont, useColors } from "../../../theme/use-theme.ts";
-import { ListCard } from "../../../ui/controls.tsx";
+import { Button, ListCard } from "../../../ui/controls.tsx";
 import { Icon } from "../../../ui/icons.tsx";
+import { useRecords } from "../../records/records-context.tsx";
 import type { Caller } from "../controls/scope.ts";
 
 import { RelaxationDetails } from "./RelaxationDetails.tsx";
@@ -60,6 +62,22 @@ function useToneColor() {
         : tone === "ok"
           ? colors.ok
           : colors.text2;
+}
+
+export function RunRecordsLink({ runId }: { runId: string | null }) {
+  const router = useRouter();
+  const t = useText();
+  const { rows } = useRecords();
+  const record = rows.find((row) => row.type === "chat" && row.run.id === runId);
+  return (
+    <Button
+      variant="ghost"
+      title={t(record ? "viewRunRecord" : "viewRecords")}
+      onPress={() =>
+        router.push(record ? { pathname: "/record", params: { id: record.id } } : "/records")
+      }
+    />
+  );
 }
 
 /**
@@ -160,6 +178,7 @@ export function RunReceiptCard({
             )}
           </View>
         ))}
+      {open && data.outcome === "failed" && <RunRecordsLink runId={runId} />}
       {open && (
         <Text style={{ fontSize: 12, color: colors.text2, paddingTop: 4 }}>
           {t("receipt.footnote")}

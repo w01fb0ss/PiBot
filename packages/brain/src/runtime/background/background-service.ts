@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { LocalToolResult } from "@pibot/agent";
-import type { BackgroundJob, FileContext } from "@pibot/execution";
+import {
+  type BackgroundJob,
+  commandLogRoot,
+  type FileContext,
+  type RunCommandOptions,
+} from "@pibot/execution";
 import {
   type AuditDetail,
   type BackgroundCommand,
@@ -54,6 +59,7 @@ export interface BackgroundStart {
   context: ToolRunContext;
   prepared: PreparedTool;
   command: string;
+  skillEnv?: RunCommandOptions["skillEnv"];
   file: Omit<FileContext, "signal" | "expectedPath">;
   allowUnisolated: boolean;
   assertAuthorized(): void;
@@ -118,21 +124,32 @@ export class BackgroundService {
   }
   /** Kept until the actual process exit; database terminal status alone cannot certify drain. */
   resources() {
+    const cleanups = [...this.cleanups.values()];
     return {
-      starting: this.starting.size > 0 || this.recovery.pending || this.cleanups.size > 0,
+      starting:
+        this.starting.size > 0 ||
+        this.recovery.pending ||
+        (this.local.deps.platform === "win32"
+          ? cleanups.some((cleanup) => !cleanup.roots.length)
+          : cleanups.length > 0),
       roots: [
         ...[...this.live.values()].flatMap((entry) => entry.roots),
-        ...[...this.cleanups.values()].flatMap((entry) => entry.roots),
+        ...cleanups.flatMap((entry) => entry.roots),
       ],
     };
   }
 
   /** Keep the old command/write lease, while the queue may release the drained SDK session. */
-  retainCleanup(runId: string, settling: () => Promise<void>, release: () => void) {
+  retainCleanup(
+    runId: string,
+    settling: () => Promise<void>,
+    release: () => void,
+    commandRoots?: readonly string[],
+  ) {
     const entries = [...this.live.values()].filter(
       (entry) => entry.row.runId === runId && this.promoted.has(entry.row.id),
     );
-    if (!entries.length) return false;
+    if (!entries.length && !commandRoots) return false;
     if (this.cleanups.has(runId)) return true;
     const settled = settling().then(() => {
       release();
@@ -140,7 +157,7 @@ export class BackgroundService {
     });
     this.cleanups.set(runId, {
       rows: entries.map((entry) => entry.row),
-      roots: entries.flatMap((entry) => entry.roots),
+      roots: [...new Set([...entries.flatMap((entry) => entry.roots), ...(commandRoots ?? [])])],
       settled,
     });
     void settled.catch(() => {
@@ -206,6 +223,39 @@ export class BackgroundService {
 
   runningRows() {
     return [...this.live.values()].map((entry) => entry.row);
+  }
+  /** Whether this process owns the command now (running, or its sandbox still cleaning up). */
+  owns(id: string) {
+    return (
+      this.live.has(id) ||
+      [...this.cleanups.values()].some((entry) => entry.rows.some((row) => row.id === id))
+    );
+  }
+
+  /**
+   * Pi's repair, on the person's request: a row still marked running that no live job owns. The
+   * same orphan cleanup a restart does runs for this one row first; only a confirmed stop ends the
+   * row, since a process that is still there must not disappear from the list.
+   */
+  async forgetGone(id: string, signal: AbortSignal): Promise<"forgotten" | "live" | "ended"> {
+    if (this.owns(id)) return "live";
+    const row = this.repo.running().find((value) => value.id === id);
+    if (!row) return "ended";
+    const left = await this.local.target.background.killOrphans(
+      [{ group: row.group, processes: row.processes }],
+      signal,
+    );
+    signal.throwIfAborted();
+    if (left || this.owns(id)) return "live";
+    const ended = transaction(this.local.deps.db, () => {
+      if (this.repo.get(id)?.status !== "running") return false;
+      this.repo.finish(id, { status: "stopped", stopReason: "orphaned", exitCode: null });
+      this.audit(row, "stopped", "orphaned", "user");
+      return true;
+    });
+    if (!ended) return "ended";
+    this.refreshStatus(id);
+    return "forgotten";
   }
   refreshStatus(id: string) {
     const row = this.repo.get(id);
@@ -372,7 +422,7 @@ export class BackgroundService {
       runId: context.runId,
       toolCallId: prepared.call.id.slice(0, 200),
       command: auditText(input.command, this.local.deps.redactor, 500),
-      logPath: join(prepared.home, ".pibot", "background", `${id}.log`),
+      logPath: join(commandLogRoot(prepared.home), "background", `${id}.log`),
       status: "running",
       stopReason: null,
       exitCode: null,
@@ -398,6 +448,7 @@ export class BackgroundService {
         dataDir: this.local.deps.dataDir,
         botHome: prepared.home,
         skillGroupId: runPermissionScope(this.local, context),
+        skillEnv: input.skillEnv,
         skillPackageIds:
           prepared.boundary?.location?.target === "local"
             ? this.local.skills?.packageIds?.(

@@ -121,6 +121,24 @@ export function ComposerDraftProvider({ children }: { children: ReactNode }) {
   return <Drafts.Provider value={drafts}>{children}</Drafts.Provider>;
 }
 
+/** The group composer's draft key: a topic draft, else the conversation, plus an open thread. */
+export function groupDraftKey(groupId: string, conversationOrDraftId?: string, threadId?: string) {
+  return JSON.stringify(["group", groupId, conversationOrDraftId, threadId]);
+}
+
+/**
+ * Fills a composer that may not be on screen (the inbox or the Tasks panel opening a group chat):
+ * the text joins any unsent draft rather than replacing it, as the composer's own fill does.
+ */
+export function useDraftFill() {
+  const drafts = useContext(Drafts);
+  return useCallback(
+    (peer: ChatPeer, key: string, text: string) =>
+      drafts?.write(peer, key, (current) => (current.trim() ? `${current}\n\n${text}` : text)),
+    [drafts],
+  );
+}
+
 export function useComposerDraft(peer: ChatPeer, key: string, pendingText = "") {
   const drafts = useContext(Drafts);
   if (!drafts) throw new Error("Composer draft provider unavailable");

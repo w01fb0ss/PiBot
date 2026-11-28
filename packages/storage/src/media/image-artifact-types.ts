@@ -42,6 +42,9 @@ export const ImageArtifactModelSchema = z.strictObject({
   id: z.string().min(1).max(500),
   recipient: z.string().min(1).max(1000),
   mode: ImageModeSchema,
+  botModel: z
+    .strictObject({ provider: z.string().min(1).max(200), id: z.string().min(1).max(500) })
+    .optional(),
 });
 export const ImageArtifactReceiptSchema = z.strictObject({
   path: AbsolutePathSchema,

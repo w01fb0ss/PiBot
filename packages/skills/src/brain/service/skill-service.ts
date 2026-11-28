@@ -20,6 +20,7 @@ import {
   storedParams,
   storedWorkflow,
 } from "@pibot/brain/kit";
+import { isSafeSecretEnvName } from "@pibot/execution";
 import {
   type MethodParams,
   RpcError,
@@ -91,6 +92,9 @@ type SkillDeps = Pick<
   "db" | "dataDir" | "peer" | "redactor" | "logger" | "host"
 > & {
   packages?: SharedSkillPackages;
+  local?: Pick<CapabilityContext["local"], "userSecrets"> & {
+    deps?: Pick<CapabilityContext["local"]["deps"], "platform">;
+  };
   roleSkillLabels?: (botId: string, name: string, description: string) => SkillLabels | undefined;
   builtinMethods?: (
     botId: string,
@@ -197,6 +201,88 @@ export class SkillService {
   pickFiles(botId: string, from: "file" | "folder", signal: AbortSignal) {
     this.activeBot(botId);
     return this.uploads.pick(from, signal);
+  }
+  async secretVariables(id: string, signal: AbortSignal): Promise<string[]> {
+    const record = this.require(id);
+    const { folder } = this.runtimeTarget(id);
+    await this.readLocation(record, signal);
+    const pack = await scanSkillPackage(folder, "folder", signal);
+    return pack.summary.bindableEnvironmentVariables ?? [];
+  }
+
+  secretChoices(botId: string) {
+    this.activeBot(botId);
+    return this.deps.local?.userSecrets.choices?.(botId) ?? [];
+  }
+
+  secretBindings(id: string) {
+    return this.deps.db
+      .prepare(
+        "SELECT variable, secret_name AS secretName FROM skill_secret_bindings WHERE scope = ? AND skill_id = ? ORDER BY variable",
+      )
+      .all(this.groupId ?? "", id) as { variable: string; secretName: string }[];
+  }
+
+  bindSecrets(
+    record: SkillRecord,
+    bindings: MethodParams["skills.setSecretBindings"]["bindings"],
+    allowed: readonly string[],
+  ) {
+    if (record.builtinKey) throw invalid("skill_secret_invalid");
+    this.validateSecretBindings(record.botId, bindings, allowed);
+    transaction(this.deps.db, () => this.writeSecretBindings(record, bindings));
+  }
+
+  validateSecretBindings(
+    botId: string,
+    bindings: MethodParams["skills.setSecretBindings"]["bindings"],
+    allowed: readonly string[],
+  ) {
+    for (const { variable, secretName } of bindings) {
+      if (!isSafeSecretEnvName(variable)) throw invalid("skill_secret_invalid");
+      if (secretName === null) continue;
+      if (this.deps.local?.deps?.platform === "win32") throw invalid("skill_secret_windows");
+      const meta = this.deps.local?.userSecrets.metadata(secretName);
+      if (
+        !allowed.includes(variable) ||
+        !meta?.hasValue ||
+        (meta.assignment.kind === "bots" && !meta.assignment.bots.includes(botId))
+      )
+        throw invalid("skill_secret_invalid");
+    }
+  }
+
+  writeSecretBindings(
+    record: SkillRecord,
+    bindings: MethodParams["skills.setSecretBindings"]["bindings"],
+  ) {
+    const names = new Set(this.secretBindings(record.id).map(({ variable }) => variable));
+    for (const { variable, secretName } of bindings) {
+      if (secretName === null) names.delete(variable);
+      else names.add(variable);
+    }
+    if (names.size > 64) throw invalid("skill_secret_invalid");
+    for (const { variable, secretName } of bindings) {
+      if (secretName === null) {
+        this.deps.db
+          .prepare(
+            "DELETE FROM skill_secret_bindings WHERE scope = ? AND skill_id = ? AND variable = ?",
+          )
+          .run(this.groupId ?? "", record.id, variable);
+      } else {
+        this.deps.db
+          .prepare(
+            "INSERT INTO skill_secret_bindings (scope, skill_id, variable, secret_name) VALUES (?, ?, ?, ?) ON CONFLICT(scope, skill_id, variable) DO UPDATE SET secret_name = excluded.secret_name",
+          )
+          .run(this.groupId ?? "", record.id, variable, secretName);
+      }
+    }
+    new AuditRepo(this.deps.db, this.deps.redactor).append({
+      botId: record.botId,
+      kind: "skill.changed",
+      summary: "Skill token bindings updated / 技能密钥设置已更新",
+      detail: { actor: "user", target: record.name, reasonCode: "skill_secret_bindings" },
+    });
   }
   /** One supporting file's text for the editor (read-only; binary gives null). */
   async readFile(
@@ -622,6 +708,8 @@ export class SkillService {
       /** Trusted catalog assignment only, never a wire parameter. */
       packageId?: string;
       importSource?: SkillImportSource;
+      /** A team file's public reimport must reproduce the exact shared package. */
+      expectedHash?: string;
       copySignal?: AbortSignal;
       onProgress?: (progress: SkillCopyProgress) => void;
       /**
@@ -718,6 +806,7 @@ export class SkillService {
                 : undefined,
               signal,
               touch,
+              options.expectedHash,
             );
           },
           pack?.summary.fileCount,
@@ -1130,6 +1219,9 @@ export class SkillService {
   removeRow(id: string): SkillRecord {
     const removed = this.repo.remove(id);
     if (!removed) throw invalid("skill_not_found");
+    this.deps.db
+      .prepare("DELETE FROM skill_secret_bindings WHERE scope = ? AND skill_id = ?")
+      .run(this.groupId ?? "", id);
     // A deleted method is not installed again until 「恢复自带方法」.
     if (removed.builtinKey)
       new BuiltinSkillsRepo(this.deps.db, this.groupId).markRemoved(

@@ -131,13 +131,18 @@ export function SettingsScreen({
           <div className={styles.scroll} data-settings-scroll>
             <div className={styles.content}>
               {LEADS[section] && <p className={dialogStyles.lead}>{t(LEADS[section])}</p>}
-              {section === "general" && <GeneralSettings />}
+              {section === "general" && (
+                <GeneralSettings showNetworkProxy={target === "network-proxy"} />
+              )}
               {section === "computer" && <ComputerUseSettings />}
               {section === "routines" && <ScheduleSettings />}
               {section === "remote" && <RemoteSettingsPage />}
               {section === "browser" && <BrowserSettings />}
               {section === "permissions" && (
-                <PermissionsSettings target={target === "passwords" ? target : undefined} />
+                <PermissionsSettings
+                  key={target}
+                  target={target === "passwords" || target === "direct-runs" ? target : undefined}
+                />
               )}
               {(modelsVisited || section === "models") && (
                 <div hidden={section !== "models"}>

@@ -1,5 +1,10 @@
-import { readFile } from "node:fs/promises";
-import { posix, win32 } from "node:path";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, posix, win32 } from "node:path";
+import {
+  gitEntryPlanCurrent,
+  inspectGitEntries,
+} from "../../../packages/execution/src/git/git-entry-scan.ts";
 import {
   applyWindowsCommandConsent,
   applyYolo,
@@ -13,6 +18,7 @@ import {
   PermissionLevelsSchema,
 } from "../../../packages/protocol-base/src/index.ts";
 import { type ScriptCase, scriptScenarios } from "./scripts.ts";
+import { windowsRuntimeCases } from "./windows-runtime.ts";
 
 const platforms = ["darwin", "linux", "win32"] as const;
 const levels = ["never", "ask", "always"] as const;
@@ -90,6 +96,8 @@ function inputs(platform: Platform) {
     // The default Pi in its own direct chat (the kernel sets mainDirect); other callers below.
     bot_management: { category: "bot_management", operation: "change", mainDirect: true },
     work_dispatch: { category: "work_dispatch", mainDirect: true },
+    // A repair the capability judged not destructive; destructive and check rows below.
+    pi_repair: { category: "pi_repair", operation: "repair", mainDirect: true, mustAsk: false },
   } satisfies Record<PolicyRequest["category"], PolicyRequest>;
   const extra: Record<string, PolicyRequest> = {
     "read_file/outside": { category: "read_file", path: targets.outside },
@@ -114,6 +122,15 @@ function inputs(platform: Platform) {
     "bot_management/list": { category: "bot_management", operation: "list", mainDirect: true },
     "bot_management/not_main": { category: "bot_management", operation: "change" },
     "work_dispatch/not_main": { category: "work_dispatch", mainDirect: false },
+    "pi_repair/check": { category: "pi_repair", operation: "check", mainDirect: true },
+    "pi_repair/destructive": {
+      category: "pi_repair",
+      operation: "repair",
+      mainDirect: true,
+      mustAsk: true,
+    },
+    "pi_repair/unjudged": { category: "pi_repair", operation: "repair", mainDirect: true },
+    "pi_repair/not_main": { category: "pi_repair", operation: "repair", mustAsk: false },
   };
   const base = {
     botId: id,
@@ -140,20 +157,125 @@ function inputs(platform: Platform) {
   return { base, home, fs, remoteBoundary, root, work, cases: { ...scenarios, ...extra } };
 }
 
+async function windowsGitScopeCases() {
+  const root = await mkdtemp(join(await realpath(tmpdir()), "pibot-policy-matrix-"));
+  try {
+    const repo = join(root, "repo");
+    const git = join(repo, ".git");
+    const app = join(repo, "app");
+    const worktree = join(root, "worktree");
+    const worktreeGit = join(git, "worktrees", "branch");
+    const submodule = join(root, "submodule");
+    const submoduleGit = join(git, "modules", "mod");
+    const plain = join(root, "plain");
+    const objects = join(git, "objects", "info");
+    await Promise.all(
+      [app, worktree, worktreeGit, submodule, submoduleGit, plain, objects].map((path) =>
+        mkdir(path, { recursive: true }),
+      ),
+    );
+    await Promise.all([
+      writeFile(join(worktree, ".git"), `gitdir: ${worktreeGit}\n`),
+      writeFile(join(worktreeGit, "commondir"), "../..\n"),
+      writeFile(join(submodule, ".git"), `gitdir: ${submoduleGit}\n`),
+    ]);
+
+    const callId = "windows-git-scope";
+    const command = "git status";
+    const scan = (cwd: string, root: string, args = ["status"]) =>
+      inspectGitEntries(
+        {
+          invocations: [{ cwd, args }],
+          windowsReadRoots: [root],
+          platform: "win32",
+          botHome: plain,
+          privateTempRoot: plain,
+          env: {},
+          callId,
+          command: `git ${args.join(" ")}`,
+          compound: false,
+        },
+        AbortSignal.timeout(15_000),
+      );
+    const verified = await scan(app, repo);
+    if (
+      verified.status !== "none" ||
+      verified.plan.windowsReadScopeVerified !== true ||
+      !gitEntryPlanCurrent(verified.plan, { id: callId, command })
+    )
+      throw new Error("Windows Git scope: an in-scope repository must have a current plan");
+    await writeFile(join(objects, "alternates"), `${join(root, "other-objects")}\n`);
+    if (gitEntryPlanCurrent(verified.plan, { id: callId, command }))
+      throw new Error("Windows Git scope: new alternates must invalidate the automatic plan");
+    for (const [cwd, scope, args] of [
+      [app, app, ["status"]],
+      [worktree, worktree, ["status"]],
+      [submodule, submodule, ["status"]],
+      [repo, repo, ["status"]],
+      [plain, plain, ["diff", "a", "b"]],
+      [plain, plain, ["-C", repo, "status"]],
+    ] as const) {
+      const result = await scan(cwd, scope, [...args]);
+      if (result.status !== "none" || result.plan.windowsReadScopeVerified !== undefined)
+        throw new Error(`Windows Git scope: ordinary entry plan missing for ${cwd} / ${args}`);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+type WindowsApprovalFacts = Pick<
+  EvaluationInput,
+  "boundary" | "gitEntries" | "windowsGitReadScopeVerified" | "yolo"
+> & { levels?: Partial<EvaluationInput["settings"]["levels"]> };
+
 // Synthetic Windows paths and entries exercise classification without starting a shell.
 async function windowsApprovalCases(
   evaluate: (
     name: string,
-    level: "ask",
+    level: (typeof levels)[number],
     request: PolicyRequest,
-    extra?: { boundary?: EvaluationInput["boundary"] },
+    extra?: WindowsApprovalFacts,
   ) => Promise<import("../../../packages/policy/src/index.ts").PolicyResult>,
   remoteBoundary: NonNullable<EvaluationInput["boundary"]>,
 ) {
   const cases = [
     ["dir", "windows_read_only", "allow"],
     ["Get-ChildItem -Recurse src", "windows_read_only", "allow"],
+    ["type README.md", "windows_read_only", "allow"],
     ["gci | Select-String foo", "windows_read_only", "allow"],
+    ["Get-Date", "windows_read_only", "allow"],
+    ["Measure-Object", "windows_read_only", "allow"],
+    ["dir | Measure-Object", "windows_read_only", "allow"],
+    ["type README.md | Measure-Object -Line", "windows_read_only", "allow"],
+    ["Write-Output 'hello world' | Select-String hello", "windows_read_only", "allow"],
+    ["echo hello", "windows_read_only", "allow"],
+    ["Get-Command Example", "windows_read_only", "allow"],
+    ["Get-Command -Name node", "windows_read_only", "allow"],
+    ["Get-Command -ListImported git.exe", "windows_read_only", "allow"],
+    ["where.exe git.exe", "windows_read_only", "allow"],
+    ["cmd /d /c where git", "windows_read_only", "allow"],
+    ['cmd /d /c "echo hello world > NUL"', "windows_read_only", "allow"],
+    ["node --version", "windows_read_only", "allow"],
+    ["npm -v", "windows_read_only", "allow"],
+    ["npm --version", "windows_read_only", "allow"],
+    ["git --version", "windows_read_only", "allow"],
+    ["python --version", "windows_read_only", "allow"],
+    ["ruby --version", "windows_read_only", "allow"],
+    ["Git.exe status -sb", "windows_read_only", "allow"],
+    ["git log -5 --oneline | Measure-Object", "windows_read_only", "allow"],
+    ["git diff -- README.md", "windows_read_only", "allow"],
+    ["git show HEAD~1", "windows_read_only", "allow"],
+    ["git show HEAD^", "windows_ordinary_command", "allow"],
+    ["git log HEAD~2..HEAD~1", "windows_ordinary_command", "allow"],
+    ["git branch", "windows_read_only", "allow"],
+    ["git branch -av", "windows_read_only", "allow"],
+    ["git branch --list main", "windows_read_only", "allow"],
+    ["git rev-parse --show-toplevel", "windows_read_only", "allow"],
+    ["git remote -v", "windows_read_only", "allow"],
+    [String.raw`git -C .\src -C .. status`, "windows_read_only", "allow"],
+    [String.raw`git -C "C:\matrix\work\folder with spaces" status`, "windows_read_only", "allow"],
+    ["git log > $null", "windows_read_only", "allow"],
     ["TYPE file.txt; Get-Date", "windows_read_only", "allow"],
     ["Get-Content file.txt > $null", "windows_read_only", "allow"],
     ['cmd.exe /d /c "type file.txt > NUL"', "windows_read_only", "allow"],
@@ -161,7 +283,35 @@ async function windowsApprovalCases(
     ["node build.js", "windows_ordinary_command", "allow"],
     ["python build.py", "windows_ordinary_command", "allow"],
     ["git commit -m x", "windows_ordinary_command", "allow"],
-    ["git status", "windows_ordinary_command", "allow"],
+    ["git status", "windows_read_only", "allow"],
+    ["git -c core.pager=x log", "windows_ordinary_command", "allow"],
+    ["git --config-env=core.editor=EDITOR branch", "windows_ordinary_command", "allow"],
+    ["git --paginate log", "windows_ordinary_command", "allow"],
+    ["git diff --output=f", "windows_ordinary_command", "allow"],
+    ["git diff --no-index README.md file.txt", "windows_ordinary_command", "allow"],
+    ["git diff --ext-diff", "windows_ordinary_command", "allow"],
+    ["git show --textconv HEAD:file.txt", "windows_ordinary_command", "allow"],
+    ["git difftool", "windows_ordinary_command", "allow"],
+    ["git st", "windows_ordinary_command", "allow"],
+    ["git branch -D x", "windows_ordinary_command", "allow"],
+    ["git branch -m x", "windows_ordinary_command", "allow"],
+    ["git branch x", "windows_ordinary_command", "allow"],
+    ["git log | Out-File x", "windows_ordinary_command", "allow"],
+    ["git log; npm test", "windows_ordinary_command", "allow"],
+    ["git remote show origin", "windows_ordinary_command", "allow"],
+    [String.raw`git -C ..\outside -C ..\work status`, "windows_ordinary_command", "allow"],
+    ["git -C junction status", "windows_ordinary_command", "allow"],
+    [String.raw`git -C \\server\share status`, "windows_requires_approval", "ask"],
+    [String.raw`git diff -- C:\matrix\outside\file.txt`, "windows_ordinary_command", "allow"],
+    ["GIT_PAGER=x git log", "windows_requires_approval", "ask"],
+    ["$env:GIT_EDITOR='x'; git branch", "windows_requires_approval", "ask"],
+    ["node --version extra", "windows_ordinary_command", "allow"],
+    ["python -v", "windows_ordinary_command", "allow"],
+    ["cargo --version", "windows_ordinary_command", "allow"],
+    ["unknown --version", "windows_ordinary_command", "allow"],
+    ["where git", "windows_ordinary_command", "allow"],
+    ["where.exe /r . git", "windows_ordinary_command", "allow"],
+    ["Write-Output $(Get-Date)", "windows_requires_approval", "ask"],
     ["cargo build", "windows_ordinary_command", "allow"],
     ["npm run dev", "windows_ordinary_command", "allow"],
     ["git clone https://example.com/repo.git", "windows_ordinary_command", "allow"],
@@ -189,15 +339,16 @@ async function windowsApprovalCases(
     ["Get-Item provider:file.txt", "windows_ordinary_command", "allow"],
     ["Get-Content file.txt > output.txt", "windows_ordinary_command", "allow"],
     ["Get-Content file.txt | Set-Content output.txt", "windows_ordinary_command", "allow"],
-    ["Get-Command Example", "windows_ordinary_command", "allow"],
     ["Get-Command -ListImported Example | Select-String foo", "windows_ordinary_command", "allow"],
-    ["cmd /c dir", "windows_ordinary_command", "allow"],
+    ["cmd /c dir", "windows_read_only", "allow"],
     ["cmd /d /c dir -Recurse src", "windows_ordinary_command", "allow"],
     ["Start-Process cmd -Verb RunAs", "privilege_escalation_denied", "deny"],
     ["sudo whoami", "privilege_escalation_denied", "deny"],
   ] as const;
+  const verifiedGit = { windowsGitReadScopeVerified: true } as const;
   for (const [command, reason, consentDecision] of cases) {
-    const result = await evaluate("windows_approval", "ask", { category: "run_command", command });
+    const request = { category: "run_command", command } as const;
+    const result = await evaluate("windows_approval", "ask", request, verifiedGit);
     const withConsent = applyWindowsCommandConsent(result, true);
     const withoutConsent = applyWindowsCommandConsent(result, false);
     if (
@@ -209,7 +360,70 @@ async function windowsApprovalCases(
       throw new Error(
         `Windows policy matrix: ${command}: ${result.reason}/${withConsent.decision}`,
       );
+    if (reason === "windows_read_only") {
+      const always = await evaluate("windows_approval", "always", request, verifiedGit);
+      const yolo = await evaluate("windows_approval", "ask", request, {
+        ...verifiedGit,
+        yolo: true,
+      });
+      const never = await evaluate("windows_approval", "never", request, verifiedGit);
+      if (
+        [withoutConsent, always, yolo].some(
+          (verdict) => verdict.decision !== "allow" || verdict.reason !== reason,
+        ) ||
+        never.decision !== "deny" ||
+        never.reason !== "permission_never"
+      )
+        throw new Error(`Windows read-only policy modes: ${command}`);
+    }
   }
+  const status = { category: "run_command", command: "git status" } as const;
+  const unverified = await evaluate("windows_git_scope", "ask", status);
+  if (
+    unverified.reason !== "windows_ordinary_command" ||
+    unverified.windowsReadOnly ||
+    applyWindowsCommandConsent(unverified, false).decision !== "ask" ||
+    applyWindowsCommandConsent(unverified, true).decision !== "allow"
+  )
+    throw new Error("Windows Git scope: unverified scope must use ordinary consent");
+
+  const noFileReads = { ...verifiedGit, levels: { read_file: "never" } } as const;
+  for (const command of [
+    "git diff",
+    "git diff --staged",
+    "git show HEAD~1",
+    "git log -p",
+    "git diff -- README.md",
+    "git status",
+  ]) {
+    const result = await evaluate(
+      "windows_git_read_permission",
+      "always",
+      { category: "run_command", command },
+      noFileReads,
+    );
+    const reason = command === "git status" ? "windows_read_only" : "windows_ordinary_command";
+    if (result.reason !== reason)
+      throw new Error(`Windows Git read permission: ${command}: ${result.reason}`);
+  }
+  const unsafeGit = await evaluate(
+    "windows_git_entry",
+    "ask",
+    { category: "run_command", command: "git status" },
+    {
+      gitEntries: {
+        version: 1,
+        status: "unsupported",
+        reason: "layout_unsupported",
+        entries: [],
+        authority: "none",
+      },
+      ...verifiedGit,
+      yolo: true,
+    },
+  );
+  if (unsafeGit.decision !== "deny" || unsafeGit.reason !== "git_entry_layout_unsupported")
+    throw new Error("Windows read-only Git must respect the execution entry scan");
   const requests: [Partial<Extract<PolicyRequest, { category: "run_command" }>>, string, string][] =
     [
       [{ background: true }, "windows_ordinary_command", "allow"],
@@ -270,11 +484,10 @@ for (const platform of platforms) {
     name: string,
     level: (typeof levels)[number],
     request: PolicyRequest,
-    extra: Omit<ScriptCase, "request"> & {
-      boundary?: EvaluationInput["boundary"];
-      confirmEverySend?: boolean;
-      yolo?: boolean;
-    } = {},
+    extra: Omit<ScriptCase, "request" | "levels"> &
+      WindowsApprovalFacts & {
+        confirmEverySend?: boolean;
+      } = {},
   ) => {
     // Intrinsic categories have no permission level. Vary every real setting to prove
     // intrinsic decisions (especially memory_read) do not accidentally depend on one.
@@ -284,6 +497,8 @@ for (const platform of platforms) {
       signal: AbortSignal.timeout(15_000),
       ...(name === "read_file/remote_unresolved" ? { boundary: remoteBoundary } : {}),
       ...(extra.boundary ? { boundary: extra.boundary } : {}),
+      ...(extra.gitEntries ? { gitEntries: extra.gitEntries } : {}),
+      ...(extra.windowsGitReadScopeVerified ? { windowsGitReadScopeVerified: true } : {}),
       ...(extra.grants ? { grants: extra.grants } : {}),
       ...(extra.confirmEverySend ? { confirmEverySend: true } : {}),
       ...(extra.yolo ? { yolo: true } : {}),
@@ -303,7 +518,12 @@ for (const platform of platforms) {
     return result;
   };
   try {
-    if (platform === "win32") await windowsApprovalCases(evaluate, remoteBoundary);
+    if (platform === "win32") {
+      await windowsGitScopeCases();
+      await windowsApprovalCases(evaluate, remoteBoundary);
+      await windowsRuntimeCases(String.raw`C:\Users\QA User\AppData\Local\PiBot`);
+      await windowsRuntimeCases(String.raw`Q:\data`);
+    }
     for (const [name, request] of Object.entries(cases)) {
       const row = rows.get(name) ?? [];
       for (const level of levels) {
@@ -366,6 +586,12 @@ for (const platform of platforms) {
         { grants: sendGrant, yolo: true, confirmEverySend: true },
       ],
       "send_out/user_confirm_every": [cases.send_out, { yolo: true, confirmEverySend: true }],
+      // Pi's repairs: YOLO answers an ordinary repair card, never a destructive one.
+      "pi_repair/yolo": [cases.pi_repair, { yolo: true }],
+      "pi_repair/destructive_yolo": [
+        { category: "pi_repair", operation: "repair", mainDirect: true, mustAsk: true },
+        { yolo: true },
+      ],
     };
     for (const [name, [request, extra]] of Object.entries(sendCases)) {
       const row = rows.get(name) ?? [];

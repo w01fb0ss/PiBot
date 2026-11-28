@@ -3,7 +3,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { setImmediate as yieldLoop } from "node:timers/promises";
 import { resolveSessionFile } from "@pibot/agent";
 import type { Logger } from "@pibot/observability";
-import { IdSchema, type RunRetentionResult } from "@pibot/protocol-base";
+import { IdSchema, type RunRetentionEstimate, type RunRetentionResult } from "@pibot/protocol-base";
 import { RunRetentionRepo } from "@pibot/storage";
 import { z } from "zod";
 
@@ -51,6 +51,82 @@ export class RunRetention {
     return this.chain.then(() => undefined);
   }
 
+  async estimate(olderThanDays: number, signal?: AbortSignal): Promise<RunRetentionEstimate> {
+    const active = signal ? AbortSignal.any([this.shutdown.signal, signal]) : this.shutdown.signal;
+    active.throwIfAborted();
+    const cutoff = new Date(Date.now() - olderThanDays * 86_400_000).toISOString();
+    const candidates = this.repo.estimateBefore(cutoff);
+    const sessionFiles = new Set(candidates.sessionFiles);
+    const resultFiles = new Set(candidates.resultFiles);
+    let files = 0;
+    let bytes = 0;
+    let checked = 0;
+    let incomplete = false;
+    for (const row of this.cleanupJobs(active)) {
+      const manifest = this.readManifest(row.value);
+      if (!manifest) {
+        incomplete = true;
+        continue;
+      }
+      for (const file of manifest.sessionFiles) {
+        if (++checked % 128 === 0) await yieldLoop(undefined, { signal: active });
+        if (!sessionFiles.has(file) && !this.repo.sessionReferenced(file)) sessionFiles.add(file);
+      }
+      for (const file of manifest.resultFiles) {
+        if (++checked % 128 === 0) await yieldLoop(undefined, { signal: active });
+        if (!resultFiles.has(file) && !this.repo.resultReferenced(file)) resultFiles.add(file);
+      }
+    }
+    const root = await realpath(this.dataDir);
+    for (const stored of sessionFiles) {
+      active.throwIfAborted();
+      if (++checked % 128 === 0) await yieldLoop(undefined, { signal: active });
+      const file = await this.sessionForCleanup(root, stored).catch(() => {
+        incomplete = true;
+        return undefined;
+      });
+      if (file) {
+        files++;
+        bytes += file.bytes;
+      }
+    }
+    const resultDir = await this.resultDirectory().catch(() => {
+      incomplete = true;
+      return undefined;
+    });
+    if (resultDir) {
+      try {
+        for await (const entry of await opendir(resultDir)) {
+          active.throwIfAborted();
+          if (++checked % 128 === 0) await yieldLoop(undefined, { signal: active });
+          if (!ORPHAN_FILE.test(entry.name) || !entry.isFile() || entry.isSymbolicLink()) continue;
+          const stored = `run-events/${entry.name}`;
+          const candidate = RESULT_FILE.test(stored) && resultFiles.has(stored);
+          if (!candidate && !entry.name.endsWith(".tmp") && this.repo.resultReferenced(stored))
+            continue;
+          const info = await lstat(join(resultDir, entry.name)).catch((error) => {
+            // A file removed since the directory entry was read no longer takes up space.
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") incomplete = true;
+            return undefined;
+          });
+          if (
+            info?.isFile() &&
+            !info.isSymbolicLink() &&
+            (candidate || Date.now() - info.mtimeMs >= ORPHAN_MIN_AGE_MS)
+          ) {
+            files++;
+            bytes += info.size;
+          }
+        }
+      } catch {
+        active.throwIfAborted();
+        incomplete = true;
+      }
+    }
+    active.throwIfAborted();
+    return { runs: candidates.runs, files, bytes, incomplete };
+  }
+
   cleanup(olderThanDays: number): Promise<RunRetentionResult> {
     return this.serial(async () => {
       const cutoff = new Date(Date.now() - olderThanDays * 86_400_000).toISOString();
@@ -60,6 +136,7 @@ export class RunRetention {
         executions: 0,
         sessionFiles: 0,
         resultFiles: 0,
+        freedBytes: 0,
       };
       const keys = new Set<string>();
       for (;;) {
@@ -75,7 +152,9 @@ export class RunRetention {
       const files = await this.sweepJobs(keys);
       result.sessionFiles += files.sessionFiles;
       result.resultFiles += files.resultFiles;
-      result.resultFiles += await this.sweepOrphans();
+      const orphans = await this.sweepOrphans();
+      result.resultFiles += orphans.removed;
+      result.freedBytes = files.bytes + orphans.bytes;
       return result;
     });
   }
@@ -94,47 +173,68 @@ export class RunRetention {
     return task;
   }
 
-  private async sweepJobs(owned = new Set<string>()) {
-    const removed = { sessionFiles: 0, resultFiles: 0 };
-    let ownedFailure = false;
+  private *cleanupJobs(signal: AbortSignal) {
     let before = "run-cleanup:";
     for (;;) {
-      this.shutdown.signal.throwIfAborted();
+      signal.throwIfAborted();
       const page = this.db
         .prepare(
           "SELECT key,value FROM settings WHERE key LIKE 'run-cleanup:%' AND key>? ORDER BY key LIMIT 50",
         )
         .all(before);
       for (const row of page) {
-        const key = String(row.key);
-        try {
-          const manifest = manifestSchema.parse(JSON.parse(String(row.value)));
-          let sessions = 0,
-            results = 0;
-          for (const file of manifest.sessionFiles)
-            if (!this.repo.sessionReferenced(file) && (await this.removeSession(file))) sessions++;
-          for (const file of manifest.resultFiles)
-            if (!this.repo.resultReferenced(file) && (await this.removeResult(file))) results++;
-          this.db.prepare("DELETE FROM settings WHERE key=?").run(key);
-          if (owned.has(key)) {
-            removed.sessionFiles += sessions;
-            removed.resultFiles += results;
-          }
-        } catch {
-          this.shutdown.signal.throwIfAborted();
-          if (owned.has(key)) ownedFailure = true;
-          this.logger.warn("Run cleanup job retained for retry");
-        }
+        signal.throwIfAborted();
+        before = String(row.key);
+        yield { key: before, value: String(row.value) };
       }
       if (page.length < 50) break;
-      before = String(page.at(-1)?.key);
+    }
+  }
+
+  private readManifest(value: string) {
+    try {
+      return manifestSchema.parse(JSON.parse(value));
+    } catch {
+      // A malformed record cannot safely name files for the estimate or for deletion.
+      return undefined;
+    }
+  }
+
+  private async sweepJobs(owned = new Set<string>()) {
+    const removed = { sessionFiles: 0, resultFiles: 0, bytes: 0 };
+    let ownedFailure = false;
+    for (const { key, value } of this.cleanupJobs(this.shutdown.signal)) {
+      try {
+        const manifest = this.readManifest(value);
+        if (!manifest) throw new Error("Invalid run cleanup job");
+        for (const file of manifest.sessionFiles) {
+          if (this.repo.sessionReferenced(file)) continue;
+          const step = await this.removeSession(file);
+          if (step.removed) {
+            removed.sessionFiles++;
+            removed.bytes += step.bytes;
+          }
+        }
+        for (const file of manifest.resultFiles) {
+          if (this.repo.resultReferenced(file)) continue;
+          const step = await this.removeResult(file);
+          if (step.removed) {
+            removed.resultFiles++;
+            removed.bytes += step.bytes;
+          }
+        }
+        this.db.prepare("DELETE FROM settings WHERE key=?").run(key);
+      } catch {
+        this.shutdown.signal.throwIfAborted();
+        if (owned.has(key)) ownedFailure = true;
+        this.logger.warn("Run cleanup job retained for retry");
+      }
     }
     if (ownedFailure) throw new Error("Run file cleanup deferred");
     return removed;
   }
 
-  private async removeSession(stored: string): Promise<boolean> {
-    const root = await realpath(this.dataDir);
+  private async sessionForCleanup(root: string, stored: string) {
     const file = resolveSessionFile(this.dataDir, stored);
     const botId = IdSchema.parse(basename(dirname(dirname(file))));
     const owned = join(root, "bots", botId, "sessions");
@@ -150,21 +250,26 @@ export class RunRetention {
         if (stat.isSymbolicLink() || !stat.isDirectory() || (await realpath(path)) !== path)
           throw new Error("Unsafe run session cleanup root");
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
         throw error;
       }
     }
-    this.shutdown.signal.throwIfAborted();
-    if (this.repo.sessionReferenced(stored)) return false;
     try {
       const stat = await lstat(file);
       if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("Unsafe run session file");
+      return { file, bytes: stat.size };
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       throw error;
     }
-    await rm(file);
-    return true;
+  }
+
+  private async removeSession(stored: string): Promise<{ removed: boolean; bytes: number }> {
+    const candidate = await this.sessionForCleanup(await realpath(this.dataDir), stored);
+    this.shutdown.signal.throwIfAborted();
+    if (!candidate || this.repo.sessionReferenced(stored)) return { removed: false, bytes: 0 };
+    await rm(candidate.file);
+    return { removed: true, bytes: candidate.bytes };
   }
 
   private async resultDirectory(): Promise<string | undefined> {
@@ -181,29 +286,32 @@ export class RunRetention {
     }
   }
 
-  private async removeResult(stored: string): Promise<boolean> {
+  private async removeResult(stored: string): Promise<{ removed: boolean; bytes: number }> {
     const match = RESULT_FILE.exec(stored);
     if (!match) throw new Error("Unsafe run result path");
     const directory = await this.resultDirectory();
-    if (!directory) return false;
+    if (!directory) return { removed: false, bytes: 0 };
     const file = join(directory, match[1] as string);
     this.shutdown.signal.throwIfAborted();
-    if (this.repo.resultReferenced(stored)) return false;
+    if (this.repo.resultReferenced(stored)) return { removed: false, bytes: 0 };
+    let bytes = 0;
     try {
       const stat = await lstat(file);
       if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("Unsafe run result file");
+      bytes = stat.size;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { removed: false, bytes: 0 };
       throw error;
     }
     await rm(file);
-    return true;
+    return { removed: true, bytes };
   }
 
-  private async sweepOrphans(): Promise<number> {
+  private async sweepOrphans(): Promise<{ removed: number; bytes: number }> {
     const directory = await this.resultDirectory();
-    if (!directory) return 0;
+    if (!directory) return { removed: 0, bytes: 0 };
     let removed = 0;
+    let bytes = 0;
     for await (const entry of await opendir(directory)) {
       this.shutdown.signal.throwIfAborted();
       if (!ORPHAN_FILE.test(entry.name) || !entry.isFile() || entry.isSymbolicLink()) continue;
@@ -212,11 +320,14 @@ export class RunRetention {
       // A result file is written before the transaction that references it commits (and a .tmp
       // may still be in flight), so only files untouched for a while count as orphans.
       const path = join(directory, entry.name);
-      if (Date.now() - (await lstat(path)).mtimeMs < ORPHAN_MIN_AGE_MS) continue;
+      const info = await lstat(path);
+      if (!info.isFile() || info.isSymbolicLink() || Date.now() - info.mtimeMs < ORPHAN_MIN_AGE_MS)
+        continue;
       await rm(path);
       removed++;
+      bytes += info.size;
     }
-    return removed;
+    return { removed, bytes };
   }
 
   async stop() {

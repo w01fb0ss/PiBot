@@ -69,8 +69,9 @@ export function readGroupTasks(
   groupId: string,
   section: "open" | undefined,
   signal?: AbortSignal,
+  before?: string,
 ) {
-  return c.call("groups.tasks", { groupId, limit: 30, ...(section ? { section } : {}) }, signal);
+  return c.call("groups.tasks", { groupId, limit: 30, section, before }, signal);
 }
 /**
  * A step's group task: the workflow creates it with the step's title for the step's owner, and a
@@ -92,7 +93,7 @@ export function stepTask(tasks: readonly GroupTask[], title: string, botId: stri
 export type StepMark = "done" | "running" | "waiting" | "attention" | "failed" | "skipped";
 export interface PlanStepView {
   id: string;
-  title: string;
+  title?: string;
   task?: string;
   botId?: string;
   mark: StepMark;
@@ -148,7 +149,7 @@ export function planView(state: GroupPlanState) {
     const fact = facts.get(id);
     return {
       id,
-      title: step?.title ?? id,
+      title: step?.title,
       task: step?.task === undefined ? undefined : visibleTaskText(step.task),
       botId: owners.get(id),
       ...stepLook(fact, terminalStopped),

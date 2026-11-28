@@ -97,6 +97,12 @@ type Fixture<K extends Names> = {
 const change = { id, expectedRevision: 1 };
 const operationResult = { operationId: id };
 export const connectorMethodCases = {
+  "connections.commands": {
+    params: { botId: id, groupId: id, readOnly: true, limit: 50 },
+    result: { items: [{ id, name: "Test", token: "Test", kind: "mcp" }], nextCursor: null },
+    badParams: { botId: id, limit: 101 },
+    badResult: { items: [{ id, name: "Test", kind: "mcp" }], nextCursor: null },
+  },
   "connections.availability": {
     params: { target: { kind: "bot", id }, connection: "calendar" },
     badParams: { target: { kind: "other", id }, connection: "calendar" },
@@ -127,7 +133,22 @@ export const connectorMethodCases = {
   },
   "plugins.previewImport": {
     params: { source: { kind: "json", text: "{}" } },
-    result: { previewId: id, digest: "a".repeat(64), manifest, expiresAt: at },
+    result: {
+      previewId: id,
+      digest: "a".repeat(64),
+      manifest: {
+        ...manifest,
+        servers: [
+          {
+            ...manifest.servers[0]!,
+            headers: { Authorization: "" },
+            auth: { kind: "bearer", secretNames: ["SAVED_KEY"] },
+          },
+        ],
+      },
+      savedKeys: [{ serverId: "test", names: ["SAVED_KEY"] }],
+      expiresAt: at,
+    },
     badParams: { source: { kind: "selection", path: "/arbitrary" } },
     badResult: {},
   },
@@ -168,10 +189,37 @@ export const connectorMethodCases = {
     badResult: {},
   },
   "plugins.import": {
-    params: { previewId: id, enable: false, expectedDigest: "a".repeat(64) },
+    params: { previewId: id, enable: false, expectedDigest: "a".repeat(64), useSavedKeys: true },
     result: { installation, connectors: [connector] },
     badParams: { previewId: id, enable: false },
     badResult: {},
+  },
+  "plugins.settings": {
+    params: { installationId: id },
+    result: {
+      installationId: id,
+      revision: 1,
+      editable: true,
+      fields: [
+        {
+          key: "REGION",
+          type: "string" as const,
+          title: "Region",
+          description: "Region",
+          sensitive: false,
+          required: false,
+        },
+      ],
+      values: { REGION: "eu" },
+    },
+    badParams: {},
+    badResult: { installationId: id },
+  },
+  "plugins.updateSettings": {
+    params: { installationId: id, expectedRevision: 1, config: { REGION: "us" } },
+    result: { installation, changed: ["REGION"], operationIds: [id] },
+    badParams: { installationId: id, config: {} },
+    badResult: { installation },
   },
   "plugins.uninstall": {
     params: { installationId: id, expectedRevision: 1 },
@@ -187,9 +235,15 @@ export const connectorMethodCases = {
   },
   "connectors.get": {
     params: { id },
-    result: { connector, access },
+    result: { connector, access, networkMode: "remote", blockedRemoteSite: "example.com" },
     badParams: {},
     badResult: connector,
+  },
+  "connectors.network.resolve": {
+    params: { id, host: "example.com:8443", action: "allow" },
+    result: { ok: true },
+    badParams: { id, host: "https://example.com/path", action: "allow" },
+    badResult: { ok: false },
   },
   "connectors.update": {
     params: { ...change, access },
@@ -366,6 +420,23 @@ export const connectorMethodCases = {
     badParams: { keys: [] },
     badResult: { results: [{ key: discoveredKey, outcome: "previewed" }] },
   },
+  "connections.previewSetup": {
+    params: { key: discoveredKey },
+    result: {
+      previewId: id,
+      digest: "a".repeat(64),
+      manifest,
+      expiresAt: at,
+    },
+    badParams: { key: "invalid" },
+    badResult: { previewId: id },
+  },
+  "connections.adoptBringOver": {
+    params: { key: discoveredKey },
+    result: { selectionId: id },
+    badParams: { key: "bad" },
+    badResult: { selectionId: null },
+  },
   "connections.tokens": {
     params: {},
     result: {
@@ -422,19 +493,44 @@ export const connectorAppMethodCases = {
     badParams: {},
     badResult: {},
   },
+  "connectors.pickWorkingDirectory": {
+    params: {},
+    result: { path: "/example/project" },
+    badParams: { path: "/example/project" },
+    badResult: {},
+  },
+  "connectors.waitAuthorization": {
+    params: { authorizationId: id },
+    result: { status: "failed" as const },
+    badParams: {},
+    badResult: { status: "pending" },
+  },
   "plugins.pickImport": {
     params: { kind: "directory" as const },
     result: { selectionId: null, canceled: true },
     badParams: { kind: "path" },
     badResult: { selectionId: "x" },
   },
+  "plugins.pickSettingPath": {
+    params: { kind: "directory" as const },
+    result: { path: "/tmp/example" },
+    badParams: { kind: "path" },
+    badResult: { path: "relative/path" },
+  },
 };
 const selectionParams = { selectionId: id, installationId: id };
+const setupOrigin = { tool: "claude-code" as const, key: `claude-code:plugin:${"a".repeat(24)}` };
+const setupPath = "/home/user/.claude/plugins/cache/m/p/1.0.0";
 export const connectorHostCases = {
   "host.pickConnectorImport": connectorAppMethodCases["plugins.pickImport"],
   "host.readConnectorImport": {
     params: selectionParams,
-    result: { text: "{}", sourceDigest: "a".repeat(64), sourceKind: "json" as const },
+    result: {
+      text: "{}",
+      sourceDigest: "a".repeat(64),
+      sourceKind: "plugin" as const,
+      bringOver: { ...setupOrigin, sourcePath: setupPath },
+    },
     badParams: { selectionId: id },
     badResult: {},
   },
@@ -445,7 +541,7 @@ export const connectorHostCases = {
     badResult: {},
   },
   "host.adoptConnectorImport": {
-    params: { path: "/home/user/.claude/plugins/cache/m/p/1.0.0" },
+    params: { path: setupPath, bringOver: setupOrigin },
     result: { selectionId: id },
     badParams: { path: "" },
     badResult: { selectionId: null },

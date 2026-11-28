@@ -1,15 +1,22 @@
 // Which exec path starts a stdio MCP, and what is reported when it does not come up.
 // Exec stays the only process creator; this module only chooses between its three entries.
+import { posix, win32 } from "node:path";
 import {
+  type ConnectorNetworkFilter,
   type ConnectorServerStream,
   ConnectorStartError,
   childNodeRuntime,
+  type NetworkProxy,
   startSandboxedServer,
   startUnisolatedConnectorServer,
   windowsSystemRoot,
 } from "@pibot/execution";
 import type { ConnectorStartFailure } from "@pibot/plugins-contract/full";
-import { classifyStartFailure } from "./connector-start-failure.ts";
+import {
+  type ConnectorLauncherHint,
+  classifyStartFailure,
+  startRefusalReason,
+} from "./connector-start-failure.ts";
 
 export interface StdioStartOptions {
   platform: NodeJS.Platform;
@@ -22,7 +29,10 @@ export interface StdioStartOptions {
   baseEnv: NodeJS.ProcessEnv;
   /** Sanitized app environment; outside the sandbox the terminal allowlist is drawn from it. */
   commandEnv: NodeJS.ProcessEnv;
+  proxy?: NetworkProxy;
+  registerProxySecret?(value: string): void;
   networkDomains: readonly string[];
+  networkFilter?: ConnectorNetworkFilter;
   home: string;
   dataDir?: string;
   tempDir: string;
@@ -43,28 +53,53 @@ function bundledNodeCommand(command: string, imported: boolean) {
   return command === "node" || command === "node.exe" ? childNodeRuntime().executable : command;
 }
 
+/** Only the allowlisted name and kind of failure can leave the classifier. */
+function launcherHint(
+  command: string,
+  platform: NodeJS.Platform,
+): ConnectorLauncherHint | undefined {
+  const windows = platform === "win32";
+  const file = (windows ? win32 : posix).basename(command);
+  const name = windows ? file.toLowerCase().replace(/\.(?:cmd|bat|exe)$/, "") : file;
+  if (name !== "node" && name !== "npx" && name !== "uvx") return undefined;
+  const issue: ConnectorStartFailure["launcherIssue"] =
+    windows && (/\.(?:cmd|bat)$/i.test(file) || (command === file && file.toLowerCase() === "npx"))
+      ? "windows_wrapper"
+      : command !== file
+        ? "configured_path"
+        : undefined;
+  return { name, command, issue };
+}
+
 /** True where this server runs without any system isolation. */
 export const runsUnisolated = (options: Pick<StdioStartOptions, "platform" | "outsideSandbox">) =>
   options.platform === "win32" || options.outsideSandbox;
 
 export async function startStdioStream(options: StdioStartOptions): Promise<ConnectorServerStream> {
   const roots = options.importedRoots;
-  const common = {
-    platform: options.platform,
-    command: bundledNodeCommand(options.command, options.importedRoots !== undefined),
-    args: options.args,
-    cwd: options.cwd ?? roots?.install ?? options.home,
-    readOnlyRoots: roots ? [roots.install] : undefined,
-    readWriteRoots: roots ? [roots.data] : undefined,
-    ...(options.pathEntries?.length ? { pathEntries: options.pathEntries } : {}),
-    signal: options.signal,
-  };
+  let command: string | undefined;
   try {
+    // Inside the try: finding Pi Bot's own Node can already refuse, and that is a start failure
+    // the person should see a reason for, like any other.
+    command = bundledNodeCommand(options.command, roots !== undefined);
+    const common = {
+      platform: options.platform,
+      command,
+      args: options.args,
+      cwd: options.cwd ?? roots?.install ?? options.home,
+      readOnlyRoots: roots ? [roots.install] : undefined,
+      readWriteRoots: roots ? [roots.data] : undefined,
+      ...(options.pathEntries?.length ? { pathEntries: options.pathEntries } : {}),
+      signal: options.signal,
+      proxy: options.proxy,
+      registerProxySecret: options.registerProxySecret,
+    };
     if (options.platform === "win32")
       return await startUnisolatedConnectorServer({
         ...common,
         env: { ...options.baseEnv, ...options.declaredEnv },
         windowsRoot: windowsSystemRoot(options.commandEnv),
+        proxyEnv: options.commandEnv,
       });
     if (options.outsideSandbox)
       return await startUnisolatedConnectorServer({
@@ -77,6 +112,7 @@ export async function startStdioStream(options: StdioStartOptions): Promise<Conn
       useConfiguredCwd: options.cwd !== undefined,
       env: { ...options.baseEnv, ...options.declaredEnv },
       networkDomains: options.networkDomains,
+      networkFilter: options.networkFilter,
       boundaryEnv: options.commandEnv,
       allowAll: false,
       tempDir: options.tempDir,
@@ -86,11 +122,16 @@ export async function startStdioStream(options: StdioStartOptions): Promise<Conn
       hostScriptPath: options.trustedStdio?.hostScriptPath,
     });
   } catch (error) {
-    if (error instanceof ConnectorStartError)
+    const refusal = options.signal.aborted ? undefined : startRefusalReason(error);
+    if (error instanceof ConnectorStartError || refusal)
       options.reportStartFailure?.(
         classifyStartFailure({
           phase: "start",
-          diagnosis: error.diagnosis,
+          ...(error instanceof ConnectorStartError ? { diagnosis: error.diagnosis } : {}),
+          ...(refusal ? { refusal } : {}),
+          ...(command === options.command
+            ? { launcher: launcherHint(command, options.platform) }
+            : {}),
           timedOut: false,
           outsideSandbox: runsUnisolated(options),
           redact: options.redact,
@@ -108,7 +149,13 @@ export async function reportInitializeFailure(
   stream: ConnectorServerStream,
   options: Pick<
     StdioStartOptions,
-    "platform" | "outsideSandbox" | "redact" | "reportStartFailure" | "signal"
+    | "platform"
+    | "outsideSandbox"
+    | "redact"
+    | "reportStartFailure"
+    | "signal"
+    | "command"
+    | "importedRoots"
   >,
 ) {
   if (!options.reportStartFailure) return;
@@ -119,6 +166,10 @@ export async function reportInitializeFailure(
   options.reportStartFailure(
     classifyStartFailure({
       phase: "initialize",
+      launcher:
+        options.importedRoots && (options.command === "node" || options.command === "node.exe")
+          ? undefined
+          : launcherHint(options.command, options.platform),
       diagnosis: await stream.diagnose(),
       timedOut,
       outsideSandbox: runsUnisolated(options),

@@ -7,7 +7,12 @@ import {
   gitEntryPlanCurrent,
   inspectGitEntries,
 } from "@pibot/execution";
-import { type CommandAnalysis, expandHome, GIT_ENTRY_CONFIRMATION_REASON } from "@pibot/policy";
+import {
+  type CommandAnalysis,
+  expandHome,
+  GIT_ENTRY_CONFIRMATION_REASON,
+  windowsReadShape,
+} from "@pibot/policy";
 import {
   type GitEntryFacts,
   GitEntryFactsSchema,
@@ -76,12 +81,15 @@ export async function prepareRunGitEntries(
   signal: AbortSignal,
   callId: string,
 ): Promise<PreparedGitEntries | undefined> {
-  if (!analysis.commands.some((command) => GIT.test(command.program))) return undefined;
-  // Indirect Git (scripts, package managers) is not visible here.
-  if (LAYOUT_ENV.test(args.command)) return refused("dynamic");
   const location = workplace.boundary.location;
   const remote = !!location?.target && location.target !== "local";
   const platform = (remote ? location?.platform : undefined) ?? local.deps.platform;
+  // The Bash analyzer cannot bind Windows quoting and path separators for a no-card read.
+  const windowsGit = platform === "win32" ? windowsReadShape(args.command)?.git : undefined;
+  if (!windowsGit?.length && !analysis.commands.some((command) => GIT.test(command.program)))
+    return undefined;
+  // Indirect Git (scripts, package managers) is not visible here.
+  if (LAYOUT_ENV.test(args.command)) return refused("dynamic");
   const path = platform === "win32" ? win32 : posix;
   // Maintainers 2026-11-06: runners get the same check, scanned on the runner where the repo lives.
   const target = remote ? local.targetFor(location) : undefined;
@@ -91,9 +99,11 @@ export async function prepareRunGitEntries(
     ? (await target.canonicalizePath(args.cwd ?? workplace.cwd, workplace.cwd, signal)).path
     : await canonicalPath(expandHome(args.cwd ?? workplace.cwd, workplace.home), workplace.cwd);
   const literal = analysis.literalCommand && GIT.test(analysis.literalCommand.program);
-  const found = literal
-    ? [{ args: analysis.literalCommand?.args ?? [], cwd }]
-    : invocations(analysis, cwd, home, path);
+  const found = windowsGit?.length
+    ? windowsGit.map((args) => ({ args, cwd }))
+    : literal
+      ? [{ args: analysis.literalCommand?.args ?? [], cwd }]
+      : invocations(analysis, cwd, home, path);
   if (found === "dynamic") return refused("dynamic");
   if (!found.length) return undefined;
   const request = {
@@ -104,6 +114,7 @@ export async function prepareRunGitEntries(
     compound: !literal,
     callId,
     command: args.command,
+    ...(windowsGit?.length ? { windowsReadRoots: workplace.boundary.readRoots } : {}),
   };
   const scan = target?.inspectGitEntries
     ? await target.inspectGitEntries(request, signal).catch((error: unknown) => {
@@ -143,7 +154,10 @@ export async function prepareRunGitEntries(
 }
 
 export function gitEntriesFingerprint(value: PreparedGitEntries | undefined) {
-  return value ? (value.facts ?? "none") : undefined;
+  if (!value) return undefined;
+  return (
+    value.facts ?? (value.plan?.windowsReadScopeVerified ? "windows_read_scope_verified" : "none")
+  );
 }
 
 /**

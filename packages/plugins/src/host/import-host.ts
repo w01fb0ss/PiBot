@@ -8,9 +8,13 @@ import {
   pluginText,
 } from "@pibot/plugin-sdk";
 import {
-  hardenPluginConfigField,
   hasPluginCommandSubstitution,
+  implicitPluginConfigKeys,
+  isExcludedPluginEntry as isExcluded,
+  isNeverCopiedPluginEntry as isNeverCopied,
   looksLikeCredentialValue,
+  normalizePluginConfigField,
+  PLUGIN_CONFIG_MAX_BYTES,
   unsupportedClaudePluginComponents,
 } from "@pibot/plugins-contract";
 import type {
@@ -19,6 +23,7 @@ import type {
   ClaudePluginSkill,
   ConnectorCommandConfirmation,
   ConnectorImportHost,
+  ConnectorImportOrigin,
 } from "@pibot/plugins-contract/full";
 import {
   ClaudePluginBundleSchema,
@@ -31,6 +36,7 @@ import {
   withProgressDeadline,
 } from "@pibot/plugins-contract/full";
 import { commandConfirmationDialog } from "./command-confirmation.ts";
+import { rejectSymlink } from "./import-error.ts";
 import { importFileChanges } from "./import-file-changes.ts";
 import {
   type ImportContent,
@@ -41,23 +47,8 @@ import {
 import { extractPluginZip } from "./zip-import.ts";
 
 const TTL = 5 * 60_000;
-const MAX_CONFIG = 1024 * 1024;
 const MAX_FILES = SKILL_IMPORT_MAX_FILES;
 const MAX_BYTES = SKILL_IMPORT_MAX_BYTES;
-// Claude Code reads these names at the plugin root only. Excluding them at every depth silently
-// dropped a skill's own `workflows/`, `bin/` or `agents/` folder, which is ordinary package
-// content (ppt-master lost 23 files that way).
-const excludedAtRoot = new Set([
-  ...unsupportedClaudePluginComponents.map((item) => item.path.toLowerCase()),
-  "extensions",
-]);
-const neverCopied = new Set([".git", ".env", ".ds_store"]);
-const isEnvFile = (name: string) =>
-  name.toLowerCase() !== ".env.example" && /^\.env(?:\.|$)/i.test(name);
-/** Version-control data and real environment files never leave the source, at any depth. */
-const isNeverCopied = (name: string) => neverCopied.has(name.toLowerCase()) || isEnvFile(name);
-const isExcluded = (name: string, rootLevel: boolean) =>
-  isNeverCopied(name) || (rootLevel && excludedAtRoot.has(name.toLowerCase()));
 /** A configured path's first segment is a plugin-root name; deeper ones only carry file rules. */
 const referencesExcludedPath = (path: string) => {
   const values = [path];
@@ -77,6 +68,7 @@ type Entry = {
   digest?: string;
   cleanupPath?: string;
   fallbackName?: string;
+  bringOver?: ConnectorImportOrigin;
   abort?: AbortController;
   pending?: Set<Promise<unknown>>;
   work?: ReturnType<typeof progressDeadline>;
@@ -90,9 +82,6 @@ type Snapshot = {
 function failure(reason = "layout_unsupported"): never {
   throw new RpcError(RpcErrorCodes.pluginImportInvalid, `connector_import_${reason}`);
 }
-function rejectSymlink(): never {
-  throw new RpcError(RpcErrorCodes.pluginImportInvalid, "connector_import_symlink");
-}
 function rejectCommandSubstitution(): never {
   throw new RpcError(
     RpcErrorCodes.pluginImportInvalid,
@@ -103,12 +92,23 @@ function inside(root: string, path: string) {
   const rel = relative(root, path);
   return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel));
 }
+async function rejectLinkedParent(path: string): Promise<never> {
+  let parent = dirname(resolve(path));
+  while (dirname(parent) !== parent) {
+    // A parent can disappear after realpath detects the mismatch. The selection remains refused.
+    const stat = await lstat(parent).catch(() => undefined);
+    if (stat?.isSymbolicLink()) rejectSymlink(basename(parent));
+    parent = dirname(parent);
+  }
+  return rejectSymlink();
+}
 async function readSafe(root: string, path: string, max: number, signal?: AbortSignal) {
   signal?.throwIfAborted();
   if (!inside(root, path)) failure("path_outside_plugin");
   let ancestor = path;
   while (ancestor !== root) {
-    if ((await lstat(ancestor)).isSymbolicLink()) rejectSymlink();
+    if ((await lstat(ancestor)).isSymbolicLink())
+      rejectSymlink(relative(root, ancestor) || basename(ancestor));
     ancestor = dirname(ancestor);
   }
   // Bigint stats keep NTFS-sized inodes exact (see execution core/file-identity.ts; the host entry
@@ -402,7 +402,7 @@ export function createConnectorImportHost(options: {
       if (++entries > 100_000) failure();
       const stat = await lstat(path);
       activity?.();
-      if (stat.isSymbolicLink()) rejectSymlink();
+      if (stat.isSymbolicLink()) rejectSymlink(relative(root, path) || basename(path));
       if (stat.isDirectory()) {
         for await (const child of await opendir(path)) {
           if (isExcluded(child.name, path === root)) continue;
@@ -425,7 +425,7 @@ export function createConnectorImportHost(options: {
       await collect(stat.isDirectory() || dirname(rel) === "." ? path : dirname(path));
     }
     const text = JSON.stringify(source);
-    if (Buffer.byteLength(text) > MAX_CONFIG) failure("file_too_large");
+    if (Buffer.byteLength(text) > PLUGIN_CONFIG_MAX_BYTES) failure("file_too_large");
     const hash = createHash("sha256").update(text);
     if (includeDigest)
       for (const [name, content] of [...files].sort(([left], [right]) =>
@@ -448,13 +448,14 @@ export function createConnectorImportHost(options: {
       entry.expires = Date.now() + TTL;
     };
     requestSignal.throwIfAborted();
-    if ((await lstat(entry.path)).isSymbolicLink()) failure();
-    const root =
-      entry.kind === "directory" ? await realpath(entry.path) : await realpath(dirname(entry.path));
+    if ((await lstat(entry.path)).isSymbolicLink()) rejectSymlink(basename(entry.path));
+    const real = await realpath(entry.path);
+    if (!entry.cleanupPath && real !== resolve(entry.path)) await rejectLinkedParent(entry.path);
+    const root = entry.kind === "directory" ? real : dirname(real);
     const files = new Map<string, ImportContent>();
     const configNames = new Set<string>();
     if (entry.sourceKind === "json") {
-      const bytes = await readSafe(root, entry.path, MAX_CONFIG, requestSignal);
+      const bytes = await readSafe(root, entry.path, PLUGIN_CONFIG_MAX_BYTES, requestSignal);
       const text = bytes.toString("utf8").replace(/^\uFEFF/u, "");
       try {
         record(JSON.parse(text));
@@ -476,7 +477,7 @@ export function createConnectorImportHost(options: {
       )
         failure();
       if (!(await exists(path))) failure("manifest_not_found");
-      const bytes = await readSafe(root, path, MAX_CONFIG, requestSignal);
+      const bytes = await readSafe(root, path, PLUGIN_CONFIG_MAX_BYTES, requestSignal);
       files.set(rel, bytes);
       configNames.add(rel);
       try {
@@ -514,7 +515,9 @@ export function createConnectorImportHost(options: {
     const applicationSource = (await exists(applicationPath))
       ? record(
           JSON.parse(
-            (await readSafe(root, applicationPath, MAX_CONFIG, requestSignal)).toString("utf8"),
+            (
+              await readSafe(root, applicationPath, PLUGIN_CONFIG_MAX_BYTES, requestSignal)
+            ).toString("utf8"),
           ),
         )
       : undefined;
@@ -524,6 +527,7 @@ export function createConnectorImportHost(options: {
         : undefined;
     if (application) {
       files.set("pibot.json", Buffer.from(JSON.stringify(application)));
+      configNames.add("pibot.json");
       manifest = {
         ...manifest,
         name: application.id,
@@ -544,7 +548,7 @@ export function createConnectorImportHost(options: {
       if (++entries > 100_000) failure();
       const stat = await lstat(path);
       activity?.();
-      if (stat.isSymbolicLink()) rejectSymlink();
+      if (stat.isSymbolicLink()) rejectSymlink(relative(root, path) || basename(path));
       if (stat.isDirectory()) {
         for await (const child of await opendir(path)) {
           if (isExcluded(child.name, path === root)) continue;
@@ -561,7 +565,7 @@ export function createConnectorImportHost(options: {
       if (files.size > MAX_FILES) failure();
     }
     async function addSkill(path: string, kind: "skill" | "command", fallback: string) {
-      const content = await readSafe(root, path, MAX_CONFIG, requestSignal);
+      const content = await readSafe(root, path, PLUGIN_CONFIG_MAX_BYTES, requestSignal);
       const rel = relative(root, path).split(sep).join("/");
       // A suspected credential refuses only this skill. Failing the whole plugin
       // threw away every other skill because one file mentioned something key-shaped.
@@ -592,9 +596,9 @@ export function createConnectorImportHost(options: {
 
     const skillsRoot = join(root, "skills");
     if (await exists(skillsRoot)) {
-      if ((await lstat(skillsRoot)).isSymbolicLink()) failure();
+      if ((await lstat(skillsRoot)).isSymbolicLink()) rejectSymlink("skills");
       for await (const child of await opendir(skillsRoot)) {
-        if (child.isSymbolicLink()) failure();
+        if (child.isSymbolicLink()) rejectSymlink(join("skills", child.name));
         if (!child.isDirectory() || isNeverCopied(child.name)) continue;
         const path = join(skillsRoot, child.name, "SKILL.md");
         if (await exists(path)) await addSkill(path, "skill", child.name);
@@ -608,9 +612,9 @@ export function createConnectorImportHost(options: {
     }
     const commandsRoot = join(root, "commands");
     if (await exists(commandsRoot)) {
-      if ((await lstat(commandsRoot)).isSymbolicLink()) failure();
+      if ((await lstat(commandsRoot)).isSymbolicLink()) rejectSymlink("commands");
       for await (const child of await opendir(commandsRoot)) {
-        if (child.isSymbolicLink()) failure();
+        if (child.isSymbolicLink()) rejectSymlink(join("commands", child.name));
         if (child.isFile() && child.name.toLowerCase().endsWith(".md"))
           await addSkill(
             join(commandsRoot, child.name),
@@ -664,21 +668,12 @@ export function createConnectorImportHost(options: {
     const configFields: ClaudePluginConfigField[] = [];
     if (manifest.userConfig !== undefined) {
       for (const [key, raw] of Object.entries(record(manifest.userConfig))) {
-        if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(key)) failure();
         const field = record(raw);
-        const type = field.type === undefined ? "string" : String(field.type);
-        if (!["string", "number", "boolean", "directory", "file"].includes(type)) failure();
-        const value = hardenPluginConfigField({
-          key,
-          type: type as ClaudePluginConfigField["type"],
+        const value = {
+          ...normalizePluginConfigField(key, field),
           // `{ zh, en }` is accepted beside plain strings (see the SDK's PluginTextSchema).
           title: pluginText(field.title) ?? key,
           description: pluginText(field.description) ?? key,
-          sensitive: field.sensitive === true,
-          required: field.required === true,
-          ...(field.default !== undefined
-            ? { default: field.default as string | number | boolean }
-            : {}),
           ...(Array.isArray(field.options)
             ? {
                 options: field.options
@@ -705,35 +700,13 @@ export function createConnectorImportHost(options: {
                     .map((option) => ({ value: option, label: String(option) })),
                 }
               : {}),
-          ...(field.visibleWhen &&
-          typeof field.visibleWhen === "object" &&
-          !Array.isArray(field.visibleWhen) &&
-          typeof (field.visibleWhen as Record<string, unknown>).key === "string" &&
-          ["string", "number", "boolean"].includes(
-            typeof (field.visibleWhen as Record<string, unknown>).equals,
-          )
-            ? {
-                visibleWhen: {
-                  key: String((field.visibleWhen as Record<string, unknown>).key),
-                  equals: (field.visibleWhen as Record<string, unknown>).equals as
-                    | string
-                    | number
-                    | boolean,
-                },
-              }
-            : {}),
-        });
+        };
         configFields.push(value);
         components.push({ kind: "setting", name: value.title, status: "import" });
       }
     }
     const declared = new Set(configFields.map((field) => field.key));
-    const serializedMcp = JSON.stringify(mcpServers);
-    for (const match of serializedMcp.matchAll(/\$\{([A-Z][A-Z0-9_]{0,63})\}/g)) {
-      const key = match[1];
-      if (!key || key === "CLAUDE_PLUGIN_ROOT" || key === "CLAUDE_PLUGIN_DATA" || declared.has(key))
-        continue;
-      declared.add(key);
+    for (const key of implicitPluginConfigKeys(mcpServers, declared)) {
       configFields.push({
         key,
         type: "string",
@@ -811,7 +784,7 @@ export function createConnectorImportHost(options: {
       ...bundle,
       mcpServers: record(JSON.parse(relocated.text)).mcpServers,
     });
-    if (Buffer.byteLength(text) > MAX_CONFIG) failure("file_too_large");
+    if (Buffer.byteLength(text) > PLUGIN_CONFIG_MAX_BYTES) failure("file_too_large");
     const hash = createHash("sha256").update(text);
     for (const [name, content] of [...files].sort(([left], [right]) => left.localeCompare(right))) {
       hash.update(name).update("\0");
@@ -852,8 +825,8 @@ export function createConnectorImportHost(options: {
       // that callers had to guess at.
       if (result.canceled || !path) return { selectionId: null, canceled: true };
       // Reject the selected alias explicitly; do not weaken descendant no-follow checks.
-      if ((await lstat(path)).isSymbolicLink() || (await realpath(path)) !== resolve(path))
-        throw new RpcError(RpcErrorCodes.pluginImportInvalid, "connector_import_symlink");
+      if ((await lstat(path)).isSymbolicLink()) rejectSymlink(basename(path));
+      if ((await realpath(path)) !== resolve(path)) await rejectLinkedParent(path);
       const selectionId = randomUUID();
       if (kind === "file" && extname(path).toLowerCase() === ".zip") {
         await mkdir(importRoot, { recursive: true, mode: 0o700 });
@@ -880,7 +853,7 @@ export function createConnectorImportHost(options: {
         });
       return { selectionId, canceled: false };
     },
-    async adopt({ path, temporary }) {
+    async adopt({ path, temporary, bringOver }) {
       await cleanupReady;
       stopped.signal.throwIfAborted();
       for (const [id, entry] of selections)
@@ -893,8 +866,8 @@ export function createConnectorImportHost(options: {
       // apply, and nothing outside it is read (snapshot keeps every file inside the root).
       if (!isAbsolute(path)) failure();
       const stat = await lstat(path);
-      if (stat.isSymbolicLink() || (await realpath(path)) !== resolve(path))
-        throw new RpcError(RpcErrorCodes.pluginImportInvalid, "connector_import_symlink");
+      if (stat.isSymbolicLink()) rejectSymlink(basename(path));
+      if ((await realpath(path)) !== resolve(path)) await rejectLinkedParent(path);
       if (!stat.isDirectory()) failure();
       stopped.signal.throwIfAborted();
       const selectionId = randomUUID();
@@ -934,11 +907,14 @@ export function createConnectorImportHost(options: {
         sourceKind: "plugin",
         expires: Date.now() + TTL,
         fallbackName: basename(path),
+        ...(bringOver ? { bringOver: { ...bringOver, sourcePath: path } } : {}),
       });
       return { selectionId };
     },
     async read({ selectionId, installationId }) {
       const entry = await get(selectionId);
+      // A setup retry uses the same destination even when the prior reply was lost.
+      if (entry.bringOver) installationId = selectionId;
       if (entry.installationId && entry.installationId !== installationId) failure();
       const result = await snapshot(entry, installationId);
       entry.installationId = installationId;
@@ -947,6 +923,7 @@ export function createConnectorImportHost(options: {
         text: result.text,
         sourceDigest: result.digest,
         sourceKind: entry.sourceKind,
+        ...(entry.bringOver ? { bringOver: entry.bringOver } : {}),
         ...(entry.sourceKind === "plugin"
           ? {
               fileChanges: await importFileChanges(
@@ -1129,7 +1106,7 @@ export function createConnectorImportHost(options: {
       return work.finally(() => pending.delete(work));
     },
     ...(adopt
-      ? { adopt: (input: { path: string; temporary?: boolean }) => track("", () => adopt(input)) }
+      ? { adopt: (input: Parameters<typeof adopt>[0]) => track("", () => adopt(input)) }
       : {}),
     read: (input) => track(input.selectionId, () => host.read(input)),
     materialize: (input) => track(input.selectionId, () => host.materialize(input)),

@@ -6,6 +6,7 @@ import {
   useT,
 } from "@pibot/renderer-kit";
 import { Button, Combobox, type ComboboxOption, IconTile } from "@pibot/ui";
+import type { ReactNode } from "react";
 import styles from "../workspace.module.css";
 
 export function ImageModelFields({
@@ -20,6 +21,7 @@ export function ImageModelFields({
   uncertain = false,
   settingsLink = true,
   row = false,
+  children,
 }: {
   /** The Bot panel draws the picker as a tiled row with a pill, like a text Bot's model. */
   row?: boolean;
@@ -34,6 +36,7 @@ export function ImageModelFields({
   more?(): void;
   selectedLabel?: string;
   uncertain?: boolean;
+  children?: ReactNode;
 }) {
   const t = useT();
   const text = useComboboxText();
@@ -76,6 +79,7 @@ export function ImageModelFields({
           <span className={panelStyles.rowLabel}>{t("media.model")}</span>
           {picker}
         </div>
+        {children}
         <p className={panelStyles.note}>{t("media.autoMode")}</p>
         {!eligible.length && !uncertain && (
           <p className={panelStyles.note}>{t("media.noModels")}</p>
@@ -96,15 +100,8 @@ export function ImageModelFields({
   return (
     <div className={styles.grid}>
       <p className={styles.note}>{t("media.autoMode")}</p>
-      <Combobox
-        {...text}
-        label={t("media.model")}
-        placeholder={t("models.selectModel")}
-        value={value}
-        disabled={disabled || !eligible.length}
-        options={options}
-        onValueChange={change}
-      />
+      {picker}
+      {children}
       {!eligible.length && !uncertain && <p className={styles.note}>{t("media.noModels")}</p>}
       <p className={styles.note}>{t("media.defaults")}</p>
       {hasMore && (

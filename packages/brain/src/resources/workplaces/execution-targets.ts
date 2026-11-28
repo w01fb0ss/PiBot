@@ -5,6 +5,7 @@ export interface RegisteredExecutionTarget {
   target: ExecutionTarget;
   platform: "darwin" | "linux" | "win32";
   name: string;
+  pairedDeviceId: string;
 }
 /** The connection owner disposes targets; deregistration closes admission immediately. */
 export class ExecutionTargets {

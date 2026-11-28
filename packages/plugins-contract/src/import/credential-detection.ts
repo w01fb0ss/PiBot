@@ -3,7 +3,7 @@ import type { ClaudePluginConfigField } from "@pibot/protocol-base";
 // Shared by MCP env/header migration and userConfig. Keep this conservative:
 // an untrusted manifest may make a field stricter, but never downgrade these signals.
 const CREDENTIAL_NAME =
-  /PASS(?:WORD|WD)|SECRET|TOKEN|CREDENTIAL|AUTH|API[-_]?KEY|(?:^|[_-])(?:KEY|PAT)(?:[_-]|$)|COOKIE/i;
+  /PASS(?:WORD|WD)|SECRET|TOKEN|CREDENTIAL|AUTH|API[-_]?KEY|(?:^|[_-])(?:KEY|PAT)(?:[_-]|$)|COOKIE|(?:^|[_-])SESSION[-_]?ID(?:[_-]|$)/i;
 const CREDENTIAL_VALUE =
   /(?:sk-(?:ant-)?|xai-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|AIza|gsk_|hf_)[A-Za-z0-9_-]{19,}/;
 const CLAUDE_PLUGIN_ROOT_REFERENCE = `\${CLAUDE_PLUGIN_ROOT}`;
@@ -31,9 +31,13 @@ export function hasPluginCommandSubstitution(value: string, allowPluginRoot = fa
   return checked.includes("${");
 }
 
-/** Remove untrusted defaults and force write-only text input for every suspected credential. */
+/** Remove untrusted defaults while retaining the picker type for private paths. */
 export function hardenPluginConfigField(field: ClaudePluginConfigField): ClaudePluginConfigField {
   if (!field.sensitive && !looksLikeCredential(field.key, field.default)) return field;
   const { default: _untrustedDefault, ...safe } = field;
+  if (field.type === "directory" || field.type === "file") {
+    const { options: _untrustedOptions, ...pathField } = safe;
+    return { ...pathField, sensitive: true, required: true };
+  }
   return { ...safe, type: "string", sensitive: true, required: true };
 }

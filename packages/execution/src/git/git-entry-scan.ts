@@ -1,5 +1,5 @@
 import { readdirSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, resolve, win32 } from "node:path";
 import {
   type ConfigEntry,
   type ConfigSource,
@@ -36,6 +36,8 @@ export interface GitEntryFactsData {
 export interface GitEntryPlan {
   /** Absent when nothing would run: the plan then only pins that this is still true at launch. */
   readonly facts?: Readonly<GitEntryFactsData>;
+  /** The Windows read can start without ordinary consent only while this plan is current. */
+  readonly windowsReadScopeVerified?: true;
   readonly callId: string;
   readonly command: string;
   /**
@@ -50,17 +52,14 @@ export interface GitEntryTargetInput {
   compound: boolean;
   callId: string;
   command: string;
+  /** Canonical work folders for an implicit Windows read, including its Git metadata. */
+  windowsReadRoots?: readonly string[];
 }
 export interface GitEntryInvocation {
   args: readonly string[];
   cwd: string;
 }
-export interface GitEntryScanInput {
-  invocations: readonly GitEntryInvocation[];
-  /** More than the single outer literal Git command: anything found is refused, not asked. */
-  compound: boolean;
-  callId: string;
-  command: string;
+export interface GitEntryScanInput extends GitEntryTargetInput {
   /** The command's HOME (the Bot home); its `.gitconfig` is the global file Git reads there. */
   botHome: string;
   platform: NodeJS.Platform;
@@ -185,7 +184,42 @@ function localPushTargets(
   return [...targets];
 }
 
-async function scanInvocation(invocation: GitEntryInvocation, collector: Collector) {
+function withinWindowsReadScope(
+  paths: readonly string[],
+  commonDir: string,
+  roots: readonly string[],
+  collector: Collector,
+) {
+  // Gitfiles, commondir and upward discovery can all select data outside the explicit cwd.
+  if (
+    !paths.every(
+      (path) =>
+        !/^[\\/]{2}/.test(path) &&
+        roots.some((root) => {
+          const relative = win32.relative(root, path);
+          return !win32.isAbsolute(relative) && relative !== ".." && !relative.startsWith("..\\");
+        }),
+    )
+  )
+    return false;
+  const path = join(commonDir, "objects", "info", "alternates");
+  let alternates: BoundPath;
+  try {
+    alternates = observe(path);
+  } catch (error) {
+    if (error instanceof EntryScanIncomplete) return false;
+    throw error;
+  }
+  if (alternates.kind !== "absent") return false;
+  bind(collector, alternates);
+  return true;
+}
+
+async function scanInvocation(
+  invocation: GitEntryInvocation,
+  collector: Collector,
+  windowsReadScope: { roots: readonly string[]; verified: boolean } | undefined,
+) {
   const parsed = parseInvocation(invocation, collector.botHome);
   if (!parsed) return;
   const { subcommand, rest, inline, cwd } = parsed;
@@ -197,6 +231,17 @@ async function scanInvocation(invocation: GitEntryInvocation, collector: Collect
   // A new repository's hooks come from the template (baseline), never from an enclosing repo.
   const repository =
     subcommand === "clone" || subcommand === "init" ? undefined : discover(cwd, collector);
+  // Scope determines eligibility for automatic approval. The ordinary entry scan still
+  // has to finish so that the standard consent path can use its result.
+  if (windowsReadScope?.verified)
+    windowsReadScope.verified = repository
+      ? withinWindowsReadScope(
+          [cwd, repository.worktree ?? cwd, repository.gitDir, repository.commonDir],
+          repository.commonDir,
+          windowsReadScope.roots,
+          collector,
+        )
+      : subcommand !== "diff" || rest.length === 0; // With operands, Git can imply --no-index.
   if (!repository) {
     // Outside a repository only the Bot home global file can name a program.
     const global = await source(join(collector.botHome, ".gitconfig"), collector, false);
@@ -301,9 +346,14 @@ export async function inspectGitEntries(
     status: "unsupported",
     facts: { version: 1, status: "unsupported", reason, entries: [], authority: "none" },
   });
+  const windowsReadScope =
+    input.platform === "win32" && input.windowsReadRoots && input.invocations.length
+      ? { roots: input.windowsReadRoots, verified: true }
+      : undefined;
   try {
     if (input.invocations.length > MAX_SCANS) return refuse("scan_incomplete");
-    for (const invocation of input.invocations) await scanInvocation(invocation, collector);
+    for (const invocation of input.invocations)
+      await scanInvocation(invocation, collector, windowsReadScope);
   } catch (error) {
     signal.throwIfAborted();
     if (error instanceof Refused) return refuse(error.reason);
@@ -313,7 +363,11 @@ export async function inspectGitEntries(
   const bound = Object.freeze(collector.bound.map((item) => Object.freeze({ ...item })));
   if (!collector.entries.length) {
     // Hooks found absent are bound too, so one created before launch refuses this call.
-    const plan: GitEntryPlan = Object.freeze({ callId: input.callId, command: input.command });
+    const plan: GitEntryPlan = Object.freeze({
+      callId: input.callId,
+      command: input.command,
+      ...(windowsReadScope?.verified ? { windowsReadScopeVerified: true as const } : {}),
+    });
     issued.set(plan, bound);
     return { status: "none", plan };
   }

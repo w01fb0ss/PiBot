@@ -4,7 +4,10 @@ export class ImportFailure extends Error {
     readonly reason:
       | "unsupported"
       | "source_changed"
+      | "source_in_use"
+      | "timeout"
       | "format"
+      | "gemini_html"
       | "target"
       | "limit"
       | "memory_conflict"

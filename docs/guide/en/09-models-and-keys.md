@@ -9,6 +9,7 @@ On this page:
 - [Sign in with a ChatGPT plan](#sign-in-with-a-chatgpt-plan)
 - [Claude plans](#claude-plans)
 - [Local models and custom gateways](#local-models-and-custom-gateways)
+- [Video generation models](#video-generation-models)
 - [Web search](#web-search)
 - [A different model per Bot](#a-different-model-per-bot)
 - [Troubleshoot a model connection](#troubleshoot-a-model-connection)
@@ -78,6 +79,16 @@ The **Local** group:
 - **Qwen API · Pay as you go**, **Z.ai API · Pay as you go**: pay-per-use endpoints.
 
 If your network needs a proxy, set it in Settings › General › Network proxy (or in the welcome flow). Every model provider uses this proxy; only model servers on this computer (localhost, 127.0.0.1) connect directly. Pi Bot uses only the proxy entered here and never uses the system proxy on its own; if this computer is already using a proxy, its address is filled in for you and takes effect once you turn on **Use proxy**.
+
+## Video generation models
+
+After you save an API key for Google, OpenRouter or OpenAI, Pi Bot loads the provider’s video catalog and enables the models it finds. See the models and available prices under Settings › Models & API keys › Video models. Use **Enable video model** for a model you turned off or for a suggested ID the provider hasn’t confirmed.
+
+When Pi Bot can’t verify the catalog, it keeps your saved choices and labels the last known prices as cached, including on the video generation confirmation card.
+
+For a **Custom** provider, choose its **Video API**. Options include OpenAI-compatible Videos, Gemini Veo, Kling, Volcengine Ark and Agnes. Enter the provider API key. If you use Kling's access key and secret key, enter them in the same field as `access-key:secret-key`. Pi Bot saves credentials in the system secret store. Under **Video models**, select a model returned by **Fetch models** or enter its exact ID. Add a per-second or per-clip USD rate if you know it so the card can estimate the cost.
+
+Video models are available to the Bot's video tool and are separate from its chat model. Set a default video model in the chat Bot's profile. On desktop, you can also switch to another configured model on the approval card if it supports the request.
 
 ## Web search
 

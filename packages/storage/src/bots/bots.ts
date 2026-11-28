@@ -20,7 +20,7 @@ const botColumns = `id, name, is_main AS isMain, avatar_shape AS avatarShape,
   description, memory_mode AS memoryMode, memory_extraction AS memoryExtraction,
   archived_at AS archivedAt, category, image_mode AS imageMode,
   role_id AS roleId, role_version AS roleVersion, norms, quick_prompts AS quickPrompts,
-  review_bot_id AS reviewBotId, auto_review AS autoReview, kind,
+  review_bot_id AS reviewBotId, auto_review AS autoReview, kind, default_video_model AS defaultVideoModel,
   (SELECT value FROM settings WHERE key='avatar:bot:' || bots.id) AS avatarImage`;
 
 function parseBot(row: Record<string, unknown>): Bot {
@@ -33,6 +33,7 @@ function parseBot(row: Record<string, unknown>): Bot {
     reviewBotId,
     autoReview,
     kind,
+    defaultVideoModel,
     ...rest
   } = row;
   // Absent role fields stay absent so Bots made before roles existed keep their exact shape.
@@ -52,6 +53,9 @@ function parseBot(row: Record<string, unknown>): Bot {
     ...(typeof reviewBotId === "string" ? { reviewBotId } : {}),
     ...(autoReview === 1 ? { autoReview: true } : {}),
     ...(kind === "agent" ? { kind } : {}),
+    ...(typeof defaultVideoModel === "string"
+      ? { defaultVideoModel: JSON.parse(defaultVideoModel) }
+      : {}),
   });
 }
 function roleColumns(bot: Bot) {
@@ -161,8 +165,8 @@ export class BotsRepo {
       .prepare(`INSERT INTO bots (id, name, is_main, avatar_shape, avatar_color, avatar_eyes,
         model_provider, model_id, thinking_level, system_prompt, created_at, updated_at, permission_overrides, description, memory_mode, memory_extraction, archived_at, category, image_mode,
         role_id, role_version, norms, quick_prompts, google_compat_at, thinking_preference,
-        review_bot_id, auto_review, kind)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        review_bot_id, auto_review, kind, default_video_model)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(
         bot.id,
         bot.name,
@@ -190,6 +194,7 @@ export class BotsRepo {
         bot.reviewBotId ?? null,
         Number(bot.autoReview ?? false),
         bot.kind ?? null,
+        bot.defaultVideoModel ? JSON.stringify(bot.defaultVideoModel) : null,
       );
     if (bot.avatarImage) this.saveAvatar(bot.id, bot.avatarImage);
     return bot;
@@ -228,7 +233,7 @@ export class BotsRepo {
         avatar_eyes = ?, model_provider = ?, model_id = ?, thinking_level = ?,
         system_prompt = ?, updated_at = ?, permission_overrides = ?, description = ?, memory_mode = ?, memory_extraction = ?, archived_at = ?, category = ?, image_mode = ?,
         role_id = ?, role_version = ?, norms = ?, quick_prompts = ?, thinking_preference = ?,
-        review_bot_id = ?, auto_review = ? WHERE id = ?`)
+        review_bot_id = ?, auto_review = ?, default_video_model = ? WHERE id = ?`)
       .run(
         bot.name,
         Number(bot.isMain),
@@ -251,6 +256,7 @@ export class BotsRepo {
         bot.thinkingPreference ?? null,
         bot.reviewBotId ?? null,
         Number(bot.autoReview ?? false),
+        bot.defaultVideoModel ? JSON.stringify(bot.defaultVideoModel) : null,
         id,
       );
     if (parsed.avatarImage !== undefined) this.saveAvatar(id, parsed.avatarImage);

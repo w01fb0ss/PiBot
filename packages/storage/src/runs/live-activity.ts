@@ -12,28 +12,33 @@ const MAX_TITLE = 200;
 const BOT = `b.name AS botName,b.avatar_shape AS shape,b.avatar_color AS color,b.avatar_eyes AS eyes,
   (SELECT value FROM settings WHERE key='avatar:bot:' || b.id) AS image`;
 const PLACE = `c.kind AS placeKind,c.group_id AS placeGroupId,c.bot_id AS placeBotId,c.routine_id AS routineId`;
+const RUNNER = `LEFT JOIN remote_devices d ON d.id=r.runner_device_id
+  AND d.kind='runner' AND d.revoked_at IS NULL`;
 
 // The IN list repeats the runs_unfinished partial-index predicate so SQLite uses it (as
 // RunsRepo.activeCount does); queued runs have not started any work yet.
 const RUNS = `SELECT r.id AS runId,r.bot_id AS botId,r.conversation_id AS conversationId,r.group_id AS groupId,
-  r.kind,COALESCE(r.started_at,r.created_at) AS startedAt,${BOT},${PLACE},
+  r.kind,COALESCE(r.started_at,r.created_at) AS startedAt,${BOT},${PLACE},d.name AS runnerName,
   (SELECT t.title FROM group_tasks t WHERE t.id=r.task_id) AS taskTitle,
+  (SELECT rr.trigger_message_id FROM routine_runs rr WHERE rr.run_id=r.id) AS routineMessageId,
   (SELECT ro.name FROM routine_runs rr JOIN routines ro ON ro.id=rr.routine_id WHERE rr.run_id=r.id) AS routineName,
   (SELECT e.plan_json FROM execution_todo e WHERE e.bot_id=r.bot_id AND e.conversation_id=r.conversation_id) AS plan
   FROM runs r JOIN bots b ON b.id=r.bot_id AND b.archived_at IS NULL
   LEFT JOIN conversations c ON c.id=r.conversation_id
+  ${RUNNER}
   WHERE r.status IN ('queued','running','waiting') AND r.status != 'queued'
   AND (c.id IS NULL OR (c.archived_at IS NULL AND c.internal_task_id IS NULL))
   ORDER BY startedAt,r.id LIMIT 100`;
 
 const APPROVALS = `SELECT a.id,a.bot_id AS botId,a.run_id AS runId,a.message_id AS messageId,a.created_at AS startedAt,
-  COALESCE(a.conversation_id,r.conversation_id) AS conversationId,${BOT},${PLACE},
+  COALESCE(a.conversation_id,r.conversation_id) AS conversationId,${BOT},${PLACE},d.name AS runnerName,
   json_extract(a.request,'$.title') AS title,
   json_extract(a.request,'$.localized.zh.title') AS titleZh,
   json_extract(a.request,'$.localized.en.title') AS titleEn
   FROM approvals a JOIN bots b ON b.id=a.bot_id AND b.archived_at IS NULL
   LEFT JOIN runs r ON r.id=a.run_id
   LEFT JOIN conversations c ON c.id=COALESCE(a.conversation_id,r.conversation_id)
+  ${RUNNER}
   WHERE a.status='pending' ORDER BY a.created_at,a.id LIMIT ${MAX_ITEMS}`;
 
 type Row = Record<string, unknown>;
@@ -94,19 +99,19 @@ function target(row: Row, botId: string, messageId?: string): UiNavigation {
     };
   if (conversationId && groupId && row.placeKind === "thread")
     return { view: "group", groupId, threadId: conversationId };
-  if (groupId) return { view: "group", groupId };
+  if (groupId) return { view: "group", groupId, ...(messageId ? { messageId } : {}) };
   return messageId ? { view: "inbox" } : { view: "new-chat", botId };
 }
 
 /**
  * Busy Bots for the live island, read from committed run and approval state: running or waiting
- * runs (direct chats, group steps, routines) and pending approval cards. Only names and short
- * titles leave; message text, tool input and file contents are never selected.
+ * runs (direct chats, group steps, routines) and pending approval cards. The brain supplies
+ * transient step labels. The query never selects message text, tool input or file contents.
  */
 export class LiveActivityRepo {
   constructor(private readonly db: DatabaseSync) {}
 
-  list(): LiveActivityItem[] {
+  list(stepForRun?: (runId: string) => Pick<LiveActivityItem, "step" | "replying"> | undefined) {
     const items: LiveActivityItem[] = [];
     const waitingRuns = new Set<string>();
     const waitingPlaces = new Set<string>();
@@ -114,10 +119,12 @@ export class LiveActivityRepo {
       const botId = String(row.botId);
       const zh = short(row.titleZh);
       const en = short(row.titleEn);
+      const runnerName = short(row.runnerName);
       const parsed = LiveActivityItemSchema.safeParse({
         key: `approval:${String(row.id)}`,
         botId,
         botName: short(row.botName) ?? botId,
+        ...(runnerName ? { runnerName } : {}),
         avatar: avatar(row),
         kind: "waiting",
         title: short(row.title),
@@ -141,19 +148,22 @@ export class LiveActivityRepo {
       seen.add(place);
       const routine = row.kind === "routine" || row.routineId != null;
       const group = !routine && row.groupId != null;
+      const runnerName = short(row.runnerName);
       const parsed = LiveActivityItemSchema.safeParse({
         key: `run:${place}`,
         botId,
         botName: short(row.botName) ?? botId,
+        ...(runnerName ? { runnerName } : {}),
         avatar: avatar(row),
         kind: routine ? "routine" : group ? "group" : "chat",
+        ...stepForRun?.(String(row.runId)),
         title: routine
           ? short(row.routineName)
           : group
             ? (short(row.taskTitle) ?? planTitle(row.plan))
             : planTitle(row.plan),
         startedAt: row.startedAt,
-        target: target(row, botId),
+        target: target(row, botId, text(row.routineMessageId) ?? undefined),
       });
       if (parsed.success) items.push(parsed.data);
     }

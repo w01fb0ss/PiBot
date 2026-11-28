@@ -481,6 +481,8 @@ export class RoutineExecution {
           skill,
           binding,
           AbortSignal.any([this.deps.local.shutdown.signal, AbortSignal.timeout(20_000)]),
+          undefined,
+          this.deps.logger,
         );
         if (prepared.ok)
           return folder

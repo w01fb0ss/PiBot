@@ -39,6 +39,7 @@ import { mergeStep } from "./group-step-merge.ts";
 import { isPlanStepWorkspace } from "./group-step-output.ts";
 import { prepareFailureCode, prepareStepWorktree, SETUP_FAILED } from "./group-step-prepare.ts";
 import { StepTurns } from "./group-step-turns.ts";
+import { UnansweredWorktreeApproval } from "./group-worktree-authority.ts";
 import { createMemberWorktree } from "./group-worktree-create.ts";
 import { localWorktreeHost, remoteWorktreeHost, type WorktreeHost } from "./group-worktree-host.ts";
 import { integrateMemberWorktree } from "./group-worktree-integrate.ts";
@@ -250,16 +251,17 @@ export class GroupMemberWorktrees {
       this.fallbacks.delete(context.runId);
       return fallback ? { fallback } : undefined;
     } catch (error) {
-      // The run only reports group_workspace_unavailable; keep which check failed (codes only).
-      if (!parent.aborted)
-        this.service.deps.local.deps.logger.warn(
+      const unansweredApproval = error instanceof UnansweredWorktreeApproval;
+      // Keep the specific workspace outcome in the log (codes only).
+      if (unansweredApproval || !parent.aborted)
+        this.service.deps.local.deps.logger[unansweredApproval ? "info" : "warn"](
           JSON.stringify({
             module: "group",
-            event: "worktree_prepare_failed",
+            event: unansweredApproval ? "worktree_approval_unanswered" : "worktree_prepare_failed",
             groupId: group.id,
             runId: context.runId,
             stage: this.stageOf(context.runId),
-            code: prepareFailureCode(error),
+            code: unansweredApproval ? error.code : prepareFailureCode(error),
           }),
         );
       this.stages.delete(context.runId);

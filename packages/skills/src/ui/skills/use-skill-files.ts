@@ -1,6 +1,13 @@
 import type { TranslationKey } from "@pibot/i18n";
 import { useAction, useRpc } from "@pibot/renderer-kit";
-import { type SkillFileChange, SkillPackageWritePathSchema } from "@pibot/skills-contract/full";
+import {
+  RpcError,
+  RpcErrorCodes,
+  SKILL_DROP_MAX_BYTES,
+  SKILL_DROP_MAX_FILES,
+  type SkillFileChange,
+  SkillPackageWritePathSchema,
+} from "@pibot/skills-contract/full";
 import { useCallback, useRef, useState } from "react";
 import { skillError } from "./presentation.ts";
 
@@ -52,7 +59,7 @@ export function newPathIssue(
  * file is opened; on save the edit becomes one change list (`skills.create` / `skills.update`).
  */
 export function useSkillFiles(scope: FileScope, saved: readonly SavedFile[] = []) {
-  const { peer } = useRpc();
+  const { peer, registerSkillDrop } = useRpc();
   const upload = useAction();
   const [files, setFiles] = useState<EditorFile[]>(() =>
     saved.map((file) => ({ ...file, text: file.text ?? false, source: { kind: "saved" } })),
@@ -119,23 +126,22 @@ export function useSkillFiles(scope: FileScope, saved: readonly SavedFile[] = []
   };
   const remove = (path: string) => setFiles((old) => old.filter((file) => file.path !== path));
   /** Uploaded files replace ones with the same name, the usual "put the new version in". */
-  const pick = async (from: "file" | "folder") => {
+  const uploadFiles = async (from: "file" | "folder" | "drop", files?: File[]) => {
     const botId = scope.botId;
     if (!botId) {
       upload.setError("skills.write.noBots");
       return undefined;
     }
-    const result = await upload.run(
-      (signal) =>
-        peer
-          ? peer.call(
-              "skills.pickFiles",
-              { groupId: scope.groupId, botId, from },
-              { timeoutMs: 630_000, signal },
-            )
-          : Promise.resolve(null),
-      skillError,
-    );
+    const result = await upload.run(async (signal) => {
+      if (!peer) return null;
+      const dropId = files ? await registerSkillDrop?.(files) : undefined;
+      if (files && !dropId) throw new RpcError(RpcErrorCodes.invalidParams, "skill_files_invalid");
+      return peer.call(
+        "skills.pickFiles",
+        { groupId: scope.groupId, botId, from, dropId: dropId ?? undefined },
+        { timeoutMs: 630_000, signal },
+      );
+    }, skillError);
     if (!result) return undefined;
     const added: EditorFile[] = result.files.map((file) => ({
       ...file,
@@ -144,6 +150,28 @@ export function useSkillFiles(scope: FileScope, saved: readonly SavedFile[] = []
     const names = new Set(added.map((file) => key(file.path)));
     setFiles((old) => [...old.filter((file) => !names.has(key(file.path))), ...added]);
     return added[0]?.path;
+  };
+  const drop = async (files: File[]) => {
+    if (files.some((file) => file.size > SKILL_DROP_MAX_BYTES)) {
+      upload.setError("skills.error.skill_attachment_too_large");
+      return;
+    }
+    if (
+      files.length > SKILL_DROP_MAX_FILES ||
+      files.reduce((size, file) => size + file.size, 0) > SKILL_DROP_MAX_BYTES
+    ) {
+      upload.setError("skills.editor.dropLimit");
+      return;
+    }
+    if (
+      files.some(
+        (file) => !SkillPackageWritePathSchema.safeParse(file.name.normalize("NFC")).success,
+      )
+    ) {
+      upload.setError("skills.error.skill_files_invalid");
+      return;
+    }
+    await uploadFiles("drop", files);
   };
   /** The change list for a save; undefined when the supporting files are as they were. */
   const changes = (): SkillFileChange[] | undefined => {
@@ -169,7 +197,8 @@ export function useSkillFiles(scope: FileScope, saved: readonly SavedFile[] = []
     edit,
     add,
     remove,
-    pick,
+    pick: (from: "file" | "folder") => uploadFiles(from),
+    drop,
     changes,
     uploading: upload.busy,
     uploadError: upload.error,

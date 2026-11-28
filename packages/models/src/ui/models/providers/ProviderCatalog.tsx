@@ -45,9 +45,9 @@ export function ProviderCatalog({
     t("models.magpie.name"),
   );
   const catalog = groupedProviderCatalog(
-    providerCatalog(named, t("setup.customLabel"), t("models.payAsYouGo")),
+    providerCatalog(named, t("setup.customLabel"), t("models.payAsYouGo"), t),
   );
-  const configured = providerCatalog(named, t("setup.customLabel"), t("models.payAsYouGo"))
+  const configured = providerCatalog(named, t("setup.customLabel"), t("models.payAsYouGo"), t)
     .filter((provider) => provider.configured)
     .sort((a, b) => a.name.localeCompare(b.name, "en"));
   const query = search.trim().toLowerCase();

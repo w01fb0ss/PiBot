@@ -6,7 +6,7 @@ import { fail } from "../../../tools/dev/process.ts";
 
 // Probe (+ owner decisions 2026-10-23): paid generation asks first (also under YOLO), a
 // remembered Bot + model and a routine pre-approval skip the card, a denied card sends nothing, an allowed
-// request carries the Bot's norms and the brief, and no prompt text reaches the audit.
+// request comes first, followed by compact guidance and norms, and no prompt text reaches the audit.
 // IMAGE-RUN-UX: a held request times out (error + Retry + audit "timeout"), a stop stays aborted,
 // and each request writes one diagnostic log line with lengths only.
 // Run: node tests/e2e/image-norms/index.ts

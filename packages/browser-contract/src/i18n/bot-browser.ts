@@ -31,7 +31,7 @@ export const botBrowserZh = {
     "已打开（默认）：这个 Bot 的浏览器在 Google 的网站上以 Firefox 的身份出现，让 Google 允许登录；其他网站不变。随时可以关掉。",
   "googleCompat.confirmTitle": "给{name}打开 Google 兼容模式？",
   "googleCompat.confirmBody":
-    "打开后，{name}的浏览器在 Google 的网站（google.com 及其子域名）上会以另一种浏览器（Firefox）的身份出现，这样 Google 才允许登录；其他网站不受影响。Google 随时可能不再接受这种方式。随时可以在资料面板「权限与连接」里关掉。",
+    "打开后，{name}的浏览器在 Google 的网站（google.com 及其子域名）上会以另一种浏览器（Firefox）的身份出现，这样 Google 才允许登录；其他网站不受影响。Google 随时可能不再接受这种方式。随时可以在资料面板「权限」里关掉。",
   "googleCompat.turnOn": "打开",
   "googleCompat.cancel": "取消",
   "googleCompat.bannerButton": "打开 Google 兼容模式",
@@ -94,13 +94,11 @@ export const botBrowserZh = {
   "botBrowser.notice.handBackSites": "{took}（访问了 {sites}）· 已交还给{name}",
   // A login form was submitted during the takeover; {sites} are those hostnames only.
   "botBrowser.notice.handBackSignedIn": "{took}（登录了 {sites}）· 已交还给{name}",
-  "browserExtension.install.edgeFallback":
-    "扩展尚未在 Microsoft Edge 加载项商店上架。本次任务继续使用 Bot 浏览器。",
   "browserExtension.install.title": "让 Bot 用你的 {browser}？",
   "browserExtension.install.description":
-    "装上 Pi Bot 扩展后，Bot 就能在你的浏览器里用你已登录的账号干活；它只在自己的「Pi Bot」标签组里操作，提交表单前先问你。这次先用 Bot 浏览器继续。",
+    "装好后，Bot 可以在你的浏览器里用你已有的登录状态。它在自己的「Pi Bot」标签组里操作，提交表单时遵循你设置的权限。当前任务继续使用 Bot 自带的浏览器。",
   "browserExtension.install.step.open": "在 {browser} 里打开 Pi Bot Browser 的商店页",
-  "browserExtension.install.step.add": "点「添加至 Chrome」",
+  "browserExtension.install.step.add": "在商店页点「添加扩展」",
   "browserExtension.install.step.addFirefox": "点「添加到 Firefox」，再在扩展按钮里允许访问网站",
   "browserExtension.install.step.connect": "装好后会自动连上，之后的任务就用你的浏览器",
   "browserExtension.install.open": "打开安装页",
@@ -161,7 +159,7 @@ export const botBrowserEn: { [K in keyof typeof botBrowserZh]: string } = {
     "On (default): this Bot's browser presents itself as Firefox on Google's sites so Google allows signing in; other sites are unchanged. You can turn it off any time.",
   "googleCompat.confirmTitle": "Turn on Google compatibility mode for {name}?",
   "googleCompat.confirmBody":
-    "When on, {name}'s browser presents itself as another browser (Firefox) on Google's sites (google.com and its subdomains) so that Google allows signing in. Other sites are not affected. Google may stop accepting this at any time. You can turn it off any time in the profile panel under Permissions & connections.",
+    "When on, {name}'s browser presents itself as another browser (Firefox) on Google's sites (google.com and its subdomains) so that Google allows signing in. Other sites are not affected. Google may stop accepting this at any time. You can turn it off any time in the profile panel under Permissions.",
   "googleCompat.turnOn": "Turn on",
   "googleCompat.cancel": "Cancel",
   "googleCompat.bannerButton": "Turn on Google compatibility mode",
@@ -226,13 +224,11 @@ export const botBrowserEn: { [K in keyof typeof botBrowserZh]: string } = {
   "botBrowser.notice.handBack": "{took} · Handed back to {name}",
   "botBrowser.notice.handBackSites": "{took} (visited {sites}) · Handed back to {name}",
   "botBrowser.notice.handBackSignedIn": "{took} (signed in to {sites}) · Handed back to {name}",
-  "browserExtension.install.edgeFallback":
-    "The extension is not yet listed in Microsoft Edge Add-ons. This task continues in the Bot browser.",
   "browserExtension.install.title": "Let the Bot use your {browser}?",
   "browserExtension.install.description":
-    "With the Pi Bot extension, Bots work in your browser with the accounts you are signed in to. They stay in their own “Pi Bot” tab group and ask before submitting a form. This task continues in the Bot browser.",
+    "With the extension, Bots can use your existing sign-ins in your browser. They work in their own Pi Bot tab group and follow your permissions when submitting forms. This task continues in the built-in Bot browser.",
   "browserExtension.install.step.open": "Open Pi Bot Browser’s store page in {browser}",
-  "browserExtension.install.step.add": "Choose “Add to Chrome”",
+  "browserExtension.install.step.add": "Choose the store’s add or install button",
   "browserExtension.install.step.addFirefox":
     "Choose “Add to Firefox”, then allow website access from the extension button",
   "browserExtension.install.step.connect": "It connects by itself; later tasks use your browser",

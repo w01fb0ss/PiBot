@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { ResourceVerificationTimeout } from "@pibot/execution/resource-manifest";
 import { verifyResources } from "./verify-resources.ts";
 
 declare const __PIBOT_RUNNER_FIXTURE__: boolean;
@@ -29,9 +30,13 @@ async function main() {
     await import("./index.ts");
   }
 }
-void main().catch(() => {
+void main().catch((error: unknown) => {
+  const code =
+    error instanceof ResourceVerificationTimeout
+      ? "runner_resources_timeout"
+      : "runner_resources_invalid";
   process.stderr.write(
-    '{"level":"error","event":"runner.resources_failed","code":"runner_resources_invalid"}\n',
+    `${JSON.stringify({ level: "error", event: "runner.resources_failed", code })}\n`,
   );
   process.exitCode = 78;
 });

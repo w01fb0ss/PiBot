@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { IdSchema } from "../core/ids.ts";
+import { optionalPageOffset } from "../tools/pagination.ts";
 import { ReviewFindingSchema } from "../workspace/changes.ts";
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -191,7 +192,7 @@ export const ReviewReadSchema = z
   .strictObject({
     kind: z.enum(["manifest", "diff", "file"]),
     path: path.optional(),
-    offset: count.optional(),
+    offset: optionalPageOffset.describe("Omit offset for the first page; never pass placeholders."),
     limit: z.number().int().min(1).max(2000).optional(),
   })
   .refine((v) => v.kind !== "file" || !!v.path);

@@ -24,12 +24,13 @@ async function canonicalPath(path: string): Promise<string> {
   }
 }
 
-export async function selectedFolder(path: string): Promise<string> {
+export async function selectedFolder(path: string, preserveSelection = false): Promise<string> {
   validPath(path);
   const canonical = await canonicalPath(path);
   if (!(await stat(canonical)).isDirectory())
     throw new RpcError(RpcErrorCodes.invalidParams, "invalid_folder");
-  return canonical;
+  // The brain pins the canonical target. The picker must also report the drive the person chose.
+  return preserveSelection && process.platform === "win32" ? path : canonical;
 }
 
 async function availableRoot(root: string): Promise<string | null> {

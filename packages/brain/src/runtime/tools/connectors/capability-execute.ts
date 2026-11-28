@@ -8,11 +8,11 @@ import type { LocalService } from "../../../local-service.ts";
 import { auditInput } from "../input-audit.ts";
 import type { LocalRun } from "../local-run.ts";
 import type { ToolInput } from "../tools.ts";
-import { snapshotCalendarName } from "./calendar-name.ts";
 import { capabilitySelectionMatches } from "./capability-adapter.ts";
 import {
   ConnectorToolError,
   connectorServiceMessageText,
+  dispatchConnectorDraft,
   dispatchReadConnector,
   redactedConnectorJson,
 } from "./connector-tools.ts";
@@ -102,14 +102,7 @@ export async function executeCapabilityConnector(
   }
   run.assertDispatch(prepared);
   if (!approved.tool.readOnly) {
-    await snapshotCalendarName(run, capability.input, approved, signal);
-    const result = await run.local.drafts.execute(
-      run.context,
-      prepared.call,
-      capability.input,
-      prepared,
-      signal,
-    );
+    const result = await dispatchConnectorDraft(run, prepared, capability.input, approved, signal);
     const { serviceMessage, ...receipt } = result as typeof result & { serviceMessage?: string };
     return {
       text: JSON.stringify(receipt) + connectorServiceMessageText(serviceMessage),
@@ -126,6 +119,13 @@ export async function executeCapabilityConnector(
       local: run.local,
       context: run.context,
       assertDispatch: () => run.assertDispatch(prepared),
+      recordInputTranslation: (text) => run.recordInputTranslation(prepared.call.id, text),
+      fixedFields:
+        capability.capabilityId === "files.read"
+          ? ["path"]
+          : capability.capabilityId === "web.fetch"
+            ? ["url"]
+            : undefined,
     },
     { call: prepared.call, explanation: prepared.result.explanation },
     capability.input,

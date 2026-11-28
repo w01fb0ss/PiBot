@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { optionalPageOffset } from "@pibot/protocol-base";
 import type { PreparedTool } from "../../../core/local-types.ts";
 
 /** The 2nd identical read is still useful; from the 3rd the answer only repeats what was read. */
@@ -26,7 +27,7 @@ export function repeatedReadKey(prepared: PreparedTool): string | undefined {
   // The resolved path, not what the model typed, so "./x" and the absolute path are one range.
   const path = prepared.result.path?.path;
   if (!path) return;
-  const offset = typeof input.offset === "number" ? input.offset : 0;
+  const offset = optionalPageOffset.safeParse(input.offset).data ?? 0;
   const limit = typeof input.limit === "number" ? input.limit : 0;
   return `${path}\u0000${offset}\u0000${limit}`;
 }

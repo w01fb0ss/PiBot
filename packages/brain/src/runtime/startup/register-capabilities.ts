@@ -1,4 +1,5 @@
 // Supplies the runtime ports and shared services used by brain capabilities.
+
 import {
   type createPeer,
   type EventTable,
@@ -30,6 +31,7 @@ import type { startBrain } from "../../index.ts";
 import type { LocalService } from "../../local-service.ts";
 import { computerRuntime } from "../computer/runtime.ts";
 import type { ModelProvidersPort } from "../models/port.ts";
+import { approvalRepair } from "../queue/approval-repair.ts";
 import type { BrainSleep } from "../queue/brain-sleep.ts";
 import { isDelegatedKernelToolName, isKernelToolName } from "../tools/tools.ts";
 import { workflowUserText } from "../workflows/workflow-text.ts";
@@ -50,6 +52,7 @@ interface StartupContext {
   agent: import("@pibot/agent").AgentRuntime;
   botBusiness: BotService;
   handle: KernelRegisterRpc;
+  settingsRpc: import("../../core/business-rpc.ts").PiSettingsRpc;
   offlineAllowed: Set<string>;
   /** Kept after registration so the controller can reach capability ports. */
   ports?: CapabilityPorts;
@@ -119,23 +122,27 @@ export async function registerCapabilities(ctx: StartupContext) {
           return ctx.botBusiness.topicWorkplace.update(params, undefined, signal);
         },
       },
+      approvalRepair: approvalRepair(ctx.groups),
       groups: {
         confirmNotice: (groupId, conversationId, botId, text, confirmation, display) =>
           ctx.groups.confirmNotice(groupId, conversationId, botId, text, confirmation, display),
         update: (params) => ctx.groups.update(params),
+        continueRounds: (params) => ctx.groups.continueRounds(params),
         addMember: (groupId, botId) => ctx.groups.addMember(groupId, botId),
         create: (params) => ctx.groups.create(params),
         removeMember: (groupId, botId) => ctx.groups.removeMember(groupId, botId),
         archive: (groupId) => ctx.groups.archive(groupId),
         restore: (groupId) => ctx.groups.restore(groupId),
-        send: (groupId, conversationId, text, display) =>
+        send: (groupId, conversationId, text, display, confirmation) =>
           ctx.groups.send(
             { groupId, topicId: conversationId, text },
-            undefined,
+            confirmation,
             undefined,
             display,
           ),
-        newTopic: (groupId) => ctx.groups.topics.create({ groupId, inheritWorkspace: true }),
+        newTopic: (groupId, dispatch) =>
+          ctx.groups.topics.create({ groupId, inheritWorkspace: true }, dispatch?.signal, dispatch),
+        plan: ctx.groups.planControl,
         sendWorkflow: (groupId, botId, workflow, conversationId) =>
           workflow.contract.planTemplate
             ? ctx.groups.startPlanTemplate(
@@ -159,6 +166,7 @@ export async function registerCapabilities(ctx: StartupContext) {
       },
       rpc: {
         handle: ctx.handle as RegisterRpc,
+        ...(capability.id === "teams" ? { settings: ctx.settingsRpc } : {}),
         allowOffline: (method) => ctx.offlineAllowed.add(method),
         background: (prefix) => ctx.backgroundPrefixes.push(prefix),
       },
@@ -248,6 +256,17 @@ export async function registerCapabilities(ctx: StartupContext) {
           return () => {
             if (ctx.capabilities.toolCards.get(tool) === describe)
               ctx.capabilities.toolCards.delete(tool);
+          };
+        },
+        mustAsk: (tool, judge) => {
+          if (ctx.capabilities.deps.capabilityTools.specs[tool]?.policy.category !== "pi_repair")
+            throw new Error(`Capability ${capability.id} cannot mark ${tool} as must-ask`);
+          if (ctx.capabilities.toolMustAsk.has(tool))
+            throw new Error(`Tool must-ask taken: ${tool}`);
+          ctx.capabilities.toolMustAsk.set(tool, judge);
+          return () => {
+            if (ctx.capabilities.toolMustAsk.get(tool) === judge)
+              ctx.capabilities.toolMustAsk.delete(tool);
           };
         },
       },

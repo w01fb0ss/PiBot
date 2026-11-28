@@ -23,6 +23,8 @@ export const networkZh = {
   "errors.proxy_credentials_unavailable": "代理账号暂时无法解密，请解锁系统密钥库或移除代理账号",
   "network.unknown": "已保存的地址",
   "errors.proxy_unavailable": "连不上你设置的代理（{address}），请检查代理软件是否在运行",
+  "errors.proxy_unavailable_no_address": "连不上你设置的代理，请检查代理软件是否在运行。",
+  "errors.proxy_auth_failed_no_address": "代理拒绝了账号或密码，请在网络代理设置中更新账号。",
   // Reachable only for Bedrock / Vertex when the route through the proxy cannot be guaranteed.
   "errors.proxy_unsupported":
     "这次连接无法保证经过你设置的代理，为免绕过代理已停止发送（只会出现在 Amazon Bedrock 或 Google Vertex AI）。请为这个 Bot 换用其他厂商的模型，或在「设置 → 通用 → 网络代理」中关闭代理。",
@@ -65,6 +67,10 @@ export const networkEn = {
   "network.unknown": "the saved address",
   "errors.proxy_unavailable":
     "Cannot connect to your proxy ({address}); check that your proxy software is running.",
+  "errors.proxy_unavailable_no_address":
+    "Cannot connect to your proxy. Check that your proxy software is running.",
+  "errors.proxy_auth_failed_no_address":
+    "The proxy rejected your account or password. Update the account in Network proxy settings.",
   "errors.proxy_unsupported":
     "This connection could not be guaranteed to use your proxy, so nothing was sent (only Amazon Bedrock or Google Vertex AI can hit this). Switch this Bot to another provider's model, or turn the proxy off in Settings → General → Network proxy.",
   "audit.describe.proxy": "Network proxy settings changed",

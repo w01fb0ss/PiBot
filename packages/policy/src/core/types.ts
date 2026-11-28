@@ -14,11 +14,19 @@ import type {
   Workplaces,
   WorkspaceSnapshot,
 } from "@pibot/protocol-base";
+import type { WindowsUserPaths } from "../commands/windows-approval-shape.ts";
 
 export type PolicyStep = import("@pibot/protocol-base").PolicyStep;
 
 export type Platform = "darwin" | "linux" | "win32";
 export type Decision = "allow" | "ask" | "deny";
+export type ProjectNotesFingerprint = {
+  target: string;
+  diffHash: string;
+  contentHash: string;
+  beforeHash: string | null;
+};
+
 export type PolicyRequest =
   | { category: "tool_discovery" }
   | { category: "plugin_install" }
@@ -49,7 +57,12 @@ export type PolicyRequest =
       confirmationMode: import("@pibot/protocol-base").ConnectorConfirmationMode;
     }
   | { category: "read_messages"; target: string; scopeValid: boolean }
-  | { category: "image_generation"; recipient: string; provider: string; model: string }
+  | {
+      category: "image_generation" | "video_generation";
+      recipient: string;
+      provider: string;
+      model: string;
+    }
   | { category: "routine_proposal"; operation: "propose" | "query" }
   | { category: "skill_proposal" }
   /** List paired runners, or propose moving a DM topic to a runner folder (card only). */
@@ -70,6 +83,23 @@ export type PolicyRequest =
   | { category: "bot_management"; operation: "list" | "change"; mainDirect?: boolean }
   /** The default Pi sends a message or task to another Bot or a group (`mainDirect` as above). */
   | { category: "work_dispatch"; mainDirect?: boolean }
+  /**
+   * The default Pi checks for and repairs stuck state ("check" reads metadata only). `mainDirect`
+   * as above; `mustAsk` (kernel-set from the capability's own state check) marks a destructive
+   * repair whose card shows even under Pi's "always" level or YOLO. Absent counts as true.
+   */
+  | {
+      category: "settings_change";
+      operation: "read" | "ordinary" | "security";
+      mainDirect?: boolean;
+      unattended?: boolean;
+    }
+  | {
+      category: "pi_repair";
+      operation: "check" | "repair";
+      mainDirect?: boolean;
+      mustAsk?: boolean;
+    }
   | ({
       category: "memory";
       operation: "add" | "update" | "remove";
@@ -109,7 +139,13 @@ export type PolicyRequest =
   | { category: "background"; operation: "list" | "output" | "wait" | "stop" }
   /** List or close the Bot browser's own tabs; nothing is sent to any site. */
   | { category: "browser_tabs" }
-  | { category: "read_file" | "list_dir" | "write_file"; path: string; projectNotes?: boolean }
+  | {
+      category: "read_file" | "list_dir" | "write_file";
+      path: string;
+      projectNotes?: boolean;
+      projectNotesReview?: { reviewed: ProjectNotesFingerprint; change: ProjectNotesFingerprint };
+      knowledgeRoot?: string;
+    }
   | {
       // Screenshot coordinates are host-bound browser input, so they retain this site's gate.
       category: "web";
@@ -172,6 +208,7 @@ export interface FileSystem {
   windowsReadEntries?: typeof import("../paths/windows-read-tree.ts").windowsReadEntries;
 }
 export interface PathContext {
+  windowsUserPaths?: WindowsUserPaths;
   windowsSystemDrive?: string;
   windowsSystemTrees?: readonly string[];
   platform: Platform;
@@ -195,6 +232,12 @@ export interface CommandInvocation {
 export interface CommandAnalysis {
   /** Exact outer literal AST command; never an expansion, command list or unwrapped inner call. */
   literalCommand?: CommandInvocation;
+  /** Leading literal command in an outer && chain, optionally after one literal cd. */
+  leadingAndCommand?: {
+    invocation: CommandInvocation;
+    directory?: string;
+    remainder?: string;
+  };
   /** Single outer literal command with only one stdout file redirect; grants no write access. */
   literalOutputRedirect?: { command: CommandInvocation; path: string; operator: ">" | ">>" };
   programs: string[];
@@ -224,6 +267,8 @@ export interface CommandAnalysis {
   negated?: true;
   /** Script files the analysis wants read (inside the workplace) to judge the run. */
   scriptFiles?: string[];
+  /** Identifiable script operands as invoked, including scripts inside command lists. */
+  scriptEntryPoints?: string[];
   /** `python3 -c` code would be pure if the cwd holds nothing that shadows a standard module. */
   moduleSearchCwd?: true;
   /**
@@ -232,6 +277,8 @@ export interface CommandAnalysis {
    * and refuses with `script_changed` if any differs.
    */
   scriptPins?: ScriptPin[];
+  /** The exact installed script checked against the selected skill's own folder. */
+  boundSkillScriptPath?: string;
   /**
    * Interpreter words a script verdict assumed are the system ones (`python3`,
    * `/bin/sh`, a shebang's `env` target). Execution resolves them in the command's PATH before
@@ -242,6 +289,7 @@ export interface CommandAnalysis {
 export interface ScriptPin {
   path: string;
   sha256: string;
+  canonicalPath?: string;
 }
 export interface EvaluationInput {
   /** Current effective skill runtime read roots, supplied by brain; never writable grants. */
@@ -266,6 +314,8 @@ export interface EvaluationInput {
   gitHook?: GitHookFacts;
   /** Host facts: project hooks / executable config an ordinary Git command would run. */
   gitEntries?: GitEntryFacts;
+  /** A host-held Git entry plan has verified the Windows repository's read scope. */
+  windowsGitReadScopeVerified?: true;
   hostSsh?: HostSshFacts;
   /** Ephemeral, user-approved public GET sites of this Bot and conversation only. */
   conversationWebDomains?: readonly string[];
@@ -304,6 +354,8 @@ export interface EvaluationInput {
    */
   runGrants?: Grant[];
   workplace: Workplaces;
+  /** Trusted local shell HOME when it is separate from the workspace. */
+  commandHome?: string;
   /**
    * The group's own artifact roots (`<primary>/.pibot/out`). Writing a file there is what
    * that run is for, so the "ask" level no longer asks; "never" still refuses.
@@ -315,6 +367,8 @@ export interface EvaluationInput {
    */
   skillsRoot?: string;
   skillsRoots?: readonly string[];
+  /** Brain-selected, enabled local skill for this literal command. Allows only a script pin. */
+  boundSkillScript?: { folder: string; dataDir: string };
   /**
    * The Bot's own managed attachments folder. Pi Bot writes these files itself and names
    * the path in the message, so reading one back is intrinsic app data, never a grant.
@@ -327,6 +381,8 @@ export interface EvaluationInput {
    */
   yolo?: boolean;
   signal: AbortSignal;
+  /** Canonical workspace roots that brain has reverified for this decision. Never tool input. */
+  verifiedWorkspacePaths?: ReadonlyMap<string, string>;
   /** Per-call injection also supports callers that already canonicalize filesystem access. */
   realpath?: FileSystem["realpath"];
   /** With `realpath`: the whole-path resolver of the same machine (see FileSystem.canonicalize). */
@@ -341,6 +397,11 @@ export interface EvaluationInput {
   commandProtectionRoots?: (signal: AbortSignal) => Promise<readonly string[]>;
 }
 export interface PolicyResult {
+  /** An entirely proven Windows query, including one awaiting a scoped file-read approval. */
+  windowsReadProven?: true;
+  /** The Windows read-only verdict requires the executor's restricted launch. */
+  windowsReadOnly?: true;
+  videoModel?: { provider: string; id: string };
   /** Per-call restriction for automatically allowed sandbox commands; never model input. */
   commandNetwork?: { allowAll: boolean; domains: string[] };
   /** Present only for a safely scoped public GET, never browser or search calls. */
@@ -392,6 +453,8 @@ export interface PolicyResult {
   editorSessionShape?: string;
 }
 export interface PolicyOptions {
+  /** Trusted local host variables used by the Windows read-only path resolver. */
+  windowsUserPaths?: WindowsUserPaths;
   windowsSystemDrive?: string;
   windowsSystemTrees?: readonly string[];
   platform: Platform;

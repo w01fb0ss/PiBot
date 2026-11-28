@@ -322,16 +322,27 @@ export async function createRemoteExecutionTarget(
       input: Parameters<NonNullable<ExecutionTarget["inspectGitEntries"]>>[0],
       signal: AbortSignal,
     ): Promise<GitEntryResult> {
+      const params = {
+        invocations: input.invocations.map((item) => ({ args: [...item.args], cwd: item.cwd })),
+        compound: input.compound,
+        callId: input.callId,
+        command: input.command,
+      };
+      const options = { signal, timeoutMs: 30_000 };
+      const roots = input.windowsReadRoots;
       const result = await call(
         "runner.git.entries",
-        {
-          invocations: input.invocations.map((item) => ({ args: [...item.args], cwd: item.cwd })),
-          compound: input.compound,
-          callId: input.callId,
-          command: input.command,
-        },
-        { signal, timeoutMs: 30_000 },
-      );
+        { ...params, ...(roots ? { windowsReadRoots: [...roots] } : {}) },
+        options,
+      ).catch(async (error: unknown) => {
+        signal.throwIfAborted();
+        if (!roots || !(error instanceof RpcError) || error.code !== RpcErrorCodes.invalidParams)
+          throw error;
+        // Older runners reject the extra input field. Scan for entries with their schema
+        // so policy can use ordinary approval.
+        const legacy = await call("runner.git.entries", params, options);
+        return { ...legacy, windowsReadScopeVerified: undefined };
+      });
       if (result.status === "unsupported") {
         if (!result.facts)
           throw new RpcError(RpcErrorCodes.invalidRequest, "Runner entry facts missing");
@@ -340,7 +351,17 @@ export async function createRemoteExecutionTarget(
       if (!result.planId)
         throw new RpcError(RpcErrorCodes.invalidRequest, "Runner entry plan missing");
       const handle = { callId: input.callId, command: input.command, remotePlanId: result.planId };
-      if (result.status === "none") return { status: "none", plan: Object.freeze(handle) };
+      if (result.status === "none") {
+        return {
+          status: "none",
+          plan: Object.freeze({
+            ...handle,
+            ...(roots && result.windowsReadScopeVerified
+              ? { windowsReadScopeVerified: true as const }
+              : {}),
+          }),
+        };
+      }
       if (!result.facts)
         throw new RpcError(RpcErrorCodes.invalidRequest, "Runner entry facts missing");
       return {

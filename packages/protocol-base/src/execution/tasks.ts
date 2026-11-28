@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { MessageSchema } from "../chat/entities.ts";
 import { IdSchema } from "../core/ids.ts";
+import { optionalPageBefore } from "../tools/pagination.ts";
 import { ExecutionLimitsSchema, ExecutionScopeSchema } from "./modes.ts";
 
 /** Raises of a workflow's cost cap per budget root, and the share of the cap each adds. */
@@ -92,7 +93,7 @@ export const TaskSpawnSchema = z.strictObject({
 });
 export const TaskStatusInputSchema = z.strictObject({
   taskId: IdSchema.optional(),
-  before: IdSchema.optional(),
+  before: optionalPageBefore,
   limit: z.number().int().min(1).max(50).optional(),
 });
 export const TaskMessageSchema = z.strictObject({

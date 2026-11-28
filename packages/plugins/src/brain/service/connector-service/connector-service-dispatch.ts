@@ -1,3 +1,4 @@
+import type { ConnectorNetworkApproval } from "@pibot/plugins-contract/full";
 // Brain-side connector orchestration: the 13 registered RPCs, lifecycle
 // operations, the connection pool and tool catalog publishing live here. The
 // pool borrows connections; dispatch permissions are enforced per call and
@@ -16,6 +17,7 @@ import {
   accessAllows,
   ConnectorAuthenticationError,
   ConnectorCallError,
+  ConnectorNetworkBlockedError,
   connectorNativeDiagnostics,
   connectorResultCount,
   RpcError,
@@ -23,6 +25,7 @@ import {
 } from "@pibot/plugins-contract/full";
 import { connectionConfirmation } from "@pibot/policy";
 import type { z } from "zod";
+import { isManagedNotionRead } from "../../../store/notion-tools.ts";
 import { connectionAvailability } from "../connection-availability.ts";
 import { connectorSecretUses } from "../connector-secrets.ts";
 import type { ConnectorServiceOperations } from "../connector-service.ts";
@@ -35,40 +38,51 @@ export function discoverToolsForBotStep(
   input: ConnectorDiscoverInput,
   readOnly = false,
   groupId?: string,
+  knowledgeWrite = false,
 ) {
   let cursor: z.output<typeof discoveryCursor> | undefined;
-  if (input.cursor) {
+  if (input.cursor && /^[A-Za-z0-9_-]+$/.test(input.cursor)) {
     try {
-      cursor = discoveryCursor.parse(
-        JSON.parse(Buffer.from(input.cursor, "base64url").toString("utf8")),
-      );
+      const decoded = Buffer.from(input.cursor, "base64url");
+      if (decoded.toString("base64url") === input.cursor)
+        cursor = discoveryCursor.safeParse(JSON.parse(decoded.toString("utf8"))).data;
     } catch {
-      throw new ConnectorToolError("connector_catalog_changed");
+      // A missing or malformed token starts discovery from the first page.
     }
   }
-  const page = this.deps.connectors.discover(botId, groupId, {
-    ...input,
-    after: cursor?.after,
-    readOnly,
-  });
-  const snapshot = connectorDigest([
-    botId,
-    groupId,
-    input.connectorId,
-    input.query,
-    readOnly,
-    page.versions,
-  ]);
-  if (cursor && cursor.snapshot !== snapshot)
+  const scopeParts = [botId, groupId, input.connectorId, input.query, readOnly];
+  if (knowledgeWrite) scopeParts.push(true);
+  const scope = connectorDigest(scopeParts);
+  if (cursor?.scope && cursor.scope !== scope) cursor = undefined;
+  const discoverPage = (after?: number) =>
+    this.deps.connectors.discover(botId, groupId, { ...input, after, readOnly });
+  let page = discoverPage(cursor?.after);
+  // Older tokens mix scope and versions in one digest. A mismatch cannot tell us what changed.
+  if (
+    cursor &&
+    !cursor.scope &&
+    cursor.snapshot !== connectorDigest([...scopeParts, page.versions])
+  )
+    page = discoverPage();
+  const snapshot = connectorDigest(page.versions);
+  if (cursor?.scope && cursor.snapshot !== snapshot)
     throw new ConnectorToolError("connector_catalog_changed");
   const items = page.items.flatMap((tool) => {
     const connector = this.deps.connectors.get(tool.connectorId);
-    const plugin = connector && this.deps.plugins.get(connector.pluginInstallationId);
+    if (!connector) return [];
+    const plugin = this.deps.plugins.get(connector.pluginInstallationId);
+    const writable = this.deps.connectors.managedKnowledgeWriteAllowed(
+      connector,
+      knowledgeWrite ? tool.tool : undefined,
+    );
     const trustedRead =
-      plugin?.sourceKind !== "builtin" ||
-      this.registry.toolPolicy(plugin.pluginId, tool.tool).readOnly;
+      writable !== undefined
+        ? isManagedNotionRead(tool.tool)
+        : plugin?.sourceKind !== "builtin" ||
+          this.registry.toolPolicy(plugin.pluginId, tool.tool).readOnly;
     const effective = trustedRead || !tool.readOnly ? tool : { ...tool, readOnly: false };
-    return connector &&
+    return (readOnly && !effective.readOnly) ||
+      (!effective.readOnly && writable === false) ||
       connectionConfirmation(connector.confirmationMode, !effective.readOnly) === "blocked"
       ? []
       : [effective];
@@ -78,7 +92,7 @@ export function discoverToolsForBotStep(
     nextCursor:
       page.after === undefined
         ? null
-        : Buffer.from(JSON.stringify({ snapshot, after: page.after })).toString("base64url"),
+        : Buffer.from(JSON.stringify({ scope, snapshot, after: page.after })).toString("base64url"),
   };
 }
 
@@ -88,12 +102,14 @@ export function resolveToolStep(
   botId: string,
   input: ConnectorCallInput,
   groupId?: string,
+  knowledgeWrite = false,
 ): PreparedConnector {
   const availability = connectionAvailability(
     { ...this.deps, registry: this.registry, platform: this.deps.platform ?? process.platform },
     groupId ? { kind: "group", id: groupId } : { kind: "bot", id: botId },
     input.connectorId,
     input.tool,
+    knowledgeWrite,
   );
   if (availability.reason !== "available")
     throw new ConnectorToolError(
@@ -142,6 +158,10 @@ export function resolveToolStep(
   if (!persistedTool?.enabled) throw new ConnectorToolError("connector_tool_denied");
   // Runtime authorization uses the persisted user policy. Trusted builtin metadata may only add
   // the draft target and argument validator; it cannot silently restore a manifest default.
+  const writable = this.deps.connectors.managedKnowledgeWriteAllowed(
+    connector,
+    knowledgeWrite ? input.tool : undefined,
+  );
   const tool =
     plugin.sourceKind === "builtin"
       ? {
@@ -156,9 +176,14 @@ export function resolveToolStep(
             input.args,
           ).draftBinding,
         }
-      : persistedTool;
+      : writable !== undefined && !isManagedNotionRead(persistedTool.tool)
+        ? { ...persistedTool, readOnly: false }
+        : persistedTool;
   // Dispatch repeats the policy's read-only decision; nothing between them may reopen a write.
-  if (connectionConfirmation(connector.confirmationMode, !tool.readOnly) === "blocked")
+  if (
+    (!tool.readOnly && writable === false) ||
+    connectionConfirmation(connector.confirmationMode, !tool.readOnly) === "blocked"
+  )
     throw new ConnectorToolError("connector_tool_denied");
   if (plugin.sourceKind === "builtin" && this.deps.factory.validateArguments) {
     const validation = this.deps.factory.validateArguments(tool.schema, input.args);
@@ -170,6 +195,11 @@ export function resolveToolStep(
   return {
     ...(groupId ? { groupId } : {}),
     secretUses,
+    ...(plugin.sourceKind === "builtin" &&
+      plugin.pluginId === "image-inspiration" &&
+      connector.serverId === "image-inspiration" &&
+      tool.tool === "inspiration_search" &&
+      tool.readOnly && { translateImageInspirationQuery: true as const }),
     pluginRevision: plugin.revision,
     pluginDigest: plugin.digest,
     connector,
@@ -187,6 +217,7 @@ export async function dispatchDraftStep(
   approved: PreparedConnector,
   signal: AbortSignal,
   authorize: () => void,
+  networkApproval?: ConnectorNetworkApproval,
 ): Promise<unknown> {
   const draft = this.deps.drafts?.get(approvalId);
   if (
@@ -207,7 +238,16 @@ export async function dispatchDraftStep(
   // The journal key of the tool call that made the draft (else the draft's own id, which is
   // equally sent at most once) travels as request `_meta`.
   const key = draft.payload.origin?.idempotencyKey ?? approvalId;
-  return this.dispatchChecked(botId, input, approved, signal, authorize, true, key);
+  return this.dispatchChecked(
+    botId,
+    input,
+    approved,
+    signal,
+    authorize,
+    true,
+    key,
+    networkApproval,
+  );
 }
 
 export async function dispatchStep(
@@ -217,9 +257,19 @@ export async function dispatchStep(
   approved: PreparedConnector,
   signal: AbortSignal,
   authorize: () => void,
+  networkApproval?: ConnectorNetworkApproval,
 ): Promise<unknown> {
   if (!approved.tool.readOnly) throw new ConnectorToolError("connector_tool_denied");
-  return this.dispatchChecked(botId, input, approved, signal, authorize, false);
+  return this.dispatchChecked(
+    botId,
+    input,
+    approved,
+    signal,
+    authorize,
+    false,
+    undefined,
+    networkApproval,
+  );
 }
 
 export async function dispatchCheckedStep(
@@ -231,12 +281,15 @@ export async function dispatchCheckedStep(
   authorize: () => void,
   draft: boolean,
   idempotencyKey?: string,
+  networkApproval?: ConnectorNetworkApproval,
+  knowledgeWrite = false,
 ): Promise<unknown> {
+  let authorizedSnapshot = approved;
   const verify = () => {
     signal.throwIfAborted();
     authorize();
-    const current = this.resolveTool(botId, input, approved.groupId);
-    if (connectorDigest(current) !== connectorDigest(approved))
+    const current = resolveToolStep.call(this, botId, input, approved.groupId, knowledgeWrite);
+    if (connectorDigest(current) !== connectorDigest(authorizedSnapshot))
       throw new ConnectorToolError("connector_catalog_changed");
   };
   verify();
@@ -294,6 +347,29 @@ export async function dispatchCheckedStep(
           tool: input.tool,
           args: input.args,
           signal: pooledSignal,
+          ...(networkApproval
+            ? {
+                networkApproval: {
+                  available: networkApproval.available,
+                  request: (request) =>
+                    networkApproval.request({
+                      ...request,
+                      save: () => {
+                        verify();
+                        request.save();
+                        // Saving this host advances the settings revision without retiring the process.
+                        authorizedSnapshot = resolveToolStep.call(
+                          this,
+                          botId,
+                          input,
+                          approved.groupId,
+                          knowledgeWrite,
+                        );
+                      },
+                    }),
+                },
+              }
+            : {}),
           ...(idempotencyKey ? { idempotencyKey } : {}),
         });
         pooledSignal.throwIfAborted();
@@ -319,6 +395,7 @@ export async function dispatchCheckedStep(
       null,
       error,
     );
+    if (error instanceof ConnectorNetworkBlockedError) throw error;
     if (dispatched && dispatchSignal?.aborted) throw new ConnectorCallError("unknown");
     if (error instanceof ConnectorCallError) throw error;
     if (error instanceof ConnectorAuthenticationError) {

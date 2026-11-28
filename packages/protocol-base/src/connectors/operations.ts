@@ -1,12 +1,13 @@
 import { z } from "zod";
 import { IdSchema } from "../core/ids.ts";
-import { DomainSchema } from "../permissions/settings.ts";
-import { ConnectorConfirmationModeSchema } from "./connectors.ts";
+import { ConnectorConfirmationModeSchema, ConnectorStartupWaitSchema } from "./connectors.ts";
 import { DraftBindingSchema } from "./drafts.ts";
+import { ConnectorAllowedSiteSchema } from "./network.ts";
 
 const version = z.number().int().nonnegative().safe();
 export const ConnectorFailureCodeSchema = z.enum([
   "invalid_source",
+  "website_approval_required",
   "source_changed",
   "preview_expired",
   "unsupported_format",
@@ -77,8 +78,9 @@ export const ConnectorUpdateSchema = z
       .optional(),
     access: ConnectorAccessSchema.optional(),
     confirmationMode: ConnectorConfirmationModeSchema.optional(),
+    startupTimeoutSec: ConnectorStartupWaitSchema.nullable().optional(),
     networkDomains: z
-      .array(DomainSchema)
+      .array(ConnectorAllowedSiteSchema)
       .max(64)
       .refine((domains) => new Set(domains).size === domains.length)
       .optional(),
@@ -87,6 +89,7 @@ export const ConnectorUpdateSchema = z
     (value) =>
       value.tools !== undefined ||
       value.networkDomains !== undefined ||
+      value.startupTimeoutSec !== undefined ||
       value.access !== undefined ||
       value.confirmationMode !== undefined,
   )

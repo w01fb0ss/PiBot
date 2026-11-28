@@ -1,8 +1,9 @@
 import type { Writable } from "node:stream";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { ExecError, type ExecOptions } from "../core/types.ts";
+import type { IsolationProbeStage } from "../sandbox/isolation-probe.ts";
 import { prepareSandboxHost } from "../sandbox/sandbox-host-launch.ts";
-import { executeProcess } from "./process.ts";
+import { executeProcess, type ProcessControl } from "./process.ts";
 
 /** The same output/tree owner as ordinary commands; SRT state lives only in this child host. */
 export async function executeHostedCommand(input: {
@@ -19,14 +20,16 @@ export async function executeHostedCommand(input: {
   signal: AbortSignal;
   log: Writable;
   onOutput?: (text: string) => void;
-  onProcess?: (control: import("./process.ts").ProcessControl) => void;
-  prepared(): Promise<void>;
+  onStderr?: (text: string) => void;
+  onProcess?: (control: ProcessControl) => void;
+  onExit?: (code: number | null) => void;
+  onProbeStage?: (stage: IsolationProbeStage) => void;
+  prepared(record: ProcessControl["record"] | undefined): Promise<void>;
   dispatch?(): void;
 }) {
   const host = await prepareSandboxHost({
     tempDir: input.options.tempDir,
     systemHome: input.options.systemHome,
-    commandEnv: input.env,
     args: input.options.helperArgs?.sandbox,
   });
   let drained = true;
@@ -42,7 +45,9 @@ export async function executeHostedCommand(input: {
       log: input.log,
       redactor: input.options.redactor,
       onOutput: input.onOutput,
+      onStderr: input.onStderr,
       onProcess: input.onProcess,
+      onExit: input.onExit,
       host: {
         payload: host.payload({
           ...(input.hostSsh ? { hostSsh: input.hostSsh } : {}),
@@ -55,12 +60,13 @@ export async function executeHostedCommand(input: {
           commandId: input.commandId,
           ...(input.commandText ? { commandText: input.commandText } : {}),
           cwd: input.cwd,
-          shell: input.env.SHELL as string,
           env: input.env,
           foreground: true,
+          ...(input.onProbeStage ? { isolationProbe: true as const } : {}),
         }),
         prepared: input.prepared,
         dispatch: input.dispatch,
+        onProbeStage: input.onProbeStage,
       },
     });
   } catch (error) {

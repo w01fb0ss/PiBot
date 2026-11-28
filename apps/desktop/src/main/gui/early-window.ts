@@ -3,6 +3,7 @@ import type { Logger } from "@pibot/observability";
 import { screen } from "electron";
 import { createWindow } from "../window/window.ts";
 import { desktopState } from "./desktop-state.ts";
+import { trackWindowForeground } from "./window-foreground.ts";
 
 /**
  * The GUI window is created and its document starts loading before the GUI role graph (the
@@ -40,7 +41,7 @@ export function createEarlyWindow(options: {
     resolveFirstFrame = resolve;
   });
   const createdAtMs = Math.round(performance.now());
-  const window = createWindow({
+  const { window, takeSkillDrop } = createWindow({
     systemLocale: options.systemLocale,
     bounds: saved.state.bounds,
     outputDir: options.outputDir,
@@ -56,6 +57,7 @@ export function createEarlyWindow(options: {
       if (++served >= 3) resolveFirstFrame();
     },
   });
+  const foreground = trackWindowForeground(window, process.platform);
   window.webContents.once("did-fail-load", resolveFirstFrame);
   window.once("closed", resolveFirstFrame);
   const documentLoad =
@@ -73,6 +75,8 @@ export function createEarlyWindow(options: {
   );
   return {
     window,
+    takeSkillDrop,
+    foreground,
     saved,
     documentLoad,
     /** The renderer has its first-frame data; main may now evaluate the role graph. */

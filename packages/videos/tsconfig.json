@@ -1,0 +1,36 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
+  "compilerOptions": {
+    "composite": true,
+    "noEmit": false,
+    "declaration": true,
+    "declarationMap": false,
+    "emitDeclarationOnly": true,
+    "outDir": ".cache/tsc",
+    "tsBuildInfoFile": ".cache/tsc/tsconfig.tsbuildinfo",
+    "disableSourceOfProjectReferenceRedirect": true,
+    "noCheck": true
+  },
+  "references": [
+    {
+      "path": "../brain"
+    },
+    {
+      "path": "../execution"
+    },
+    {
+      "path": "../policy"
+    },
+    {
+      "path": "../protocol-base"
+    },
+    {
+      "path": "../storage"
+    },
+    {
+      "path": "../videos-contract"
+    }
+  ],
+  "exclude": ["**/*.test.ts", "**/*.test.tsx", "test/**"]
+}

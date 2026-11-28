@@ -165,7 +165,10 @@ function rawArguments(
       }
       return { time: Math.max(0.1, Math.min(25, (input.args.timeoutMs ?? 1000) / 1000)) };
     default:
-      if (connectionRuled(capabilityId)) return { ...input.args };
+      if (connectionRuled(capabilityId)) {
+        const args: ConnectorCallInput["args"] = { ...input.args };
+        return Object.fromEntries(Object.entries(args).filter(([, value]) => value !== undefined));
+      }
       throw new ConnectorToolError("connector_tool_denied");
   }
 }

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { open } from "node:fs/promises";
+import { lstat, open } from "node:fs/promises";
 import { basename } from "node:path";
 import type { BrainHost } from "@pibot/brain/kit";
 import {
@@ -13,9 +13,12 @@ import {
   textOf,
 } from "@pibot/brain/kit";
 import {
+  envExampleFilter,
   type MethodResults,
   RpcError,
   RpcErrorCodes,
+  SKILL_ATTACHMENT_MAX_BYTES,
+  SKILL_DROP_MAX_BYTES,
   SKILL_IMPORT_FILE_MAX_BYTES,
   SKILL_IMPORT_MAX_BYTES,
   SKILL_IMPORT_MAX_FILES,
@@ -28,24 +31,37 @@ const invalid = (message: string) => new RpcError(RpcErrorCodes.invalidParams, m
 // An editor can stay open a while; past this the user picks the files again.
 const UPLOAD_MS = 30 * 60 * 1000;
 const MAX_UPLOADS = 8;
-// Two full packages: one open editor plus one being replaced, without holding unbounded memory.
+// Bound the attachment bytes retained across editors.
 const MAX_UPLOAD_BYTES = 40 * 1024 * 1024;
-const MAX_PICKED_FILE_BYTES = 5 * 1024 * 1024;
 
 function packageFile(path: string, data: Buffer): PackageFile {
+  if (basename(path).toLowerCase() === ".env.example") data = Buffer.from(envExampleFilter()(data));
   return { path, data, text: textOf(data) !== undefined, script: scriptLike(path, data) };
 }
 
-async function readPickedFile(path: string, signal: AbortSignal): Promise<Buffer> {
+async function readPickedFile(
+  path: string,
+  signal: AbortSignal,
+  maxBytes = SKILL_ATTACHMENT_MAX_BYTES,
+): Promise<Buffer> {
   // The user picked this exact file; do not follow a link swapped in after the dialog closed.
+  const picked = await lstat(path);
+  if (!picked.isFile() || picked.isSymbolicLink()) throw invalid("skill_import_unsafe");
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const stat = await file.stat();
-    if (!stat.isFile()) throw invalid("skill_import_unsafe");
-    if (stat.size > MAX_PICKED_FILE_BYTES) throw invalid("skill_import_too_large");
-    const data = await file.readFile({ signal });
-    if (data.length > MAX_PICKED_FILE_BYTES) throw invalid("skill_import_too_large");
-    return data;
+    if (!stat.isFile() || stat.dev !== picked.dev || stat.ino !== picked.ino)
+      throw invalid("skill_import_unsafe");
+    if (stat.size > maxBytes) throw invalid("skill_attachment_too_large");
+    const data = Buffer.alloc(stat.size + 1);
+    let offset = 0;
+    while (offset < data.length) {
+      signal.throwIfAborted();
+      const { bytesRead } = await file.read(data, offset, data.length - offset);
+      if (!bytesRead) return data.subarray(0, offset);
+      offset += bytesRead;
+    }
+    throw invalid("skill_attachment_too_large");
   } finally {
     await file.close();
   }
@@ -80,7 +96,7 @@ async function readUpload(path: string, from: "file" | "folder", signal: AbortSi
 
 /**
  * K2 「上传文件 / 上传文件夹」: picked files stay in brain until the editor saves, so their bytes
- * never pass through the renderer. Bounded in count, bytes and time; the oldest goes first.
+ * never pass through the renderer. Reject new uploads at capacity so open drafts keep their files.
  */
 export class SkillUploads {
   private readonly uploads = new Map<
@@ -108,31 +124,57 @@ export class SkillUploads {
         readUpload(path, from, signal),
         AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
       );
-      if (!files.length) throw invalid("skill_upload_empty");
-      const bytes = files.reduce((sum, file) => sum + file.data.length, 0);
-      this.prune();
-      for (const id of this.uploads.keys()) {
-        if (this.uploads.size < MAX_UPLOADS && this.total() + bytes <= MAX_UPLOAD_BYTES) break;
-        this.uploads.delete(id);
-      }
-      const uploadId = randomUUID();
-      this.uploads.set(uploadId, {
-        files: new Map(files.map((file) => [file.path, file])),
-        bytes,
-        expiresAt: Date.now() + UPLOAD_MS,
-      });
-      return {
-        uploadId,
-        files: files.map(({ path, data, script, text }) => ({
-          path,
-          bytes: data.length,
-          script,
-          text,
-        })),
-      };
+      return this.stage(files);
     } finally {
       this.picking = false;
     }
+  }
+  async drop(dropId: string, signal: AbortSignal) {
+    const paths = await this.host.skills?.takeDrop?.(dropId, signal);
+    if (!paths) throw invalid("skill_files_invalid");
+    const names = new Set<string>();
+    const files: PackageFile[] = [];
+    let remaining = SKILL_DROP_MAX_BYTES;
+    try {
+      for (const source of paths) {
+        const path = packagePath(basename(source));
+        if (!SkillPackageWritePathSchema.safeParse(path).success || names.has(path.toLowerCase()))
+          throw invalid("skill_files_invalid");
+        names.add(path.toLowerCase());
+        const data = await readPickedFile(source, signal, remaining);
+        remaining -= data.length;
+        files.push(packageFile(path, data));
+      }
+    } catch (error) {
+      if (error instanceof RpcError) throw error;
+      if (error instanceof PackageError) importError(error);
+      signal.throwIfAborted();
+      throw invalid("skill_import_unreadable");
+    }
+    return this.stage(files);
+  }
+  private stage(files: PackageFile[]) {
+    if (!files.length) throw invalid("skill_upload_empty");
+    const bytes = files.reduce((sum, file) => sum + file.data.length, 0);
+    this.prune();
+    if (bytes > MAX_UPLOAD_BYTES) throw invalid("skill_upload_batch_too_large");
+    if (this.uploads.size >= MAX_UPLOADS || this.total() + bytes > MAX_UPLOAD_BYTES)
+      throw invalid("skill_upload_full");
+    const uploadId = randomUUID();
+    this.uploads.set(uploadId, {
+      files: new Map(files.map((file) => [file.path, file])),
+      bytes,
+      expiresAt: Date.now() + UPLOAD_MS,
+    });
+    return {
+      uploadId,
+      files: files.map(({ path, data, script, text }) => ({
+        path,
+        bytes: data.length,
+        script,
+        text,
+      })),
+    };
   }
   private total() {
     let sum = 0;
@@ -143,7 +185,7 @@ export class SkillUploads {
     const now = Date.now();
     for (const [id, entry] of this.uploads) if (entry.expiresAt <= now) this.uploads.delete(id);
   }
-  /** Bytes of one uploaded file, for a save; an expired or evicted upload must be picked again. */
+  /** Bytes of one uploaded file, for a save; an expired upload must be picked again. */
   take(uploadId: string, path: string): Buffer {
     this.prune();
     const file = this.uploads.get(uploadId)?.files.get(path);
@@ -194,8 +236,8 @@ export function applyFileChanges(
     if ("remove" in change) continue;
     const path = normal(change.path);
     if (!SkillPackageWritePathSchema.safeParse(path).success) throw invalid("skill_files_invalid");
-    // Text typed in the editor gets the same redaction as the SKILL.md document; uploaded bytes
-    // are kept as picked, exactly like an imported package.
+    // Text typed in the editor gets SKILL.md redaction. Uploaded templates were filtered at staging.
+    // Recheck the destination name in packageFile because an upload can be saved under a new name.
     const data =
       "text" in change
         ? Buffer.from(deps.redact(change.text), "utf8")

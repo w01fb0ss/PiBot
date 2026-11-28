@@ -69,6 +69,8 @@ const planHash = "a".repeat(64);
 const runtimeStatus: MethodResults["skills.runtime"] = {
   skillId: id,
   state: "ready",
+  runtime: "python",
+  networkDomains: { primary: ["github.com"], withMirror: ["github.com", "releases.astral.sh"] },
   requirements: [{ runtime: "python", version: ">=3.10", packages: ["numpy"] }],
   nativeModules: ["numpy"],
   interpreter: { command: "python3", version: "3.12.4" },
@@ -308,12 +310,12 @@ export const skillMethodCases = {
     badResult: { path: "scripts/run.sh" },
   },
   "skills.pickFiles": {
-    params: { botId: id, from: "folder" },
+    params: { botId: id, from: "drop", dropId: id },
     result: {
       uploadId: id,
       files: [{ path: "scripts/run.sh", bytes: 8, script: true, text: true }],
     },
-    badParams: { botId: id },
+    badParams: { botId: id, from: "drop", dropped: [{ name: "x", data: "eA==" }] },
     badResult: { uploadId: id, files: [] },
   },
   "skills.cancelPreview": { params: { previewId: id }, result: ok, badParams: {}, badResult: {} },
@@ -321,6 +323,27 @@ export const skillMethodCases = {
     params: { batchId: id },
     result: ok,
     badParams: { batchId: "bad" },
+    badResult: {},
+  },
+  "skills.secretChoices": {
+    params: { botId: id },
+    result: ["SEARCH_KEY"],
+    badParams: { botId: "bad" },
+    badResult: ["bad name"],
+  },
+  "skills.secretBindings": {
+    params: { skillId: id },
+    result: {
+      bindings: [{ variable: "API_KEY", secretName: "SEARCH_KEY" }],
+      available: ["SEARCH_KEY"],
+    },
+    badParams: { skillId: "bad" },
+    badResult: { bindings: [], available: ["bad name"] },
+  },
+  "skills.setSecretBindings": {
+    params: { skillId: id, bindings: [{ variable: "API_KEY", secretName: "SEARCH_KEY" }] },
+    result: ok,
+    badParams: { skillId: id, bindings: [{ variable: "bad name", secretName: null }] },
     badResult: {},
   },
   "skills.import": {
@@ -478,7 +501,7 @@ export const skillMethodCases = {
     badResult: { ...runtimeStatus, state: "installing" },
   },
   "skills.runtime.prepare": {
-    params: { skillId: id, requestId: id, planHash: planHash },
+    params: { skillId: id, runtime: "python", requestId: id, planHash: planHash },
     result: { ...runtimeStatus, state: "preparing" },
     badParams: { skillId: id, requestId: id },
     badResult: { ...runtimeStatus, envId: "NOT-HEX" },

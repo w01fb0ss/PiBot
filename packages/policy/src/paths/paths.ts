@@ -203,9 +203,22 @@ export async function canonicalPath(
       throw error;
     }
   }
+  // A missing first child of a mapped drive still belongs to the drive's canonical root.
+  const driveRoot = context.platform === "win32" && !whole && /^[a-z]:[\\/]$/i.test(root);
+  if (driveRoot) {
+    try {
+      current = await withAbort(() => context.fs.realpath(root, context.signal), context.signal);
+    } catch (error) {
+      if (!absentPath(error)) throw error;
+      exists = false;
+    }
+  }
+  const canonicalRoot = current;
   for (const part of parts) {
     context.signal.throwIfAborted();
     if (!part || part === ".") continue;
+    // A drive-relative traversal cannot climb above the drive's mounted root.
+    if (driveRoot && part === ".." && current === canonicalRoot) continue;
     const next = api.resolve(current, part);
     try {
       current = await withAbort(() => context.fs.realpath(next, context.signal), context.signal);

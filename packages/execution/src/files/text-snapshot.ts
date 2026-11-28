@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { type BigIntStats, constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import { sameFile } from "../core/file-identity.ts";
@@ -9,6 +10,14 @@ export interface TextSnapshot {
   // Bigint: exact NTFS file IDs and nanosecond times; numbers can alias neighbouring entities.
   stat: BigIntStats;
 }
+export function statVersion(stat: BigIntStats, hash: string) {
+  return `${stat.mtimeNs}:${stat.size}:${hash}`;
+}
+
+export function textVersion(stat: BigIntStats, text: string) {
+  return statVersion(stat, createHash("sha256").update(text).digest("hex"));
+}
+
 export const MAX_WRITE_BYTES = 64 * 1024 * 1024;
 /** Same entity and unchanged content metadata (not only identity). */
 export function sameFileVersion(left: BigIntStats, right: BigIntStats) {

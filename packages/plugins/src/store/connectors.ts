@@ -3,6 +3,10 @@ import {
   type CapabilityId,
   CapabilityIdSchema,
   type Connector,
+  ConnectorAllowedSiteSchema,
+  type ConnectorBlockedSite,
+  ConnectorBlockedSiteSchema,
+  ConnectorNetworkSiteSchema,
   ConnectorPageSchema,
   ConnectorServerSchema,
   ConnectorUpdateSchema,
@@ -20,7 +24,10 @@ import {
   parseConnector,
   parseConnectorTool,
 } from "./connector-records.ts";
+import { isKnowledgeManagedInstallation } from "./knowledge-access.ts";
+import { WRITE_TOOLS } from "./notion-tools.ts";
 import type { PluginAccessRepo } from "./plugin-access.ts";
+import { readNetworkDenials, writeNetworkDenials } from "./plugin-settings.ts";
 
 export class ConnectorsRepo {
   constructor(
@@ -35,6 +42,31 @@ export class ConnectorsRepo {
       ON p.id=c.plugin_installation_id WHERE c.id=? AND c.removed_at IS NULL AND p.status='installed'`)
       .get(IdSchema.parse(id));
     return row ? parseConnector(row) : undefined;
+  }
+
+  /** Only the Knowledge preview path supplies a tool. Independent connectors are unaffected. */
+  managedKnowledgeWriteAllowed(connector: Connector, tool?: string): boolean | undefined {
+    const action = Object.entries(WRITE_TOOLS).find(([, name]) => name === tool)?.[0];
+    const row = this.db
+      .prepare(
+        `SELECT EXISTS(SELECT 1 FROM knowledge_sources
+        WHERE kind='notion' AND json_extract(config_json,'$.connectorId')=? AND writable=1
+          AND EXISTS(SELECT 1 FROM json_each(config_json,'$.writeActions') WHERE value=?)) AS writable
+       FROM knowledge_managed_installations WHERE installation_id=?`,
+      )
+      .get(connector.id, action ?? null, connector.pluginInstallationId);
+    return row ? row.writable === 1 : undefined;
+  }
+
+  /** Enabled, installed connections whose last start failed (oldest change first), bounded. */
+  failed(limit: number, id?: string): Connector[] {
+    return this.db
+      .prepare(`SELECT c.* FROM connectors c JOIN plugin_installations p
+      ON p.id=c.plugin_installation_id WHERE c.removed_at IS NULL AND p.status='installed'
+      AND c.enabled=1 AND c.status='error' AND (? IS NULL OR c.id=?)
+      ORDER BY c.updated_at,c.id LIMIT ?`)
+      .all(id ?? null, id ?? null, Math.min(Math.max(limit, 1), 200))
+      .map(parseConnector);
   }
 
   forApp(appId: string): Connector[] {
@@ -167,6 +199,99 @@ export class ConnectorsRepo {
     return ConnectorServerSchema.parse(JSON.parse(String(row?.config_json)));
   }
 
+  networkDenials(id: string): string[] {
+    return readNetworkDenials(this.db, id);
+  }
+
+  allowNetworkSite(
+    id: string,
+    host: string,
+    actorBotId: string,
+    editableSites: readonly string[],
+    mode: "sandbox" | "remote" = "sandbox",
+  ) {
+    const domain = (
+      mode === "remote" ? ConnectorNetworkSiteSchema : ConnectorAllowedSiteSchema
+    ).parse(host);
+    return transaction(this.db, () => {
+      const current = this.get(id);
+      if (!current) connectorMissing();
+      this.assertNoOperation(id);
+      const server = this.configuration(id);
+      const domains = [...new Set([...editableSites, domain])];
+      if (domains.length > 64)
+        throw new RpcError(RpcErrorCodes.invalidParams, "connector_network_limit");
+      this.db
+        .prepare("UPDATE connectors SET config_json=?,revision=revision+1,updated_at=? WHERE id=?")
+        .run(JSON.stringify({ ...server, networkDomains: domains }), new Date().toISOString(), id);
+      const denied = new Set(this.networkDenials(id));
+      if (denied.delete(domain)) writeNetworkDenials(this.db, id, denied);
+      this.audit.append({
+        botId: actorBotId,
+        kind: "connector.changed",
+        summary: connectorAuditEvents.network,
+        detail: {
+          connectorId: id,
+          domain,
+          reasonCode: "network_domains_changed",
+          entryCount: domains.length,
+        },
+      });
+      this.writeBlockedSites(
+        id,
+        this.blockedSites(id).filter((site) => site.host !== domain),
+      );
+    });
+  }
+
+  blockedSites(id: string): ConnectorBlockedSite[] {
+    const row = this.db
+      .prepare("SELECT value FROM settings WHERE key=?")
+      .get(`connector-network:${IdSchema.parse(id)}`);
+    if (!row) return [];
+    return ConnectorBlockedSiteSchema.array()
+      .max(64)
+      .parse(JSON.parse(String(row.value)));
+  }
+
+  writeBlockedSites(id: string, sites: ConnectorBlockedSite[]) {
+    const key = `connector-network:${IdSchema.parse(id)}`;
+    if (!sites.length) this.db.prepare("DELETE FROM settings WHERE key=?").run(key);
+    else
+      this.db
+        .prepare(
+          "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        )
+        .run(key, JSON.stringify(sites));
+  }
+
+  recordBlockedSite(id: string, site: ConnectorBlockedSite) {
+    const current = this.blockedSites(id);
+    if (current.some((value) => value.host === site.host && value.reason === site.reason))
+      return false;
+    this.writeBlockedSites(id, [site, ...current.filter((v) => v.host !== site.host)].slice(0, 64));
+    return true;
+  }
+
+  clearBlockedSite(id: string, host: string, actorBotId: string, action: "allow" | "reset") {
+    transaction(this.db, () => {
+      this.writeBlockedSites(
+        id,
+        this.blockedSites(id).filter((site) => site.host !== host),
+      );
+      this.audit.append({
+        botId: actorBotId,
+        kind: "connector.changed",
+        summary: connectorAuditEvents.network,
+        detail: {
+          connectorId: id,
+          domain: host,
+          reasonCode: `connector_network_settings_${action}`,
+        },
+      });
+    });
+  }
+
   /** Uninstall already revoked execution visibility; cleanup still owns its configuration. */
   configurationForCleanup(id: string, installationId: string) {
     const row = this.db
@@ -194,19 +319,45 @@ export class ConnectorsRepo {
       if (!current) connectorMissing();
       if (current.revision !== patch.expectedRevision) connectorConflict();
       this.assertNoOperation(current.id);
-      if (patch.networkDomains !== undefined) {
+      if (patch.access && isKnowledgeManagedInstallation(this.db, current.pluginInstallationId))
+        throw new RpcError(RpcErrorCodes.invalidParams, "connector_knowledge_managed");
+      if (patch.networkDomains !== undefined || patch.startupTimeoutSec !== undefined) {
         const installation = this.db
           .prepare("SELECT source_kind FROM plugin_installations WHERE id=?")
           .get(current.pluginInstallationId);
         if (!installation || installation.source_kind === "builtin")
           throw new RpcError(
             RpcErrorCodes.invalidParams,
-            "Builtin network settings cannot be edited",
+            "Builtin connection settings cannot be edited",
           );
         const server = this.configuration(current.id);
+        if (patch.networkDomains !== undefined) {
+          const allowed = new Set(patch.networkDomains);
+          const denied = new Set(this.networkDenials(current.id));
+          for (const site of server.networkDomains) if (!allowed.has(site)) denied.add(site);
+          for (const site of allowed) denied.delete(site);
+          writeNetworkDenials(this.db, current.id, denied);
+        }
+        const candidate = {
+          ...server,
+          ...(patch.networkDomains === undefined ? {} : { networkDomains: patch.networkDomains }),
+          ...(patch.startupTimeoutSec === undefined
+            ? {}
+            : { startupTimeoutSec: patch.startupTimeoutSec ?? undefined }),
+        };
         this.db
           .prepare("UPDATE connectors SET config_json=? WHERE id=?")
-          .run(JSON.stringify({ ...server, networkDomains: patch.networkDomains }), current.id);
+          .run(JSON.stringify(candidate), current.id);
+      }
+      if (patch.networkDomains !== undefined) {
+        const allowed = new Set(patch.networkDomains);
+        this.writeBlockedSites(
+          current.id,
+          this.blockedSites(current.id).filter(
+            ({ host, reason }) =>
+              !allowed.has(host) || !["denied", "unattended", "timeout", "limit"].includes(reason),
+          ),
+        );
       }
       const nextCatalog = current.catalogVersion + (patch.tools ? 1 : 0);
       if (patch.tools) {
@@ -283,7 +434,12 @@ export class ConnectorsRepo {
           actorBotId,
         );
         // Access is installation-wide, so its update already advances every connector receipt.
-        if (!patch.tools && !patch.confirmationMode && patch.networkDomains === undefined)
+        if (
+          !patch.tools &&
+          !patch.confirmationMode &&
+          patch.networkDomains === undefined &&
+          patch.startupTimeoutSec === undefined
+        )
           return this.get(current.id) as Connector;
       }
       this.db
@@ -291,28 +447,46 @@ export class ConnectorsRepo {
           "UPDATE connectors SET revision=revision+1,catalog_version=?,confirmation_mode=COALESCE(?,confirmation_mode),updated_at=? WHERE id=?",
         )
         .run(nextCatalog, patch.confirmationMode ?? null, new Date().toISOString(), current.id);
-      this.audit.append({
-        botId: IdSchema.parse(actorBotId),
-        kind: "connector.changed",
-        summary:
-          patch.networkDomains !== undefined
-            ? connectorAuditEvents.network
-            : connectorAuditEvents.access,
-        detail: {
-          connectorId: current.id,
-          revision: this.get(current.id)?.revision ?? current.revision + 1,
-          catalogVersion: nextCatalog,
-          ...(patch.networkDomains !== undefined
-            ? { reasonCode: "network_domains_changed", entryCount: patch.networkDomains.length }
-            : {}),
-          // Builtin-default reconciliation is the only caller that skips overrides; it is not a
-          // user edit (the confirmation restore and the records page both rely on this).
-          ...(options.recordToolOverrides === false ? { internal: true } : {}),
-          ...(patch.confirmationMode
-            ? { reasonCode: `confirmation_${patch.confirmationMode}` }
-            : {}),
-        },
-      });
+      const revision = this.get(current.id)?.revision ?? current.revision + 1;
+      if (patch.startupTimeoutSec !== undefined)
+        this.audit.append({
+          botId: IdSchema.parse(actorBotId),
+          kind: "connector.changed",
+          summary: connectorAuditEvents.startupTimeout,
+          detail: {
+            connectorId: current.id,
+            revision,
+            reasonCode: "startup_timeout_changed",
+          },
+        });
+      if (
+        patch.startupTimeoutSec === undefined ||
+        patch.networkDomains !== undefined ||
+        patch.tools ||
+        patch.confirmationMode
+      )
+        this.audit.append({
+          botId: IdSchema.parse(actorBotId),
+          kind: "connector.changed",
+          summary:
+            patch.networkDomains !== undefined
+              ? connectorAuditEvents.network
+              : connectorAuditEvents.access,
+          detail: {
+            connectorId: current.id,
+            revision,
+            catalogVersion: nextCatalog,
+            ...(patch.networkDomains !== undefined
+              ? { reasonCode: "network_domains_changed", entryCount: patch.networkDomains.length }
+              : {}),
+            // Builtin-default reconciliation is the only caller that skips overrides; it is not a
+            // user edit (the confirmation restore and the records page both rely on this).
+            ...(options.recordToolOverrides === false ? { internal: true } : {}),
+            ...(patch.confirmationMode
+              ? { reasonCode: `confirmation_${patch.confirmationMode}` }
+              : {}),
+          },
+        });
       return this.get(current.id) as Connector;
     });
   }

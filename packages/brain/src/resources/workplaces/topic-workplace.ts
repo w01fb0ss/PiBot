@@ -87,7 +87,6 @@ export class TopicWorkplaceService {
     if (!topic) throw new RpcError(-32602, "topic_not_found");
     if (topic.kind !== "dm" || topic.botId !== botId) throw new RpcError(-32602, "topic_wrong_bot");
     if (topic.archivedAt) throw new RpcError(-32602, "topic_archived");
-    if (topic.readOnly) throw new RpcError(-32602, "import_topic_read_only");
     const place = this.local.workplaces.topic(topicId);
     const resolved = await this.local.workplaces.context(botId, this.signal, place);
     // Folder paths are stored canonical (workplaces.pick realpaths them), so the client's path

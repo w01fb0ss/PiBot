@@ -30,7 +30,14 @@ async function wait<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
  * No separate save button. The switch saves at once, the address saves when the field loses
  * focus (or on Enter), and provider limits are only mentioned next to a test result.
  */
-export function NetworkProxySettings() {
+export function NetworkProxySettings({ focus = false }: { focus?: boolean } = {}) {
+  useEffect(() => {
+    if (!focus) return;
+    const frame = requestAnimationFrame(() => {
+      document.getElementById("network-proxy-settings")?.scrollIntoView({ block: "start" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [focus]);
   const { peer } = useRpc();
   const { t, network } = useSettings();
   const task = useTask();
@@ -114,7 +121,7 @@ export function NetworkProxySettings() {
       if (!current.signal.aborted && version === revision.current) setTestResult(result);
     });
   return (
-    <SettingsSection title={t("network.title")}>
+    <SettingsSection id="network-proxy-settings" title={t("network.title")}>
       <SettingsRow
         icon="network"
         tone="orange"

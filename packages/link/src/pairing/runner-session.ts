@@ -17,6 +17,7 @@ import { acceptIdentity, identityProof } from "./identity.ts";
 import { decodeRunnerPairCode } from "./runner.ts";
 
 const MAGIC = utf8("pibot-runner-bootstrap-v1:");
+const RUNNER_HANDSHAKE_MS = 15_000;
 const proof = z.strictObject({
   name: z.string().max(200),
   publicKey: z.string().max(64),
@@ -116,7 +117,7 @@ export async function pairRunnerSession(options: {
       prologue: decoded.prologue,
       random: options.random,
       signal,
-      timeoutMs: 15_000,
+      timeoutMs: RUNNER_HANDSHAKE_MS,
     });
     clearInterval(bootstrapTimer);
     port = encryptedPort(channel, wire, { signal });
@@ -200,7 +201,8 @@ export async function connectRunnerSession(options: {
         : "pibot-runner-session-v1",
     ),
     signal: options.signal,
-    timeoutMs: options.timeoutMs,
+    // A paired relay can be just as slow as the relay used to pair.
+    timeoutMs: options.timeoutMs ?? RUNNER_HANDSHAKE_MS,
   });
   return encryptedPort(channel, options.transport, { signal: options.signal });
 }

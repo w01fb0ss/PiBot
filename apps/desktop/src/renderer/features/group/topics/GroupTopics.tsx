@@ -6,6 +6,9 @@ import { GroupTopicList } from "./GroupTopicList.tsx";
 export function GroupTopics({
   peer,
   group,
+  selected,
+  conversationId,
+  linkedTitle,
   select,
   refresh,
   inline = false,
@@ -14,6 +17,8 @@ export function GroupTopics({
   peer: ChatPeer;
   group: Group;
   selected?: GroupTopic;
+  conversationId?: string;
+  linkedTitle?: string;
   select(topic?: GroupTopic): void;
   refresh(): Promise<void>;
   running: boolean;
@@ -25,6 +30,8 @@ export function GroupTopics({
     <GroupTopicList
       peer={peer}
       group={group}
+      conversationId={conversationId}
+      selected={selected}
       draft={draft}
       changed={() => {
         select(undefined);
@@ -36,7 +43,11 @@ export function GroupTopics({
     list
   ) : (
     <TopicPopover
-      title={draft ? t("workspace.newTopic") : group.topicTitle || t("workspace.untitled")}
+      title={
+        draft
+          ? t("workspace.newTopic")
+          : (linkedTitle ?? selected?.title ?? group.topicTitle) || t("workspace.untitled")
+      }
     >
       {list}
     </TopicPopover>

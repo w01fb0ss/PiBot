@@ -4,6 +4,8 @@ import {
   type GroupTask,
   GroupTaskSchema,
   type KernelMethodParams,
+  type ModelOverride,
+  ModelOverrideSchema,
   type Page,
   PageSchema,
 } from "@pibot/protocol-base";
@@ -14,7 +16,7 @@ import { GroupTaskSourcesRepo } from "./group-task-sources.ts";
 import { GroupsRepo } from "./groups.ts";
 
 const taskColumns =
-  "execution_mode AS executionMode,id,group_id AS groupId,thread_conversation_id AS threadConversationId,assignee_bot_id AS assigneeBotId,title,instructions,status,summary,created_by_bot_id AS createdByBotId,created_at AS createdAt,finished_at AS finishedAt,quiet_at AS quietAt";
+  "execution_mode AS executionMode,id,group_id AS groupId,thread_conversation_id AS threadConversationId,assignee_bot_id AS assigneeBotId,title,instructions,status,summary,created_by_bot_id AS createdByBotId,created_at AS createdAt,finished_at AS finishedAt,quiet_at AS quietAt,model_override AS modelOverride";
 export class GroupTasksRepo {
   constructor(
     private readonly db: DatabaseSync,
@@ -23,6 +25,11 @@ export class GroupTasksRepo {
   get(id: string): GroupTask | undefined {
     const row = this.db.prepare(`SELECT ${taskColumns} FROM group_tasks WHERE id=?`).get(id);
     return row ? new GroupTaskSourcesRepo(this.db).decorate(row) : undefined;
+  }
+  setTaskModel(id: string, override: ModelOverride | null) {
+    this.db
+      .prepare("UPDATE group_tasks SET model_override=? WHERE id=?")
+      .run(override ? JSON.stringify(ModelOverrideSchema.parse(override)) : null, id);
   }
   forThread(threadId: string): GroupTask | undefined {
     const row = this.db

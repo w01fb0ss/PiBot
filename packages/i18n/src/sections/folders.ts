@@ -3,7 +3,7 @@
 export const foldersZh = {
   "folders.open": "打开",
   "folders.groupUsedNote": "文件夹属于各个话题，在聊天顶部选择。这里列出这个群用过的文件夹。",
-  "folders.home": "Bot 自己的目录",
+  "folders.home": "Bot 自己的文件夹",
   "folders.trigger": "文件夹：{name}，点击修改",
   "folders.more": "{name} +{count}",
   "folders.title": "这个对话的文件夹",
@@ -29,7 +29,7 @@ export const foldersZh = {
   "folders.protected": "这个文件夹属于受保护位置，不能加为可写文件夹。",
   "folders.writableBoundary":
     "主文件夹和追加的可写文件夹可以读写（仍受权限限制），只读参考只能读取。",
-  "folders.useHome": "不用文件夹（Bot 自己的目录）",
+  "folders.useHome": "不用文件夹（Bot 自己的文件夹）",
   "folders.inherit": "沿用上一个话题的文件夹（{name}）",
   "folders.draftLine": "在 {folder} 里工作",
   "folders.draftNote": "发第一条消息前可以随时改",
@@ -42,7 +42,7 @@ export const foldersZh = {
   "folders.full": "一个对话最多 32 个只读参考。",
   "folders.loading": "正在读取文件夹…",
   "folders.boundary": "只有主文件夹可写（仍受权限限制），只读参考只能读取。",
-  "folders.groupHome": "群自己的目录",
+  "folders.groupHome": "群自己的文件夹",
   "folders.usedTitle": "用过的文件夹",
   "folders.usedNote": "文件夹属于各个对话，在聊天顶部选择。这里列出这个 Bot 用过的文件夹。",
   "folders.usedEmpty": "还没有用过文件夹。",

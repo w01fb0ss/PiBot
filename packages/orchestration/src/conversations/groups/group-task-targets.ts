@@ -1,7 +1,34 @@
 import { GroupToolError } from "@pibot/brain/orchestration-kit";
-import type { Group } from "@pibot/protocol-base";
+import { type Group, RpcError } from "@pibot/protocol-base";
 import { ConversationsRepo } from "@pibot/storage";
 import type { GroupService } from "./group-service.ts";
+
+/**
+ * Target check for health-repair stale-task cleanup: the task must belong to `group`, its thread
+ * and that thread's parent topic must belong to `group` and not be archived, and the task must
+ * still be open. Unlike `taskTarget`, older non-current topics of the group are allowed.
+ */
+export function staleTaskTarget(service: GroupService, group: Group, taskId: string) {
+  const task = service.tasks.get(taskId);
+  const conversations = new ConversationsRepo(service.deps.db);
+  const thread = task ? conversations.get(task.threadConversationId) : undefined;
+  const topic = thread?.threadOf ? conversations.get(thread.threadOf) : undefined;
+  if (
+    !task ||
+    task.groupId !== group.id ||
+    !thread ||
+    thread.kind !== "thread" ||
+    thread.groupId !== group.id ||
+    thread.archivedAt ||
+    !topic ||
+    topic.kind !== "group" ||
+    topic.groupId !== group.id ||
+    topic.archivedAt
+  )
+    throw new GroupToolError("这个群里没有该任务 / The task is not in this group.");
+  if (task.status !== "open") throw new RpcError(-32011, "task_not_open");
+  return task;
+}
 
 export function taskTarget(service: GroupService, group: Group, botId: string, taskId?: string) {
   if (taskId) {

@@ -331,6 +331,8 @@ export function createComputerHost(options: {
     signal?: AbortSignal,
   ): Promise<HostComputerResults[K]> {
     signal?.throwIfAborted();
+    if (method === "host.computer.installedApps" && !isSupportedPlatform(platform))
+      return { supported: false, reason: "unsupported_platform" } as HostComputerResults[K];
     if (!macOwner) return dispatch(method, params, signal);
     const metadata =
       method === "host.computer.status" ||

@@ -1,7 +1,12 @@
-import { lstatSync, realpathSync } from "node:fs";
+import { lstatSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import type { WorkspaceLocal as LocalService } from "@pibot/brain/kit";
-import { fileIdentity, sensitiveReadBoundary } from "@pibot/execution";
+import {
+  canonicalExistingPathSync,
+  fileIdentity,
+  samePathSpelling,
+  sensitiveReadBoundary,
+} from "@pibot/execution";
 import { containsPath } from "@pibot/policy";
 import { BotsRepo, ConversationsRepo, GroupsRepo } from "@pibot/storage";
 import type { ChangesTarget, WorkspaceSnapshot } from "@pibot/workspaces-contract/full";
@@ -96,7 +101,7 @@ export class ManagedResourceAuthority {
       if (
         !info.isDirectory() ||
         info.isSymbolicLink() ||
-        realpathSync(root.path) !== resolve(root.path) ||
+        !samePathSpelling(canonicalExistingPathSync(root.path), resolve(root.path)) ||
         current.device !== root.device ||
         current.inode !== root.inode
       )
@@ -118,7 +123,7 @@ export class ManagedResourceAuthority {
     for (;;) {
       try {
         const info = lstatSync(parent);
-        if (info.isSymbolicLink() || realpathSync(parent) !== parent)
+        if (info.isSymbolicLink() || !samePathSpelling(canonicalExistingPathSync(parent), parent))
           managedError("managed_path_changed");
         if (!info.isDirectory()) parent = dirname(parent);
         return { absolute, parent, ...fileIdentity(lstatSync(parent, { bigint: true })) };
@@ -275,7 +280,7 @@ export class ManagedResourceAuthority {
         if (
           !info.isDirectory() ||
           info.isSymbolicLink() ||
-          realpathSync(item.parent) !== item.parent ||
+          !samePathSpelling(canonicalExistingPathSync(item.parent), item.parent) ||
           current.device !== item.device ||
           current.inode !== item.inode
         )

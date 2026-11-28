@@ -29,6 +29,8 @@ export function MessageExecutionPause({ message }: { message: Message }) {
   if (question.success) return <UserQuestionCard message={message} pause={question.data} />;
   const reason = reasons.find((value) => value === pause.reason);
   if (!reason) return null;
+  // An out-of-date pause is no longer waiting; its card already says why and what to do.
+  if (reason === "approval" && pause.superseded === true) return null;
   const stall = ExecutionStallSchema.safeParse(pause.stall);
   const summary =
     reason === "checkpoint" &&

@@ -2,11 +2,17 @@ import { z } from "zod";
 import { IdSchema } from "../core/ids.ts";
 import { PageSchema } from "../core/page.ts";
 import { RunSchema } from "../execution/runs.ts";
+import { ModelOverrideSchema } from "../providers/providers.ts";
+import { ConversationSchema } from "./entities.ts";
 
 const _botId = z.strictObject({ botId: IdSchema });
 const _groupId = z.strictObject({ groupId: IdSchema });
 const page = PageSchema;
 export const ChatMethods = {
+  "chat.topicModel.set": {
+    params: z.strictObject({ conversationId: IdSchema, override: ModelOverrideSchema.nullable() }),
+    result: ConversationSchema,
+  },
   "chat.compact": {
     params: z.strictObject({
       botId: IdSchema,

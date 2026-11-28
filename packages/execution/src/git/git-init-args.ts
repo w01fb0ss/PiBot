@@ -1,20 +1,22 @@
-import { isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { ExecError } from "../core/types.ts";
 
 export interface GitInitialization {
   program: string;
   argv: string[];
+  directory?: string;
+  remainder?: string;
   primary: { canonicalPath: string; device: string | null; inode: string | null };
   /** Synchronous brain-owned check; an edited primary/permission/group invalidates preparation. */
   assertAuthorized(): void;
 }
 
-const quote = (word: string) => `'${word.replaceAll("'", "'\\''")}'`;
+export const quoteGitInitWord = (word: string) => `'${word.replaceAll("'", "'\\''")}'`;
 
 /** Only exec's validated plan may derive this fixed command; it is never a model setup tool. */
 export function gitDirectoryCreationCommand(gitDir: string) {
-  // -m affects only the final mkdir -p component; the fixed umask also protects new parents.
-  return `umask 077; exec ${["/bin/mkdir", "-p", "-m", "700", "--", gitDir].map(quote).join(" ")}`;
+  // An exclusive final mkdir refuses a repository created since planning.
+  return `umask 077; /bin/mkdir -p -- ${quoteGitInitWord(dirname(gitDir))} && exec /bin/mkdir -- ${quoteGitInitWord(gitDir)}`;
 }
 
 /** Structured argv supplied by the authorized brain port, never inferred from arbitrary shell text. */
@@ -63,21 +65,26 @@ export function gitInitArguments(argv: string[], cwd: string, program = "git") {
       !operands &&
       ["--template", "--initial-branch", "--object-format", "--ref-format", "-b"].includes(arg)
     ) {
-      template ||= arg === "--template";
       if (argv[++index] === undefined) throw new ExecError("invalid_input");
+      if (arg === "--template") {
+        if (argv[index] !== "") throw new ExecError("invalid_input");
+        template = true;
+      }
     } else if (
       !operands &&
       /^(?:--(?:template|initial-branch|object-format|ref-format)=|-q*b.).*/.test(arg)
     )
-      template ||= arg.startsWith("--template=");
-    else if (!operands && /^-q+b$/.test(arg)) {
-      if (argv[++index] === undefined) throw new ExecError("invalid_input");
-    } else if (!operands && (arg === "--shared" || arg.startsWith("--shared="))) continue;
-    else if (!operands && arg.startsWith("-")) throw new ExecError("invalid_input");
-    else {
-      if (destination !== undefined) throw new ExecError("invalid_input");
-      destination = arg;
-    }
+      if (arg.startsWith("--template=")) {
+        if (arg !== "--template=") throw new ExecError("invalid_input");
+        template = true;
+      } else if (!operands && /^-q+b$/.test(arg)) {
+        if (argv[++index] === undefined) throw new ExecError("invalid_input");
+      } else if (!operands && (arg === "--shared" || arg.startsWith("--shared="))) continue;
+      else if (!operands && arg.startsWith("-")) throw new ExecError("invalid_input");
+      else {
+        if (destination !== undefined) throw new ExecError("invalid_input");
+        destination = arg;
+      }
   }
   const target = resolve(directory, destination ?? ".");
   if (!isAbsolute(target)) throw new ExecError("invalid_input");
@@ -87,7 +94,6 @@ export function gitInitArguments(argv: string[], cwd: string, program = "git") {
   return {
     target,
     directories,
-    command: [program, ...command].map(quote).join(" "),
-    emptyTemplate: !template,
+    argv: command,
   };
 }

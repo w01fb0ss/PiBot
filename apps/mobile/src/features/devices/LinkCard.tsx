@@ -1,12 +1,13 @@
 import type { DirectFailure } from "@pibot/link";
-import { useEffect, useRef } from "react";
-import { Animated, Easing, Text, View } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import { Animated, Easing, Pressable, Text, View } from "react-native";
 import Svg, { Line } from "react-native-svg";
 import { useText } from "../../runtime/context.tsx";
 import { useReducedMotion } from "../../theme/motion.ts";
 import { radius, type } from "../../theme/scale.ts";
 import { monoFont, useColors } from "../../theme/use-theme.ts";
 import type { Computer } from "../../transport/link-port.ts";
+import { Button } from "../../ui/controls.tsx";
 import { Icon, type IconName } from "../../ui/icons.tsx";
 import { useTimeText } from "../../ui/time.ts";
 
@@ -107,6 +108,8 @@ export function LinkCard({
   directFailure,
   error,
   lastSeen,
+  reconnect,
+  busy,
 }: {
   computer: Computer;
   status: string;
@@ -116,11 +119,15 @@ export function LinkCard({
   directFailure?: DirectFailure;
   error?: string;
   lastSeen?: number;
+  reconnect(): void;
+  busy: boolean;
 }) {
   const colors = useColors(),
     t = useText(),
     time = useTimeText();
+  const [showConnection, setShowConnection] = useState(false);
   const online = status === "online";
+  const viaRelay = online && path !== "direct" && path !== "lan";
   const connecting = status === "connecting";
   // Offline while the session keeps retrying quietly (not paused in the background).
   const away = status === "offline" && error !== "unavailable";
@@ -168,7 +175,6 @@ export function LinkCard({
         <DeviceTile icon="laptop" />
       </View>
       <View
-        accessible
         style={{ flexDirection: "row", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}
       >
         <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
@@ -178,26 +184,28 @@ export function LinkCard({
           >
             {state}
           </Text>
-          {!!how && <Text style={line}>{`· ${how}`}</Text>}
+          {viaRelay ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ expanded: showConnection }}
+              hitSlop={8}
+              onPress={() => setShowConnection(!showConnection)}
+            >
+              <Text style={[...line, { textDecorationLine: "underline" }]}>{how}</Text>
+            </Pressable>
+          ) : (
+            !!how && <Text style={line}>{`· ${how}`}</Text>
+          )}
         </View>
         <Text numberOfLines={1} style={line}>
           {computer.name}
         </Text>
       </View>
-      {online && (
+      {online && !viaRelay && <Text style={line}>{t("pathDirectHint")}</Text>}
+      {viaRelay && showConnection && (
         <Text style={line}>
-          {t(
-            path === "direct" && pathKind === "punched"
-              ? "pathTunnelHint"
-              : path === "direct" || path === "lan"
-                ? "pathDirectHint"
-                : "pathRelayHint",
-          )}
-        </Text>
-      )}
-      {online && path === "relay" && directFailure && (
-        <Text accessibilityRole="alert" style={[type.caption, { color: colors.warn }]}>
-          {t(`directFailure_${directFailure}`)}
+          {t("pathRelayHint")}
+          {directFailure ? ` ${t("directFallback")}` : ""}
         </Text>
       )}
       {away && <Text style={line}>{t("linkRetryQuiet")}</Text>}
@@ -205,6 +213,9 @@ export function LinkCard({
         <Text accessibilityRole="alert" style={[type.caption, { color: colors.warn }]}>
           {t(connectionError as Parameters<typeof t>[0])}
         </Text>
+      )}
+      {!online && !connecting && (
+        <Button title={t("reconnectNow")} disabled={busy} onPress={reconnect} />
       )}
       <View
         accessible

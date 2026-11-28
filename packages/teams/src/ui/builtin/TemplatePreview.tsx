@@ -37,7 +37,7 @@ export function TemplatePreview({ id, close }: { id: string; close(): void }) {
   }, [peer, id]);
   const template = catalog?.groups.find((group) => group.id === id);
   const roles = new Map(catalog?.roles.map((role) => [role.id, role]));
-  const botNames = new Map(plan?.bots.map((bot) => [bot.roleId, bot.name]));
+  const bots = new Map(plan?.bots.map((bot) => [bot.roleId, bot]));
   const planned = plan?.groups[0];
   const create = () => {
     if (!peer || !planned?.available) return;
@@ -70,7 +70,6 @@ export function TemplatePreview({ id, close }: { id: string; close(): void }) {
       <div className={styles.stack}>
         {template && <p className={styles.note}>{template.summary}</p>}
         <p className={styles.note}>{t("builtin.template.note")}</p>
-        <p className={styles.note}>{t("builtin.role.permissionsNote")}</p>
         {failed && (
           <p role="alert" className={styles.error}>
             {t("builtin.role.loadFailed")}
@@ -79,20 +78,23 @@ export function TemplatePreview({ id, close }: { id: string; close(): void }) {
         {(!plan || !catalog) && !failed && <p role="status">{t("common.loading")}</p>}
         {planned?.members.map((roleId) => {
           const role = roles.get(roleId);
+          const bot = bots.get(roleId);
           const permissions = role ? permissionLines(role, t) : [];
           return (
             <section key={roleId} className={styles.card}>
               <div className={styles.row}>
                 <RoleAvatar role={role} size={32} />
                 <div className={styles.rowText}>
-                  <strong>{botNames.get(roleId) ?? role?.defaultBotName ?? roleId}</strong>
+                  <strong>{bot?.name ?? role?.defaultBotName ?? roleId}</strong>
                   <div className={styles.note}>{role?.name}</div>
                 </div>
                 {roleId === planned.coordinator && (
                   <span className={styles.badge}>{t("builtin.template.coordinator")}</span>
                 )}
               </div>
-              {permissions.length ? (
+              {bot?.existingBotId ? (
+                <p className={styles.note}>{t("builtin.template.reusedPermissions")}</p>
+              ) : permissions.length ? (
                 <div className={styles.chips}>
                   {permissions.map((line) => (
                     <span key={line} className={styles.chip}>

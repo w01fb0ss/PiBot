@@ -1,6 +1,7 @@
 import type { InboxItem } from "@pibot/protocol";
-import { useNavigation, useT, useWorkspace } from "@pibot/renderer-kit";
+import { useNavigation, useRpc, useT, useWorkspace } from "@pibot/renderer-kit";
 import { Button } from "@pibot/ui";
+import { groupDraftKey, useDraftFill } from "../../chat/composer/composer-drafts.tsx";
 import { GroupWorkflowDecisionCard } from "../../execution/GroupWorkflowDecisionCard.tsx";
 import { MessageExecutionPause } from "../../execution/MessageExecutionPause.tsx";
 import { GroupPlanCard } from "../../group/tasks/GroupPlanCard.tsx";
@@ -21,6 +22,8 @@ export function GroupPlanInboxCard({
   const t = useT();
   const data = useWorkspace();
   const { navigate } = useNavigation();
+  const { peer } = useRpc();
+  const fill = useDraftFill();
   if (item.kind === "group_plan_action")
     return (
       <>
@@ -35,6 +38,12 @@ export function GroupPlanInboxCard({
         message={{ id: item.messageId, usage: { groupPlan: item.card } }}
         bots={data.bots}
         embedded
+        // 「新开计划」: the old goal waits in the group's input, and the group chat opens on it.
+        fillComposer={(text) => {
+          if (peer) fill(peer, groupDraftKey(item.groupId, item.conversationId), text);
+          close();
+          navigate({ name: "chat", groupId: item.groupId, focus: { messageId: item.messageId } });
+        }}
       />
       {editable && (
         <div className={styles.links}>

@@ -45,6 +45,7 @@ export const RunnerPreparedFactsSchema = z.object({
     risk: z.enum(["normal", "danger"]),
     facts: z.array(ApprovalFactSchema).max(4096),
     canRemember: z.boolean(),
+    windowsReadOnly: z.literal(true).optional(),
     explanation: z.array(PolicyStepSchema).max(200),
     category: CategorySchema.optional(),
     grantScope: GrantScopeSchema.optional(),

@@ -3,6 +3,9 @@ import {
   AddedModelIdSchema,
   AgentErrorCodeSchema,
   ApiSchema,
+  BuiltinVideoModelSchema,
+  BuiltinVideoOptionSchema,
+  BuiltinVideoProviderIdSchema,
   CloudConfigSchema,
   CloudCredentialsSchema,
   CustomModelSchema,
@@ -122,6 +125,25 @@ export const ModelProviderMethods = {
   },
   "providers.removeModel": {
     params: z.strictObject({ providerId: name, modelId: AddedModelIdSchema }),
+    result: ok,
+  },
+  "providers.videoModels": {
+    params: z.strictObject({
+      providerId: BuiltinVideoProviderIdSchema,
+      refresh: z.boolean().optional(),
+    }),
+    result: z.strictObject({
+      models: z.array(BuiltinVideoOptionSchema).max(400),
+      fallback: z.boolean(),
+      unavailable: z.boolean(),
+    }),
+  },
+  "providers.setVideoModel": {
+    params: z.strictObject({
+      providerId: BuiltinVideoProviderIdSchema,
+      modelId: BuiltinVideoModelSchema.shape.id,
+      enabled: z.boolean(),
+    }),
     result: ok,
   },
   "providers.remove": {

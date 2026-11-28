@@ -1,6 +1,6 @@
 import { CameraView } from "expo-camera";
 import { useRouter } from "expo-router";
-import { KeyboardAvoidingView, ScrollView, Text, View } from "react-native";
+import { KeyboardAvoidingView, Linking, ScrollView, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useText } from "../../runtime/context.tsx";
 import { useColors } from "../../theme/use-theme.ts";
@@ -141,11 +141,7 @@ export function PairScreen() {
             {denied && <Text style={{ ...body, color: colors.warn }}>{t("cameraDenied")}</Text>}
             <Steps />
             <ErrorLine text={pair.action.error && t(pair.action.error)} />
-            {!!pair.action.error && !!pair.failure && (
-              <Text selectable style={{ ...body, fontSize: 12 }}>
-                {pair.failure}
-              </Text>
-            )}
+
             <View style={{ flex: 1 }} />
             <View style={{ width: "100%", gap: 8 }}>
               {pair.action.busy && <Text style={body}>{t("pairing")}</Text>}
@@ -158,8 +154,20 @@ export function PairScreen() {
                   onPress={() => void pair.requestPermission()}
                 />
               )}
+              {denied && (
+                <Button
+                  size="lg"
+                  variant="prim"
+                  title={t("cameraOpenSettings")}
+                  disabled={pair.action.busy}
+                  onPress={() =>
+                    void Linking.openSettings().catch(() => toast(t("cameraSettingsFailed")))
+                  }
+                />
+              )}
               {pair.pasting ? (
                 <>
+                  <Text style={body}>{t("pasteWarning")}</Text>
                   <Field
                     value={pair.qr}
                     onChangeText={pair.setQr}
@@ -167,19 +175,28 @@ export function PairScreen() {
                     maxLength={8192}
                     autoCorrect={false}
                     autoCapitalize="none"
-                    secureTextEntry
+                    autoComplete="off"
+                    importantForAutofill="no"
                     accessibilityLabel={t("pasteCode")}
                   />
                   <Button
                     size="lg"
                     variant="prim"
                     title={t("startPair")}
-                    disabled={!pair.qr || pair.action.busy}
+                    disabled={!pair.qr.trim() || pair.action.busy}
                     onPress={() => void pair.pastePair()}
                   />
                 </>
               ) : (
                 <Button size="lg" title={t("pasteCode")} onPress={() => pair.setPasting(true)} />
+              )}
+              {permission?.granted && (pair.pasting || pair.action.error) && (
+                <Button
+                  size="lg"
+                  title={t("pairScan")}
+                  disabled={pair.action.busy}
+                  onPress={() => pair.setPasting(false)}
+                />
               )}
             </View>
           </>

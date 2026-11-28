@@ -1,5 +1,5 @@
-import { approvalFactText, approvalText } from "@pibot/client-core";
-import type { Approval } from "@pibot/protocol";
+import { approvalFactText, approvalText, systemServiceLabel } from "@pibot/client-core";
+import { type Approval, isPiManagerCategory } from "@pibot/protocol";
 import type { useLanguage, useSharedText } from "../../runtime/context.tsx";
 import type { IconName } from "../../ui/icons.tsx";
 
@@ -21,20 +21,31 @@ export function approvalTarget(
   if (approval.command) return approval.command;
   if (approval.url) return approval.url;
   const fact = approvalText(approval, language).facts[0];
-  return fact ? approvalFactText(fact, shared) : undefined;
+  if (!fact) return undefined;
+  if (
+    fact.kind === "network" &&
+    approval.explanation?.some((step) => step.code === "system_service_once")
+  )
+    return systemServiceLabel(fact.value, shared);
+  return approvalFactText(fact, shared);
 }
 
-/** The default Pi's management and hand-off cards: a lead line and labelled rows, no target block. */
+/** The default Pi's management, hand-off and repair cards: a lead line and labelled rows. */
 export function isPiManagerApproval(approval: Approval) {
-  return approval.category === "bot_management" || approval.category === "work_dispatch";
+  return isPiManagerCategory(approval.category);
 }
+
+export function isSecuritySettingsApproval(approval: Approval) {
+  return (
+    approval.category === "settings_change" &&
+    (approval.explanation?.some((step) => step.code === "settings_security_confirm") ?? false)
+  );
+}
+
 /** "Don't ask again" on Pi's cards sets Pi's own level for that kind to always. */
 export function piRememberText(approval: Approval, shared: ReturnType<typeof useSharedText>) {
-  return shared(
-    approval.category === "work_dispatch"
-      ? "approval.piRemember.work_dispatch"
-      : "approval.piRemember.bot_management",
-  );
+  const category = isPiManagerCategory(approval.category) ? approval.category : "bot_management";
+  return shared(`approval.piRemember.${category}`);
 }
 /** The card's lead sentence in the reader's language (only Pi's cards have one). */
 export function approvalLead(approval: Approval, language: ReturnType<typeof useLanguage>) {

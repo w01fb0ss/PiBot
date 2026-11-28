@@ -1,10 +1,13 @@
 import type { ChatPeer } from "@pibot/client-core";
 import { ComputerHandoffCard } from "@pibot/computer-use/ui";
 import type { ChatNotice, Message } from "@pibot/protocol";
-import { useT } from "@pibot/renderer-kit";
+import { approvalStyles, useNavigation, useT } from "@pibot/renderer-kit";
+import { Button } from "@pibot/ui";
+import { GitInstallCard } from "@pibot/workspaces/ui";
 import { memo, useEffect, useMemo, useState } from "react";
 import { AutoCheckProposal, AutoCheckResult } from "../../autocheck/AutoCheckNotices.tsx";
 import { RunnerMoveCard } from "../../folders/RunnerMoveCard.tsx";
+import { CommandProtectionCard } from "../../settings/permissions/CommandProtectionCard.tsx";
 import styles from "../chat.module.css";
 import { BrowserExtensionInstallCard } from "./BrowserExtensionInstallCard.tsx";
 import { ConnectionNeeded } from "./ConnectionNeeded.tsx";
@@ -121,6 +124,17 @@ export const ChatNoticeLine = memo(function ChatNoticeLine({
   botName: string | undefined;
 }) {
   const t = useT();
+  const navigation = useNavigation();
+  if (notice.kind === "dispatch_model_switch")
+    return (
+      <p className={styles.systemLine} role="note">
+        {t("dispatch.modelSwitch", {
+          from: notice.from,
+          to: notice.to,
+          reason: t(`dispatch.modelReason.${notice.reason}`),
+        })}
+      </p>
+    );
   if (notice.kind === "connection_needed") return <ConnectionNeeded notice={notice} />;
   if (notice.kind === "auto_check")
     return <AutoCheckResult notice={notice} botName={botName ?? t("botBrowser.notice.someone")} />;
@@ -147,8 +161,50 @@ export const ChatNoticeLine = memo(function ChatNoticeLine({
         {t("runtime.attachmentDeliveryMissing")}
       </p>
     );
+  if (notice.kind === "group_verification")
+    return (
+      <p className={styles.systemLine} role="note">
+        {t(`runtime.groupVerification.${notice.reason}`)}
+      </p>
+    );
   if (notice.kind === "browser_extension") return <BrowserExtensionInstallCard notice={notice} />;
+  if (notice.kind === "agent_warning" && notice.dependency) {
+    const reason = notice.dependency;
+    if (reason === "git") return <GitInstallCard context="command" />;
+    if (
+      reason === "linux_bubblewrap_missing" ||
+      reason === "linux_socat_missing" ||
+      reason === "linux_userns_restricted"
+    )
+      return <CommandProtectionCard reason={reason} />;
+    return (
+      <section className={approvalStyles.approval} aria-label={t("office.convertHelp.title")}>
+        <header>
+          <strong>{t("office.convertHelp.title")}</strong>
+        </header>
+        <p>{t(`office.convertHelp.${reason}`)}</p>
+        {reason === "libreoffice_isolation_unavailable" && (
+          <Button variant="secondary" onClick={() => navigation.openSettings("permissions")}>
+            {t("settings.permissions")}
+          </Button>
+        )}
+        {reason === "libreoffice_missing" && (
+          <a href="https://www.libreoffice.org/download/" target="_blank" rel="noreferrer">
+            {t("office.convertHelp.download")}
+          </a>
+        )}
+        {(reason === "libreoffice_timeout" || reason === "libreoffice_failed") && (
+          <details>
+            <summary>{t("office.convertHelp.recovery")}</summary>
+            <p>{t("office.convertHelp.recoverySteps")}</p>
+          </details>
+        )}
+      </section>
+    );
+  }
   // The agent's own text, only ever as a React text child (never markdown or HTML).
+  if (notice.kind === "agent_warning" && notice.skillRuntime)
+    return <SkillRuntimeNotice notice={notice} skill={notice.skillRuntime} />;
   if (notice.kind === "agent_warning")
     if (notice.sandbox) return <SandboxBlockLine notices={[notice as BlockWarning]} />;
   if (notice.kind === "agent_warning")
@@ -162,6 +218,35 @@ export const ChatNoticeLine = memo(function ChatNoticeLine({
     );
   return <HandBackLine notice={notice} botName={botName} />;
 });
+
+function SkillRuntimeNotice({
+  notice,
+  skill,
+}: {
+  notice: Extract<ChatNotice, { kind: "agent_warning" }>;
+  skill: NonNullable<Extract<ChatNotice, { kind: "agent_warning" }>["skillRuntime"]>;
+}) {
+  const t = useT();
+  const navigation = useNavigation();
+  return (
+    <div className={styles.systemLine} role="note">
+      {t("skills.runtime.chatNeeds", { name: skill.name })}{" "}
+      <button
+        type="button"
+        className={styles.sandboxLink}
+        onClick={() => {
+          navigation.openPage("connectors");
+          navigation.navigate({
+            name: "connectors",
+            skillConnection: { ...skill, botId: notice.botId, prepareRuntime: true },
+          });
+        }}
+      >
+        {t("skills.runtime.prepareNow")}
+      </button>
+    </div>
+  );
+}
 
 /** Styled like the time separator (design「Bot 浏览器 · 交还后」). */
 const HandBackLine = memo(function HandBackLine({

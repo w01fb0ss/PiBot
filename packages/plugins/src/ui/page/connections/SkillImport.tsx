@@ -2,8 +2,11 @@ import type { TranslationKey } from "@pibot/i18n";
 import type { Bot } from "@pibot/plugins-contract/full";
 import {
   BotAvatar,
+  hostPlatform,
   Overlay,
+  type Peer,
   useComboboxText,
+  useNavigation,
   useRpc,
   useRpcEvent,
   useSettings,
@@ -16,6 +19,7 @@ import type {
 import { Button, Combobox, TextField } from "@pibot/ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ImportPlugin } from "../../setup/ImportPlugin.tsx";
+import { useConnectorRead } from "../../shell/remote.ts";
 import styles from "./connections.module.css";
 
 type Compat = NonNullable<SkillImportDetails["compatibility"]>;
@@ -28,6 +32,8 @@ type Candidate = SkillLinkListing["skills"][number];
  */
 const CODES = new Set([
   "skill_import_invalid",
+  "skill_secret_invalid",
+  "skill_secret_windows",
   "skill_import_unsupported",
   "skill_import_too_large",
   "skill_import_file_too_large",
@@ -73,6 +79,7 @@ function errorKey(error: unknown): TranslationKey {
  */
 const NOTHING_WRITTEN = new Set([
   "skill_import_invalid",
+  "skill_secret_invalid",
   "skill_import_unsupported",
   "skill_import_too_large",
   "skill_import_file_too_large",
@@ -136,24 +143,30 @@ function Compatibility({ report }: { report: Compat | undefined }) {
   ];
   if (!rows.length) return null;
   return (
-    <details className={styles.card}>
-      <summary>
-        {t("skills.compatibility.title")} · {rows.length}
-      </summary>
-      <p className={styles.note}>{t("skills.compatibility.advisory")}</p>
-      {rows.map(({ entry, level }) => {
-        const line = compatibilityLine(entry);
-        return (
-          // One entry per code and names combination; the report never repeats an identical line.
-          <p
-            key={`${level}:${entry.code}:${entry.params.field ?? ""}:${entry.params.tool ?? ""}:${entry.params.runtime ?? ""}:${entry.params.replacement ?? ""}`}
-            className={styles.note}
-          >
-            <strong>{t(level)}</strong> · {t(line.key, line.vars)}
-          </p>
-        );
-      })}
-    </details>
+    <section className={styles.card}>
+      <h3>{t("skills.compatibility.title")}</h3>
+      {[...new Set(rows.map(({ entry }) => entry.code))].map((code) => (
+        <p key={code} className={styles.note}>
+          {t(`skills.compatibility.impact.${code}`)}
+        </p>
+      ))}
+      <details>
+        <summary>{t("skills.compatibility.details")}</summary>
+        <p className={styles.note}>{t("skills.compatibility.advisory")}</p>
+        {rows.map(({ entry, level }) => {
+          const line = compatibilityLine(entry);
+          return (
+            // One entry per code and names combination; the report never repeats an identical line.
+            <p
+              key={`${level}:${entry.code}:${entry.params.field ?? ""}:${entry.params.tool ?? ""}:${entry.params.runtime ?? ""}:${entry.params.replacement ?? ""}`}
+              className={styles.note}
+            >
+              <strong>{t(level)}</strong> · {t(line.key, line.vars)}
+            </p>
+          );
+        })}
+      </details>
+    </section>
   );
 }
 
@@ -229,13 +242,19 @@ export function PreviewBody({
           </p>
         )}
       </section>
-      <p className={styles.note}>
-        {licenses.length
-          ? t("skills.preview.licenseWarn", {
-              files: licenses.map((license) => license.path).join(", "),
-            })
-          : t("skills.preview.licenseOk")}
-      </p>
+      {licenses.length > 0 && (
+        <section className={styles.card}>
+          <p className={styles.note}>{t("skills.preview.licenseImpact")}</p>
+          <details>
+            <summary>{t("skills.compatibility.details")}</summary>
+            <p className={styles.note}>
+              {t("skills.preview.licenseWarn", {
+                files: licenses.map((license) => license.path).join(", "),
+              })}
+            </p>
+          </details>
+        </section>
+      )}
       <Compatibility report={details.compatibility} />
       <p className={styles.note}>
         <strong>{t("skills.preview.assign")}</strong> · {botName}
@@ -245,6 +264,115 @@ export function PreviewBody({
       )}
     </>
   );
+}
+
+export function importSecretBindings(draft: Readonly<Record<string, string>> | undefined) {
+  return Object.entries(draft ?? {})
+    .filter(([, secretName]) => secretName)
+    .map(([variable, secretName]) => ({ variable, secretName }));
+}
+
+export function PreviewSecretBindings({
+  details,
+  draft,
+  disabled,
+  onChange,
+  openTokens,
+}: {
+  details: SkillImportDetails;
+  draft?: Readonly<Record<string, string>>;
+  disabled: boolean;
+  onChange(variable: string, secretName: string): void;
+  openTokens(): void;
+}) {
+  const { t } = useSettings();
+  const windows = hostPlatform() === "win32";
+  const variables = details.summary?.bindableEnvironmentVariables;
+  const botId = variables?.length && !windows ? details.botId : undefined;
+  const read = useCallback(
+    (peer: Peer, signal: AbortSignal) =>
+      botId ? peer.call("skills.secretChoices", { botId }, { signal }) : Promise.resolve([]),
+    [botId],
+  );
+  const choices = useConnectorRead(read);
+  const available = choices.value ?? [];
+  useRpcEvent("secrets.changed", choices.refresh);
+  if (!variables?.length) return null;
+  return (
+    <section className={styles.card}>
+      <h3>{t("skills.secrets.title")}</h3>
+      <p className={styles.note}>{t(windows ? "skills.secrets.windows" : "skills.secrets.info")}</p>
+      {botId && choices.loading && <p role="status">{t("common.loading")}</p>}
+      {botId && choices.error && (
+        <p role="alert" className={styles.error}>
+          {t("skills.secrets.loadFailed")}{" "}
+          <Button variant="pill" disabled={disabled || choices.loading} onClick={choices.refresh}>
+            {t("common.retry")}
+          </Button>
+        </p>
+      )}
+      {botId && !choices.loading && !choices.error && choices.value?.length === 0 && (
+        <>
+          <p className={styles.note}>{t("skills.secrets.noChoices")}</p>
+          <Button variant="secondary" disabled={disabled} onClick={openTokens}>
+            {t("connections.tokens.title")}
+          </Button>
+        </>
+      )}
+      {botId &&
+        variables
+          .filter((name) => available.length > 0 || draft?.[name])
+          .map((name) => (
+            <label className={styles.tokenField} key={name}>
+              {name}
+              <select
+                value={draft?.[name] ?? ""}
+                disabled={disabled || choices.loading || !!choices.error}
+                onChange={(event) => onChange(name, event.currentTarget.value)}
+              >
+                <option value="">{t("skills.secrets.unbound")}</option>
+                {draft?.[name] && !available.includes(draft[name]) && (
+                  <option value={draft[name]}>{draft[name]}</option>
+                )}
+                {available.map((choice) => (
+                  <option key={choice} value={choice}>
+                    {choice}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ))}
+    </section>
+  );
+}
+
+export type ImportedRuntimeSkill = { skillId: string; botId: string; name: string };
+
+export function RuntimePrepareSuggestions({
+  skills,
+  beforeOpen,
+}: {
+  skills: readonly ImportedRuntimeSkill[];
+  beforeOpen?(): void;
+}) {
+  const { t } = useSettings();
+  const navigation = useNavigation();
+  return skills.map((skill) => (
+    <div key={skill.skillId} className={styles.card}>
+      <p>{t("skills.runtime.chatNeeds", { name: skill.name })}</p>
+      <Button
+        onClick={() => {
+          beforeOpen?.();
+          navigation.navigate({
+            name: "connectors",
+            skillConnection: { ...skill, prepareRuntime: true },
+          });
+        }}
+      >
+        {t("skills.runtime.prepareNow")}
+      </Button>
+    </div>
+  ));
 }
 
 type Phase =
@@ -265,6 +393,7 @@ export function SkillImportDialog({
   initial = "link",
   close,
   imported,
+  openTokens,
 }: {
   /** Who gets the skill: the brain copies it into one Bot's own store, so it is chosen up front. */
   bots: Bot[];
@@ -272,7 +401,9 @@ export function SkillImportDialog({
   initial?: "link" | "file" | "folder";
   close(): void;
   imported(): void;
+  openTokens(): void;
 }) {
+  const [runtimeSkills, setRuntimeSkills] = useState<ImportedRuntimeSkill[]>([]);
   const { t } = useSettings();
   const { peer } = useRpc();
   // Bot names are not unique across workspaces; the Combobox matches on name and id both.
@@ -291,6 +422,7 @@ export function SkillImportDialog({
   const [target, setTarget] = useState(bots.find((bot) => bot.isMain && !bot.archivedAt)?.id ?? "");
   const botName = bots.find((bot) => bot.id === target)?.name ?? "";
   const [phase, setPhase] = useState<Phase>({ at: "input" });
+  const [secretDraft, setSecretDraft] = useState<Record<string, string>>({});
   const [picked, setPicked] = useState<ReadonlySet<string>>(new Set());
   const [progress, setProgress] = useState<{ done: number; total: number | null }>();
   const [error, setError] = useState<TranslationKey>();
@@ -455,6 +587,7 @@ export function SkillImportDialog({
       if (details) live.current.previewId = details.previewId;
       if (live.current.previewBatchId === batchId) delete live.current.previewBatchId;
       if (!details) return;
+      setSecretDraft({});
       setPhase({
         at: "preview",
         details,
@@ -521,6 +654,7 @@ export function SkillImportDialog({
       if (!alive.current || controller.signal.aborted) return false;
       live.current.previewId = details.previewId;
       setProgress(undefined);
+      setSecretDraft({});
       setPhase({ at: "preview", details, source, rest });
       return true;
     } catch (failure) {
@@ -576,11 +710,19 @@ export function SkillImportDialog({
     try {
       const skill = await peer.call(
         "skills.import",
-        { previewId: details.previewId },
+        {
+          previewId: details.previewId,
+          bindings: importSecretBindings(secretDraft),
+        },
         { timeoutMs: 125 * 60_000, signal: controller.signal },
       );
       if (!alive.current || controller.signal.aborted) return;
       live.current.previewId = undefined;
+      if (details.summary?.runtimeRequirements?.length)
+        setRuntimeSkills((current) => [
+          ...current,
+          { skillId: skill.id, botId: skill.botId, name: skill.name },
+        ]);
       setTally((current) => ({
         done: current.done + 1,
         // The brain renames instead of overwriting, so a different name means it already existed.
@@ -835,6 +977,14 @@ export function SkillImportDialog({
       {phase.at === "preview" && (
         <>
           <PreviewBody details={phase.details} source={phase.source} botName={botName} />
+          <PreviewSecretBindings
+            key={phase.details.previewId}
+            details={phase.details}
+            draft={secretDraft}
+            disabled={!!busy}
+            openTokens={openTokens}
+            onChange={(name, value) => setSecretDraft((current) => ({ ...current, [name]: value }))}
+          />
           {progress && (
             <div>
               <div className={styles.bar}>
@@ -910,6 +1060,7 @@ export function SkillImportDialog({
               {t(error)}
             </p>
           )}
+          <RuntimePrepareSuggestions skills={runtimeSkills} beforeOpen={close} />
           <div className={styles.dialogFoot}>
             <Button variant="secondary" onClick={close}>
               {t("skills.preview.close")}

@@ -3,8 +3,10 @@ import type {
   Skill,
   SkillDocument,
   SkillDocumentInput,
+  SkillImportDetails,
   SkillImportPreview,
   SkillImportSource,
+  SkillManagedRuntime,
   SkillSource,
   TeamSkill,
   TeamSkillReimport,
@@ -81,6 +83,12 @@ export interface BuiltinMethodsPort {
 
 /** The run engine and team import ask the capability; no service or repository crosses back. */
 export interface SkillsPort {
+  commandEntries?(
+    botId: string,
+    groupId: string | undefined,
+    signal: AbortSignal,
+  ): readonly { name: string; description: string }[];
+
   /** Effective, enabled skill body with the shared reference fence; no caller-supplied paths. */
   readReference?(
     botId: string,
@@ -96,7 +104,7 @@ export interface SkillsPort {
     source: SkillImportSource,
     expectedHash: string,
     signal: AbortSignal,
-  ): Promise<SkillImportPreview>;
+  ): Promise<SkillImportDetails>;
 
   /** Copies untrusted import data into an exact own-skill scope; never into instruction messages. */
   copyImported?(
@@ -151,11 +159,37 @@ export interface SkillsPort {
   /** Exact effective-set read roots, never the shared parent. Local targets only. */
   roots?(botId: string, groupId?: string): string[];
   packageIds?(botId: string, groupId?: string): string[];
-  /** The prepared runtime this bot's commands inherit, if one is ready. */
-  runtimeEnvironment?(
+  commandRuntime?(
     botId: string,
-    groupId?: string,
-  ): Promise<{ id: string; dir: string; bin: string; python?: string; node?: string } | undefined>;
+    groupId: string | undefined,
+    paths: readonly string[],
+    runtime?: SkillManagedRuntime,
+  ): Promise<
+    | {
+        environment?: NonNullable<import("@pibot/execution").RunCommandOptions["skillEnv"]>;
+        missing?: {
+          skillId: string;
+          name: string;
+          groupId?: string;
+          runtime?: SkillManagedRuntime;
+        };
+        secretBindingsAmbiguous?: true;
+        secretBindings?: {
+          folder: string;
+          skillId: string;
+          name: string;
+          consent: { zh: string; en: string };
+          uses: { variable: string; name: string; revision: number }[];
+        };
+      }
+    | undefined
+  >;
+  commandSecretsCurrent?(
+    botId: string,
+    groupId: string | undefined,
+    skillId: string,
+    uses: readonly { variable: string; name: string }[],
+  ): boolean;
   /** Startup validation may still be running; never publish unverified roots to a session. */
   promptEntries(
     botId: string,

@@ -6,10 +6,12 @@ import {
   CanonicalTimeSchema,
   canonicalImageModelId,
   IdSchema,
+  MAX_GENERATED_IMAGES,
 } from "@pibot/protocol-base";
 import { z } from "zod";
 import { BotsRepo } from "../bots/bots.ts";
 import { AttachmentsRepo } from "../conversations/attachments.ts";
+import { ConversationsRepo } from "../conversations/conversations.ts";
 import { transaction } from "../database/database.ts";
 import { RunsRepo } from "../runs/runs.ts";
 import { MessagesRepo } from "../workspace/repositories.ts";
@@ -56,12 +58,17 @@ export class ImageArtifactsRepo {
         run = new RunsRepo(this.db).get(source.runId),
         message = new MessagesRepo(this.db).get(source.messageId),
         bot = new BotsRepo(this.db).get(source.botId);
+      const override = new ConversationsRepo(this.db).runModelOverride(source);
+      const provider = override?.provider ?? bot?.modelProvider;
+      const id = override?.id ?? bot?.modelId;
       if (
         !bot ||
         bot.archivedAt ||
         bot.category !== "image" ||
-        bot.modelProvider !== model.provider ||
-        canonicalImageModelId(model.provider, bot.modelId ?? "") !== model.id ||
+        provider !== (model.botModel?.provider ?? model.provider) ||
+        (model.botModel
+          ? id !== model.botModel.id
+          : canonicalImageModelId(model.provider, id ?? "") !== model.id) ||
         run?.status !== "running" ||
         message?.status !== "streaming" ||
         message.role !== "assistant" ||
@@ -109,6 +116,14 @@ export class ImageArtifactsRepo {
       : undefined;
   }
 
+  releaseUncommitted(sourceRunId: string): void {
+    this.db
+      .prepare(
+        "DELETE FROM image_artifacts WHERE source_run_id=? AND generation_succeeded_at IS NULL",
+      )
+      .run(IdSchema.parse(sourceRunId));
+  }
+
   markGenerated(sourceRunId: string): void {
     transaction(this.db, () => markArtifactGenerated(this.db, this.get(sourceRunId), sourceRunId));
   }
@@ -131,7 +146,7 @@ export class ImageArtifactsRepo {
       throw new TypeError("image_artifact_source_invalid");
     const ids =
       source.attachments?.filter((item) => item.kind === "image").map((item) => item.id) ?? [];
-    if (!ids.length || ids.length > 5) return [];
+    if (!ids.length || ids.length > MAX_GENERATED_IMAGES) return [];
     const rows = this.db
       .prepare(
         `SELECT DISTINCT m.id FROM message_attachment_links l JOIN messages m ON m.id=l.message_id JOIN conversations c ON c.id=m.conversation_id WHERE l.attachment_id IN (${ids.map(() => "?").join(",")}) AND c.group_id=? AND m.role='assistant' AND m.status='done' AND m.id>? ORDER BY m.id LIMIT ?`,
@@ -172,7 +187,8 @@ export class ImageArtifactsRepo {
         throw new TypeError("image_link_operation_invalid");
       const present = new Set(target.attachments?.map((item) => item.id) ?? []);
       const added = source.attachments.filter((item) => !present.has(item.metadata.id));
-      if (present.size + added.length > 5) throw new TypeError("image_link_limit");
+      if (present.size + added.length > MAX_GENERATED_IMAGES)
+        throw new TypeError("image_link_limit");
       for (const attachment of added)
         this.db
           .prepare(

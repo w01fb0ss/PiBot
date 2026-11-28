@@ -22,7 +22,7 @@ export class GroupFoldersRepo {
     const identity = this.identity(groupId);
     return this.db
       .prepare(
-        "SELECT id,path,location FROM group_folders WHERE group_id=? ORDER BY position,id LIMIT 32",
+        "SELECT id,path,location,display_path AS displayPath FROM group_folders WHERE group_id=? ORDER BY position,id LIMIT 32",
       )
       .all(groupId)
       .map((row) =>
@@ -37,7 +37,7 @@ export class GroupFoldersRepo {
                 ? path.win32
                 : path.posix
             ).basename(String(row.path)) || String(row.path),
-          displayPath: row.path,
+          displayPath: row.displayPath ?? row.path,
         }),
       );
   }
@@ -45,8 +45,10 @@ export class GroupFoldersRepo {
     groupId: string,
     folderPath: string,
     location?: NonNullable<Group["folders"]>[number]["location"],
+    displayPath?: string,
   ) {
     AbsolutePathSchema.parse(folderPath);
+    if (displayPath !== undefined) AbsolutePathSchema.parse(displayPath);
     return transaction(this.db, () => {
       const first = this.list(groupId).length === 0;
       const initialized = this.identity(groupId).primaryInitialized;
@@ -55,11 +57,17 @@ export class GroupFoldersRepo {
       const existing = this.db
         .prepare("SELECT id FROM group_folders WHERE group_id=? AND path=? AND location=?")
         .get(groupId, folderPath, location ?? "local");
-      if (existing) return false;
+      if (existing) {
+        if (displayPath !== undefined)
+          this.db
+            .prepare("UPDATE group_folders SET display_path=? WHERE group_id=? AND id=?")
+            .run(displayPath, groupId, String(existing.id));
+        return false;
+      }
       if (this.list(groupId).length >= 32) throw new TypeError("Group folder limit");
       this.db
         .prepare(
-          "INSERT INTO group_folders(id,group_id,path,location,created_at,position) VALUES (?,?,?,?,?,(SELECT COALESCE(MAX(position),-1)+1 FROM group_folders WHERE group_id=?))",
+          "INSERT INTO group_folders(id,group_id,path,location,created_at,display_path,position) VALUES (?,?,?,?,?,?,(SELECT COALESCE(MAX(position),-1)+1 FROM group_folders WHERE group_id=?))",
         )
         .run(
           randomUUID(),
@@ -67,6 +75,7 @@ export class GroupFoldersRepo {
           folderPath,
           location ?? "local",
           new Date().toISOString(),
+          displayPath ?? null,
           groupId,
         );
       if (first && !initialized) {

@@ -3,6 +3,11 @@ import type {
   Connector,
   ConnectorDiagnostics,
   ConnectorSourceDetails,
+  MethodResults,
+} from "@pibot/plugins-contract/full";
+import {
+  CONNECTOR_STARTUP_MAX_SECONDS,
+  ConnectorStartupWaitSchema,
 } from "@pibot/plugins-contract/full";
 import {
   SettingsFold,
@@ -48,9 +53,12 @@ export function AdvancedTab({
   updateFromSource,
   tokens,
   replaceToken,
+  settings,
   network,
   diagnostics,
   setOutsideSandbox,
+  startup,
+  saveStartup,
   toolKinds,
   skills,
   remove,
@@ -62,12 +70,16 @@ export function AdvancedTab({
   disabled: boolean;
   restart(): void;
   sourceUpdate?: SourceUpdate;
-  updateFromSource(confirmed: boolean): void;
+  updateFromSource?(confirmed: boolean): void;
   tokens: ConnectionToken[];
   replaceToken(name: string, value: string): Promise<boolean>;
+  /** The package's plain settings editor, when it has any it can change here. */
+  settings?: ReactNode;
   network?: { domains: readonly string[]; editable: boolean; save(domains: string[]): void };
   diagnostics?: ConnectorDiagnostics;
   setOutsideSandbox(enabled: boolean): void;
+  startup?: MethodResults["connectors.get"]["startup"];
+  saveStartup(seconds: number | null): void;
   toolKinds: ReactNode;
   skills?: ReactNode;
   remove?(): void;
@@ -89,33 +101,37 @@ export function AdvancedTab({
             onCheckedChange={toggle}
           />
         </SettingsRow>
-        <SettingsRow
-          icon="download"
-          tone="blue"
-          label={t("connectors.updateSource")}
-          note={
-            !sourceUpdate || sourceUpdate.state === "preview"
-              ? t("connectors.updateSourceConfirm")
-              : sourceUpdate.state === "source_not_found"
-                ? t("connectors.updateSourceNotFound")
-                : t("connectors.updateSourceDone")
-          }
-        >
-          <Button
-            variant="secondary"
-            disabled={disabled || (sourceUpdate?.state !== "preview" && !!sourceUpdate)}
-            onClick={() => updateFromSource(!!sourceUpdate)}
-          >
-            {t("connectors.updateSource")}
-          </Button>
-        </SettingsRow>
-        {sourceUpdate?.state === "preview" && (
-          <div className={styles.stackedControl}>
-            <span className={styles.fieldNote}>
-              {t("connectors.updateSourceDiff", sourceUpdate.changes)}
-            </span>
-            {sourceUpdate.details && <ConnectorSourceDiff details={sourceUpdate.details} />}
-          </div>
+        {updateFromSource && (
+          <>
+            <SettingsRow
+              icon="download"
+              tone="blue"
+              label={t("connectors.updateSource")}
+              note={
+                !sourceUpdate || sourceUpdate.state === "preview"
+                  ? t("connectors.updateSourceConfirm")
+                  : sourceUpdate.state === "source_not_found"
+                    ? t("connectors.updateSourceNotFound")
+                    : t("connectors.updateSourceDone")
+              }
+            >
+              <Button
+                variant="secondary"
+                disabled={disabled || (sourceUpdate?.state !== "preview" && !!sourceUpdate)}
+                onClick={() => updateFromSource(!!sourceUpdate)}
+              >
+                {t("connectors.updateSource")}
+              </Button>
+            </SettingsRow>
+            {sourceUpdate?.state === "preview" && (
+              <div className={styles.stackedControl}>
+                <span className={styles.fieldNote}>
+                  {t("connectors.updateSourceDiff", sourceUpdate.changes)}
+                </span>
+                {sourceUpdate.details && <ConnectorSourceDiff details={sourceUpdate.details} />}
+              </div>
+            )}
+          </>
         )}
         <SettingsRow
           icon="refresh"
@@ -132,12 +148,23 @@ export function AdvancedTab({
           </Button>
         </SettingsRow>
       </SettingsSection>
-      {tokens.length > 0 && (
+      {startup && (
+        <StartupWait
+          key={`${connector.id}:${startup.override}`}
+          startup={startup}
+          disabled={disabled}
+          save={saveStartup}
+        />
+      )}
+      {(settings || tokens.length > 0) && (
         <SettingsSection title={t("connections.drawer.settings")}>
+          {settings}
           {tokens.map((token) => (
             <TokenRow key={token.name} token={token} disabled={disabled} save={replaceToken} />
           ))}
-          <SettingsLine>{t("connections.drawer.settingsNote")}</SettingsLine>
+          {!settings && updateFromSource && (
+            <SettingsLine>{t("connections.drawer.settingsNote")}</SettingsLine>
+          )}
         </SettingsSection>
       )}
       {network && (
@@ -247,5 +274,47 @@ function TokenRow({
         </div>
       </div>
     </div>
+  );
+}
+
+function StartupWait({
+  startup,
+  disabled,
+  save,
+}: {
+  startup: NonNullable<MethodResults["connectors.get"]["startup"]>;
+  disabled: boolean;
+  save(seconds: number | null): void;
+}) {
+  const { t } = useSettings();
+  const [seconds, setSeconds] = useState(startup.override?.toString() ?? "");
+  const parsed = ConnectorStartupWaitSchema.safeParse(Number(seconds));
+  const value = seconds === "" ? null : parsed.success ? parsed.data : undefined;
+  return (
+    <SettingsSection title={t("connectors.paste.timeout")}>
+      <label className={styles.field}>
+        {t("connectors.recovery.startupCurrent", { seconds: String(startup.seconds) })}
+        <span className={styles.inputBox}>
+          <input
+            type="number"
+            min={1}
+            max={CONNECTOR_STARTUP_MAX_SECONDS}
+            value={seconds}
+            placeholder={t("connectors.recovery.automatic")}
+            disabled={disabled}
+            onChange={(event) => setSeconds(event.currentTarget.value)}
+          />
+        </span>
+      </label>
+      <Button
+        variant="secondary"
+        disabled={disabled || value === undefined || value === (startup.override ?? null)}
+        onClick={() => {
+          if (value !== undefined) save(value);
+        }}
+      >
+        {t("connections.drawer.save")}
+      </Button>
+    </SettingsSection>
   );
 }

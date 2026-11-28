@@ -1,4 +1,4 @@
-import { approvalExplanation } from "@pibot/client-core";
+import { approvalExplanation, connectorToolLabel, toolDisplayName } from "@pibot/client-core";
 import {
   type Approval,
   connectionWriteRememberable,
@@ -11,7 +11,7 @@ import {
   approvalStyles as styles,
   useRpc,
   useRpcEvent,
-  useT,
+  useSettings,
 } from "@pibot/renderer-kit";
 import { Button, Icon } from "@pibot/ui";
 import { useEffect, useRef, useState } from "react";
@@ -30,7 +30,7 @@ export function DraftCard({
   refresh(): Promise<void>;
   inbox?: boolean;
 }) {
-  const t = useT();
+  const { t, language } = useSettings();
   const { peer } = useRpc();
   const draft = approval.draft;
   const calendar = draft?.operation === "calendar_create";
@@ -271,7 +271,12 @@ export function DraftCard({
           </div>
           <div>
             <dt>{t("draft.tool")}</dt>
-            <dd>{draft.tool}</dd>
+            <dd>
+              {(() => {
+                const connector = connectorToolLabel({ tool: draft.tool }, language, t);
+                return connector !== draft.tool ? connector : toolDisplayName(draft.tool, t);
+              })()}
+            </dd>
           </div>
         </dl>
       )}

@@ -10,6 +10,8 @@ import { AgentError, agentHttpStatus, mapAgentError } from "../core/errors.ts";
 import type { AgentErrorCode, BotSession } from "../core/types.ts";
 import { type CompactionState, finishCompaction } from "../extensions/compaction.ts";
 import { enableNetworkRetry, NETWORK_RETRY_SETTINGS } from "../network/network-reconnect.ts";
+import { knownRate } from "../runtime/memory-draft.ts";
+import { toolVersion } from "../runtime/tool-identity.ts";
 import { LeakedStateEchoFilter } from "./leaked-state-echo.ts";
 import { LeakedToolMarkupFilter } from "./leaked-tool-markup.ts";
 import { requeue, type SessionAdditions } from "./session-additions.ts";
@@ -49,8 +51,19 @@ export type ChatSession = Pick<
  * again; compaction of a long conversation can take a minute or more.
  */
 const HOLD_MS = 180_000;
+const TOOL_FAILURE_LIMIT = 3;
 
+/**
+ * Custom models price at -1 ("unknown"), so pi's cost is negative (acceptance 2026-11-25:
+ * -0.015692 stored on a keyless provider's reply). An unknown price is stored as 0 like the memory
+ * workers do; the request record, not this copy, tells the receipt whether the cost is known.
+ */
 function usageInfo(usage: AssistantMessage["usage"]) {
+  const input = knownRate(usage.cost.input);
+  const output = knownRate(usage.cost.output);
+  const cacheRead = knownRate(usage.cost.cacheRead);
+  const cacheWrite = knownRate(usage.cost.cacheWrite);
+  const parts = [usage.cost.input, usage.cost.output, usage.cost.cacheRead, usage.cost.cacheWrite];
   return {
     input: usage.input,
     output: usage.output,
@@ -58,11 +71,11 @@ function usageInfo(usage: AssistantMessage["usage"]) {
     cacheWrite: usage.cacheWrite,
     totalTokens: usage.totalTokens,
     cost: {
-      input: usage.cost.input,
-      output: usage.cost.output,
-      cacheRead: usage.cost.cacheRead,
-      cacheWrite: usage.cost.cacheWrite,
-      total: usage.cost.total,
+      input,
+      output,
+      cacheRead,
+      cacheWrite,
+      total: parts.some((value) => !(value >= 0)) ? 0 : knownRate(usage.cost.total),
     },
   };
 }
@@ -97,6 +110,8 @@ export function wrapSession(
   let aborted = false;
   let aborting: Promise<void> | undefined;
   let operation: AbortController | undefined;
+  // A run can call prompt again to continue after an output or connection interruption.
+  const failedToolCalls = new Map<string, number>();
   const canAppend = () =>
     !!(
       additions?.accepting &&
@@ -178,6 +193,8 @@ export function wrapSession(
       // A reasoning loop is cut here and reported as a length stop, so the run can continue.
       let thinking = new ThinkingRepeatGuard();
       let repeatCut = false;
+      let toolRetryCut = false;
+      const activeToolCalls = new Map<string, string>();
       let eventFailed = false;
       let activityPhase: "waiting_model" | "preparing_tool" | "clear" = "clear";
       let activityAt = 0;
@@ -248,6 +265,23 @@ export function wrapSession(
         signal?.throwIfAborted();
         if (aborted || disposed) throw new AgentError("aborted");
         unsubscribe = session.subscribe((event: AgentSessionEvent) => {
+          if (event.type === "tool_execution_start" && !toolRetryCut)
+            activeToolCalls.set(event.toolCallId, toolVersion([event.toolName, event.args]));
+          if (event.type === "tool_execution_end" && !toolRetryCut) {
+            const key = activeToolCalls.get(event.toolCallId);
+            activeToolCalls.delete(event.toolCallId);
+            if (key && !event.isError) failedToolCalls.delete(key);
+            if (key && event.isError) {
+              const failures = (failedToolCalls.get(key) ?? 0) + 1;
+              failedToolCalls.set(key, failures);
+              if (failures >= TOOL_FAILURE_LIMIT && !aborted && !signal?.aborted) {
+                toolRetryCut = true;
+                void requestAbort().catch(() => {
+                  /* The prompt reports the repeated failure below. */
+                });
+              }
+            }
+          }
           if (event.type === "entry_appended" && event.entry.type === "compaction" && compaction)
             finishCompaction(compaction, "done");
           if (event.type === "auto_retry_start") {
@@ -370,6 +404,7 @@ export function wrapSession(
           if (event.type === "message_end" && event.message.role === "assistant") {
             const rest = stateEcho.push(markup.end()) + stateEcho.end();
             if (rest) emit({ type: "delta", text: rest });
+            emit({ type: "replyEnd" });
             assistant = event.message;
             if (setNetworkRetryEnabled && !requestAccounting?.managesRetries)
               setNetworkRetryEnabled(
@@ -391,6 +426,8 @@ export function wrapSession(
         emitActivity({ phase: "waiting_model" });
         await session.prompt(text, images?.length ? { images } : undefined);
         if (eventFailed) throw new AgentError("session_event_handler_failed");
+        if (toolRetryCut && !aborted && !signal?.aborted)
+          throw new AgentError("repeated_tool_failure");
         // Our own cut is not a user stop: report the length stop so the run continues with the
         // rest of the work instead of ending as "aborted".
         if (repeatCut && !aborted && !disposed && !signal?.aborted) {
@@ -448,11 +485,14 @@ export function wrapSession(
           ? "session_event_handler_failed"
           : aborted
             ? "aborted"
-            : (programFailure?.() ?? mapAgentError(error));
+            : toolRetryCut
+              ? "repeated_tool_failure"
+              : (programFailure?.() ?? mapAgentError(error));
         if (error instanceof AgentError && error.code === code) throw error;
         throw new AgentError(code, agentHttpStatus(error));
       } finally {
         emitActivity({ phase: "clear" });
+        emit({ type: "replyEnd" });
         if (additions) {
           additions.release();
           await Promise.allSettled([...additions.pending]);

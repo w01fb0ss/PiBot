@@ -37,6 +37,8 @@ export const DEFAULT_PERMISSIONS = Object.freeze({
     // Only the default Pi's own override is ever changed; the default asks every time.
     bot_management: "ask",
     work_dispatch: "ask",
+    pi_repair: "ask",
+    settings_change: "ask",
   }),
   network: Object.freeze({ allowAll: true, domains: Object.freeze([] as string[]) }),
   pathEntries: Object.freeze([] as string[]),

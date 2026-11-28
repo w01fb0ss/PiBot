@@ -262,7 +262,13 @@ export function createComputerService(options: ComputerServiceOptions) {
       } catch (error) {
         const expected = failure(error);
         if (!expected) throw error;
-        return { supported: false, reason: expected.detail ?? expected.code };
+        return {
+          supported: false,
+          reason:
+            expected.code === "unsupported" && expected.detail === "osascript_unavailable"
+              ? "helper_unavailable"
+              : expected.code,
+        };
       }
     },
     async resolveAppName(

@@ -1,6 +1,8 @@
 // A reply's actual changed files must reach the user without another model request.
-import { stat } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
+import { samePathSpelling, windowsMappedPath } from "@pibot/execution";
+import { containsPath } from "@pibot/policy";
 import { FILE_LIMIT, MAX_REPLY_ATTACHMENTS } from "@pibot/protocol-base";
 import { AttachmentsRepo, RunFileChangesRepo } from "@pibot/storage";
 import { isOutputDeliverable } from "../../conversations/attachments/output-path.ts";
@@ -130,7 +132,20 @@ export async function attachNamedOutputs(input: {
   let overflow: AttachmentOverflow | undefined;
   for (const candidate of candidates) {
     signal.throwIfAborted();
-    const path = resolve(place?.cwd ?? "", candidate);
+    const lexical = resolve(place?.cwd ?? "", candidate);
+    let path = lexical;
+    if (
+      local.deps.platform === "win32" &&
+      place?.boundary.location?.target === "local" &&
+      !roots.some((root) => containsPath(root, path, "win32"))
+    ) {
+      // A declaration can use the selected drive while change tracking uses the backing path.
+      const mapped = await windowsMappedPath(path, realpath).catch(() => path);
+      if (mapped !== path && roots.some((root) => containsPath(root, mapped, "win32"))) {
+        const actual = await realpath(path).catch(() => undefined);
+        if (actual && samePathSpelling(actual, mapped)) path = actual;
+      }
+    }
     const key = same(path);
     if (sentPaths.has(key)) continue;
     const root = place?.boundary.writeRoots.find((entry) => {
@@ -161,7 +176,7 @@ export async function attachNamedOutputs(input: {
     }
     if (
       unnamedNew(candidate) &&
-      !declared.has(same(path)) &&
+      !declared.has(same(lexical)) &&
       (recorded.get(path) === "modify" ||
         recorded.get(path) === "delete" ||
         (recorded.get(path) !== "add" &&

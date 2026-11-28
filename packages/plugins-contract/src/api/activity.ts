@@ -1,4 +1,4 @@
-import { DomainSchema, IdSchema } from "@pibot/protocol-base";
+import { ConnectorNetworkSiteSchema, IdSchema } from "@pibot/protocol-base";
 import { z } from "zod";
 
 // What a connection was used for and where its data goes, read from records the app
@@ -42,7 +42,7 @@ export const ConnectionDataCategorySchema = z.enum([
 ]);
 export const ConnectionDestinationSchema = z.strictObject({
   destination: z.discriminatedUnion("kind", [
-    z.strictObject({ kind: z.literal("domain"), domain: DomainSchema }),
+    z.strictObject({ kind: z.literal("domain"), domain: ConnectorNetworkSiteSchema }),
     z.strictObject({ kind: z.literal("this_computer") }),
   ]),
   categories: z.array(ConnectionDataCategorySchema).max(3),
@@ -65,6 +65,6 @@ export const ConnectorActivityMethods = {
   },
   "connectors.dataDestinations": {
     params: z.strictObject({ id: IdSchema }),
-    result: z.strictObject({ items: z.array(ConnectionDestinationSchema).max(66) }),
+    result: z.strictObject({ items: z.array(ConnectionDestinationSchema).max(192) }),
   },
 } as const;

@@ -365,6 +365,7 @@ export function startBrainProcess(
         routineDev: development?.routineDev,
         remote: { createRtcPeer: rtcBridge.createPeer, host: remoteHost },
         dataDir,
+        dataDirDisplayPath: parsed.data.dataDirDisplayPath,
         resourcesDir,
         version,
         platform,

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { IdSchema } from "../core/ids.ts";
-import { AttachmentSchema, MAX_REPLY_ATTACHMENTS } from "./attachments.ts";
+import { AttachmentSchema } from "./attachments.ts";
+import { MAX_GENERATED_IMAGES } from "./media.ts";
 
 const source = { botId: IdSchema, conversationId: IdSchema, messageId: IdSchema };
 export const ConversationRetryReceiptSchema = z.strictObject({
@@ -36,7 +37,7 @@ export const ConversationRetryMethods = {
     result: z
       .strictObject({
         text: z.string().max(100000),
-        attachments: z.array(AttachmentSchema).max(MAX_REPLY_ATTACHMENTS),
+        attachments: z.array(AttachmentSchema).max(MAX_GENERATED_IMAGES),
       })
       .nullable(),
   },

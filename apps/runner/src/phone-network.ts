@@ -11,7 +11,6 @@ import {
   roomTicket,
   runnerDeviceId,
   runnerRoomKey,
-  type SocketConstructor,
   unbase64,
   waitRunnerRetry,
 } from "@pibot/link";
@@ -21,7 +20,8 @@ import type { RunnerLogger } from "./logger.ts";
 import { readPairedDesktop } from "./paired-desktop.ts";
 import type { openPhoneAuthorizations } from "./phone-authorizations.ts";
 import { openPhoneLan } from "./phone-lan.ts";
-import { RelaySocket } from "./relay-socket.ts";
+import type { RunnerProxy } from "./proxy/route.ts";
+import { relaySocket } from "./relay-socket.ts";
 
 /** Each delegated room has its own authenticated identity; the runtime alone selects its writer. */
 export function phoneRunnerNetwork(options: {
@@ -32,7 +32,10 @@ export function phoneRunnerNetwork(options: {
   runtime: Awaited<ReturnType<typeof createRunnerRuntime>>;
   signal: AbortSignal;
   logger: RunnerLogger;
+  /** How relay connections reach the internet (`--proxy`, environment or system proxy). */
+  proxy: RunnerProxy;
 }) {
+  const RelaySocketClass = relaySocket(options.proxy);
   const stop = new AbortController();
   const lifetime = AbortSignal.any([stop.signal, options.signal]);
   const entries = new Map<
@@ -130,7 +133,7 @@ export function phoneRunnerNetwork(options: {
                 async (branchSignal) => {
                   const ticket = roomTicket(roomKey);
                   const room = await openRunnerRelay({
-                    WebSocket: RelaySocket as unknown as SocketConstructor,
+                    WebSocket: RelaySocketClass,
                     relay: desktop.relay,
                     ticket,
                     role: "runner",

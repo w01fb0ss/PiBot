@@ -1,5 +1,5 @@
 import type { ChatPeer } from "@pibot/client-core";
-import { GroupConversation, type GroupTarget, replyCards } from "@pibot/client-core";
+import { GroupConversation, type GroupTarget, groupTimeline, replyCards } from "@pibot/client-core";
 import { useNavigation, useT } from "@pibot/renderer-kit";
 import { Button } from "@pibot/ui";
 import {
@@ -22,6 +22,7 @@ import { useMessageScroll } from "../../chat/messages/use-message-scroll.ts";
 import { userBubbleStyle } from "../../chat/messages/user-bubble.ts";
 import { ChatNoticeLines, usePlacedNotices } from "../../chat/status/ChatNotices.tsx";
 import { SandboxNoticesProvider } from "../../chat/status/SandboxNotices.tsx";
+import { AgentStepsContext, agentStepDetails } from "../../chat/tools/agent-steps.ts";
 import { MessageExecutionCards } from "../../execution/MessageExecutionCards.tsx";
 import { useExecution } from "../../execution/workspace.tsx";
 import { ContinuationPrompt } from "../../runtime/ContinuationPrompt.tsx";
@@ -31,9 +32,11 @@ import styles from "../group.module.css";
 import { useTaskBatches } from "../tasks/use-task-list.ts";
 import { GroupComposer } from "./Composer.tsx";
 import { groupFocusController } from "./focus.ts";
+import { GroupApprovalRow } from "./GroupApprovalRow.tsx";
 import { GroupMessageRow } from "./GroupMessageRow.tsx";
 import { GroupRuns } from "./RunList.tsx";
 import { useGroupActivities } from "./use-activities.ts";
+import { useGroupApprovals } from "./use-group-approvals.ts";
 
 export function GroupConversationView({
   peer,
@@ -48,6 +51,7 @@ export function GroupConversationView({
   layoutKey,
   openWorkplace,
   readonly = false,
+  linkedHistory = false,
   draftFolders,
   statusBar,
 }: {
@@ -66,6 +70,7 @@ export function GroupConversationView({
   /** The group's working-folder settings (offered on a `workplace_unavailable` reply). */
   openWorkplace?: () => void;
   readonly?: boolean;
+  linkedHistory?: boolean;
   draftFolders?: ReactNode;
   statusBar?: ReactNode;
 }) {
@@ -129,6 +134,7 @@ export function GroupConversationView({
                   active[0],
                   "followUp",
                   target.threadId ? active[0].botId : undefined,
+                  () => controller.send(text, []),
                 )
               : Promise.resolve(false);
           return controller.send(text, []);
@@ -151,6 +157,22 @@ export function GroupConversationView({
     peer,
     data.bots.map((b) => b.id),
   );
+  const groupApprovals = useGroupApprovals(
+    peer,
+    target.groupId,
+    target.threadId || target.draftId || (state.loading && !state.messages.length)
+      ? undefined
+      : target.conversationId,
+    state.messages[0]?.createdAt,
+  );
+  const timeline = useMemo(
+    () => groupTimeline(state.messages, groupApprovals.approvals ?? []),
+    [state.messages, groupApprovals.approvals],
+  );
+  const pendingByRun = new Map<string, string>();
+  for (const { approval } of timeline)
+    if (approval?.status === "pending" && !pendingByRun.has(approval.runId))
+      pendingByRun.set(approval.runId, approval.id);
   const sendPlanChanges = useCallback(
     (text: string) => {
       if (readonly || !data.group || target.threadId) return Promise.resolve(false);
@@ -213,6 +235,29 @@ export function GroupConversationView({
     messageIds: state.messages.map((message) => message.id),
     cancelFocus: messageFocus.cancel,
   });
+  const openApproval = useCallback((id: string) => {
+    const node = messageContent.current?.querySelector<HTMLElement>(
+      `[data-group-approval-id="${CSS.escape(id)}"]`,
+    );
+    if (!node) return;
+    atBottom.current = false;
+    anchor.current = undefined;
+    node.focus({ preventScroll: true });
+    node.scrollIntoView({ block: "center" });
+  }, []);
+  const approvalFocus = !target.threadId && view.groupId === target.groupId && view.approvalFocus;
+  const usedApprovalFocus = useRef<typeof view.approvalFocus>(undefined);
+  useLayoutEffect(() => {
+    if (
+      !approvalFocus ||
+      usedApprovalFocus.current === approvalFocus ||
+      state.loading ||
+      !groupApprovals.approvals?.some((approval) => approval.id === approvalFocus.id)
+    )
+      return;
+    usedApprovalFocus.current = approvalFocus;
+    openApproval(approvalFocus.id);
+  }, [approvalFocus, groupApprovals.approvals, openApproval, state.loading]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: restore scroll only after message/paging DOM changes
   useLayoutEffect(() => {
     const node = scroll.current;
@@ -237,6 +282,14 @@ export function GroupConversationView({
   const ignoreRetry = useCallback(() => {}, []);
   // Stable per snapshot so memoized message rows only re-render when their own inputs change.
   const bots = useMemo(() => new Map(data.bots.map((bot) => [bot.id, bot])), [data.bots]);
+  const agentNames = useMemo(
+    () => new Map(data.bots.filter((bot) => bot.kind === "agent").map((bot) => [bot.id, bot.name])),
+    [data.bots],
+  );
+  const agentSteps = useMemo(
+    () => ({ agentNames, details: agentStepDetails(state.messages) }),
+    [agentNames, state.messages],
+  );
   const runs = useMemo(() => new Map(data.runs.map((run) => [run.id, run])), [data.runs]);
   const mentionNames = useMemo(() => data.bots.map((bot) => bot.name), [data.bots]);
   // Callers pass inline handlers; rows need stable ones or every snapshot re-renders all of them.
@@ -250,6 +303,7 @@ export function GroupConversationView({
   const threadTask = target.threadId
     ? data.tasks.find((task) => task.threadConversationId === target.threadId)
     : undefined;
+  let messageIndex = 0;
   const content = (
     <div
       data-sandbox-scope
@@ -301,10 +355,22 @@ export function GroupConversationView({
                 {t("chat.loadEarlier")}
               </Button>
             )}
-            {!state.loading && !state.error && !state.messages.length && !target.threadId && (
+            {!state.loading && !state.error && !timeline.length && !target.threadId && (
               <p className={styles.note}>{t("group.empty")}</p>
             )}
-            {state.messages.map((message, index) => {
+            {timeline.map(({ id, message, approval }) => {
+              if (approval)
+                return (
+                  <GroupApprovalRow
+                    key={id}
+                    peer={peer}
+                    approval={approval}
+                    bot={bots.get(approval.botId)}
+                    groupName={data.group?.name ?? ""}
+                    refresh={groupApprovals.refresh}
+                  />
+                );
+              const index = messageIndex++;
               const activity = activities.forMessage(message);
               const candidate = message.runId ? runs.get(message.runId) : undefined;
               const highlighted = messageFocus.highlighted?.messageId === message.id;
@@ -323,6 +389,7 @@ export function GroupConversationView({
                     activity={activity.state}
                     refreshApprovals={activity.refresh}
                     decideApproval={activity.decide}
+                    inlineApprovals={groupApprovals.approvals !== undefined}
                     run={
                       candidate?.botId === message.botId &&
                       candidate?.messageId === message.id &&
@@ -370,6 +437,8 @@ export function GroupConversationView({
                 refresh={refresh}
                 messages={state.messages}
                 openTask={openTask}
+                openApproval={openApproval}
+                pendingByRun={pendingByRun}
               />
             )}
           </div>
@@ -398,17 +467,20 @@ export function GroupConversationView({
           )}
         </p>
       )}
-      {activities.error && (
+      {(activities.error || groupApprovals.error) && (
         <p role="alert" className={chatStyles.composerNotice}>
           {t("approval.loadError")}{" "}
-          <Button variant="ghost" onClick={() => void activities.refresh()}>
+          <Button
+            variant="ghost"
+            onClick={() => void Promise.all([activities.refresh(), groupApprovals.refresh()])}
+          >
             {t("common.retry")}
           </Button>
         </p>
       )}
       {readonly ? (
         <p role="status" className={`${chatStyles.composerArea} ${styles.note}`}>
-          {t("group.topicReadonly")}
+          {t(linkedHistory ? "group.topicLinkedHistory" : "group.topicReadonly")}
         </p>
       ) : (
         <GroupComposer
@@ -422,6 +494,7 @@ export function GroupConversationView({
           runs={data.runs}
           cycleId={data.cycle?.cycleId}
           coordinatorBotId={data.group?.coordinatorBotId}
+          threadBotId={threadTask?.assigneeBotId}
           messages={state.messages}
           waiting={state.messages.some((message) =>
             activities
@@ -458,7 +531,7 @@ export function GroupConversationView({
   );
   return (
     <SandboxNoticesProvider notices={notices.all} approvals={activities.approvals}>
-      {content}
+      <AgentStepsContext.Provider value={agentSteps}>{content}</AgentStepsContext.Provider>
     </SandboxNoticesProvider>
   );
 }

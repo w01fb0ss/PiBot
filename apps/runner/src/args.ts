@@ -1,4 +1,5 @@
 import { listenAddress } from "./direct.ts";
+import { runnerText } from "./messages.ts";
 export type RunnerCommand =
   | "start"
   | "stop"
@@ -19,6 +20,8 @@ export type RunnerArguments =
       code?: string;
       listen?: string[];
       relay?: string;
+      /** A proxy URL for relay connections, or "direct" to ignore every proxy setting. */
+      proxy?: string;
       dataDir?: string;
       logLevel?: "info" | "warn" | "error";
       daemon?: boolean;
@@ -27,18 +30,35 @@ export type RunnerArguments =
 
 export function usage() {
   return [
-    "Usage: pibot runner <start|stop|status|pair|revoke|tray|install-service|uninstall-service>",
-    "  start [--daemon] [--listen <IP:port>]   Linux daemon; listen is repeatable",
-    "  pair [<code>]                         paste the computer pairing code",
-    "  start|pair [--name <device name>] [--relay <URL>]",
+    runnerText("用法：pibot runner <命令>", "Usage: pibot runner <command>"),
+    runnerText(
+      "  start / stop / status             启动、停止或查看状态",
+      "  start / stop / status             Start, stop or check status",
+    ),
+    runnerText(
+      "  pair [配对码]                      输入电脑给出的配对码",
+      "  pair [code]                       Pair using the code from your computer",
+    ),
+    runnerText(
+      "  revoke / tray                     解除配对，或打开 Mac / Windows 的菜单",
+      "  revoke / tray                     Unpair or open the Mac / Windows tray",
+    ),
+    runnerText(
+      "  install-service / uninstall-service   添加或移除 Linux 的用户服务",
+      "  install-service / uninstall-service   Add or remove the Linux user service",
+    ),
+    "",
+    runnerText("高级选项", "Advanced options"),
+    "  start [--daemon] [--listen <IP:port>]",
+    "  start|pair [--name <name>] [--relay <URL>] [--proxy <URL|direct>]",
     "  status [--json]",
     "  --data-dir <directory> --log-level <info|warn|error>",
-    "  install-service / uninstall-service   Linux systemd user service",
-    "",
-    "Environment:",
-    "  PIBOT_DATA_DIR              runner data directory",
-    "  PIBOT_RUNNER_RELAY          relay for pairing (default: wss://relay.pibot.space)",
-    "  PIBOT_RUNNER_PASSPHRASE     encrypted-file passphrase for headless startup",
+    runnerText(
+      "可以通过 --proxy 指定设备连接用的代理。想在忘记口令后重新配对，可用 --data-dir 选择一个新的空文件夹，再在电脑上移除旧配对。",
+      "Use --proxy to choose a proxy for device connections. If you forgot the passphrase, use --data-dir to choose a fresh, empty folder and remove the old pairing on your computer.",
+    ),
+    "  PIBOT_DATA_DIR, PIBOT_RUNNER_RELAY, PIBOT_RUNNER_PASSPHRASE",
+    "  HTTPS_PROXY, HTTP_PROXY, ALL_PROXY, NO_PROXY",
   ].join("\n");
 }
 
@@ -83,6 +103,12 @@ export function parseArguments(input: readonly string[]): RunnerArguments {
         result.logLevel = value as "info" | "warn" | "error";
       else if (flag === "--relay" && ["start", "pair", "tray", "install-service"].includes(command))
         result.relay = value;
+      else if (
+        flag === "--proxy" &&
+        ["start", "pair", "tray", "install-service"].includes(command) &&
+        value.length <= 2048
+      )
+        result.proxy = value;
       else if (
         flag === "--name" &&
         ["start", "pair", "tray", "install-service"].includes(command) &&

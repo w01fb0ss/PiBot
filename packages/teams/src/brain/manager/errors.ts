@@ -9,6 +9,60 @@ import type { Language } from "./lookup.ts";
 
 const REASONS: { match: RegExp; code: string; zh: string; en: string }[] = [
   {
+    match: /dispatch_folder_missing/,
+    code: "dispatch_folder_missing",
+    zh: "传入的路径不存在或不是文件夹",
+    en: "The supplied path does not exist or is not a directory",
+  },
+  {
+    match: /protected_path/,
+    code: "dispatch_folder_protected",
+    zh: "传入的目录受保护",
+    en: "The supplied folder is protected",
+  },
+  {
+    match: /dispatch_folder_unreadable/,
+    code: "dispatch_folder_unreadable",
+    zh: "无法读取传入的目录",
+    en: "The supplied folder cannot be read",
+  },
+  {
+    match: /dispatch_folder_runner/,
+    code: "dispatch_folder_runner",
+    zh: "传入的执行端目录只能通过执行端的目录选择卡指定",
+    en: "Select the supplied runner folder through the runner folder picker",
+  },
+  {
+    match: /dispatch_folder_invalid/,
+    code: "dispatch_folder_invalid",
+    zh: "folder 只接受用户明确给出的本机绝对路径或 ~ 路径",
+    en: "The folder argument accepts an absolute or ~ path on this computer supplied by the person",
+  },
+  {
+    match: /workspace_boundary_changed/,
+    code: "dispatch_folder_changed",
+    zh: "传入的目录在确认后发生变化",
+    en: "The supplied folder changed after confirmation",
+  },
+  {
+    match: /builtin_routing_changed/,
+    code: "catalog_changed",
+    zh: "目录条目已变化，请用 team_directory 重新查看",
+    en: "The catalog entry changed; check team_directory again",
+  },
+  {
+    match: /builtin_routing_exists/,
+    code: "catalog_recipient_exists",
+    zh: "已经有使用这个角色或模板的 Bot 或群组，请用 team_directory 查看",
+    en: "A Bot or group already uses this role or template; check team_directory",
+  },
+  {
+    match: /builtin_routing_group_unavailable/,
+    code: "catalog_group_unavailable",
+    zh: "群组模板缺少可用的成员或协调者，无法建立群组",
+    en: "The template cannot create a group with the available members and coordinator",
+  },
+  {
     match: /creation busy|update busy|Bot busy/i,
     code: "bot_busy",
     zh: "这个 Bot 正在被别的操作修改，稍等再试",
@@ -105,7 +159,13 @@ export function managerFailure(
           : "Pi Bot hit an internal error and did not finish; tell the person to try again later";
   return {
     isError: true,
-    text: `${language === "zh" ? "没有完成" : "Not done"} [${code}]: ${reason}`,
+    text: `${language === "zh" ? "没有完成" : "Not done"} [${code}]: ${reason}${
+      code.startsWith("dispatch_folder_")
+        ? language === "zh"
+          ? "。用户没指定路径时，省略 folder 重新派发，新话题会沿用接手方的工作目录。若用户确实指定了这个路径，请和用户核对。"
+          : ". If the person supplied no path, retry with folder omitted. The new topic inherits the recipient's workplace. If the person supplied this path, check it with them."
+        : ""
+    }`,
     details: { errorCode: `pi_${code}` },
   };
 }

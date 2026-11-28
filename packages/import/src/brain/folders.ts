@@ -2,7 +2,12 @@
 import { mkdir, readdir, realpath, rmdir, stat } from "node:fs/promises";
 import { posix, win32 } from "node:path";
 import type { CapabilityContext } from "@pibot/brain/kit";
-import { directoryIdentity, matchesFileIdentity, sensitiveReadBoundary } from "@pibot/execution";
+import {
+  canonicalPath,
+  directoryIdentity,
+  matchesFileIdentity,
+  sensitiveReadBoundary,
+} from "@pibot/execution";
 import type { ImportFolderTarget } from "@pibot/import-contract";
 import { nodeFileSystem, type Platform, protectedPaths } from "@pibot/policy";
 import { RpcError } from "@pibot/protocol-base";
@@ -109,7 +114,7 @@ export async function resolveFolder(
   signal.throwIfAborted();
   if (info && !info.isDirectory()) throw unavailable();
   if (!info && target.kind !== "new") throw unavailable();
-  return { path: info ? await realpath(path) : path, exists: !!info };
+  return { path: await canonicalPath(path, deps.userHome), exists: !!info };
 }
 
 /**

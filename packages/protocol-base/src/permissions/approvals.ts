@@ -1,9 +1,11 @@
 import { z } from "zod";
 import { ComputerApprovalRequestSchema } from "../computer/apps.ts";
 import { DraftMetadataSchema } from "../connectors/drafts.ts";
+import { ConnectorNetworkSiteSchema } from "../connectors/network.ts";
 import { IdSchema } from "../core/ids.ts";
-import { BotPageSchema } from "../core/page.ts";
+import { BotPageSchema, PageSchema } from "../core/page.ts";
 import { LoginApprovalRequestSchema } from "../credentials/site.ts";
+import { ModelPreferenceSchema } from "../providers/providers.ts";
 import { GrantScopeSchema } from "./grants.ts";
 import { PolicyStepSchema } from "./policy-explain.ts";
 import { CategorySchema, DomainSchema, IsolationSchema } from "./settings.ts";
@@ -31,6 +33,21 @@ export const ApprovalFactSchema = z.strictObject({
    * default Pi's management and dispatch cards); absent rows are named by `kind`.
    */
   label: z.string().min(1).max(80).optional(),
+  labelKey: z
+    .enum([
+      "library",
+      "note",
+      "diff",
+      "videoModel",
+      "memoryUser",
+      "memoryBot",
+      "memoryGroup",
+      "memoryProject",
+      "memoryChange",
+      "memoryRemove",
+      "memoryNote",
+    ])
+    .optional(),
 });
 // The card's title and facts in each UI language, so a language switch also changes
 // cards created before it. Optional: older approvals only have `title` / `facts`.
@@ -40,6 +57,12 @@ export const ApprovalTextSchema = z.strictObject({
   lead: z.string().max(1000).optional(),
   facts: z.array(ApprovalFactSchema),
 });
+export const ApprovalModelOptionSchema = z.strictObject({
+  id: z.string().regex(/^[a-f0-9]{64}$/),
+  label: z.string().min(1).max(500),
+  localized: z.strictObject({ zh: ApprovalTextSchema, en: ApprovalTextSchema }),
+});
+export type ApprovalModelOption = z.infer<typeof ApprovalModelOptionSchema>;
 export const ApprovalSchema = z
   .strictObject({
     id: IdSchema,
@@ -70,11 +93,16 @@ export const ApprovalSchema = z
     facts: z.array(ApprovalFactSchema),
     explanation: z.array(PolicyStepSchema).max(200).optional(),
     localized: z.strictObject({ zh: ApprovalTextSchema, en: ApprovalTextSchema }).optional(),
+    videoModel: ModelPreferenceSchema.optional(),
+    modelOptions: z.array(ApprovalModelOptionSchema).optional(),
     grantScope: z.lazy(() => GrantScopeSchema).optional(),
+    // Display only: a paid image scope names its provider by id, which is not for people.
+    grantScopeProviderName: z.string().max(200).optional(),
     // Grant card payload; resolved through `computer.grant.resolve`, never remembered.
     computer: ComputerApprovalRequestSchema.optional(),
     // First-login card; resolved through `credentials.login.resolve` (account choice).
     login: LoginApprovalRequestSchema.optional(),
+    connectorNetworkSite: ConnectorNetworkSiteSchema.optional(),
     connectorConsent: z
       .strictObject({
         connectorId: IdSchema,
@@ -111,11 +139,20 @@ export const ApprovalSchema = z
     canRememberSecrets: z.boolean().optional(),
     draft: DraftMetadataSchema.optional(),
     canRemember: z.boolean(),
+    /** Direct-run choice. False means only a one-time approval is available. */
+    directRunRemember: z
+      .union([z.strictObject({ folder: text.max(4096), program: text.max(256) }), z.literal(false)])
+      .optional(),
     canAddWritableFolder: z.boolean().optional(),
     expiresAt: time,
     isolation: IsolationSchema,
     status: ApprovalStatusSchema,
     remembered: z.boolean(),
+    /**
+     * A paused card closed because its conversation moved on (later turns, a closed task): no run
+     * can take its answer any more, so it shows as out of date instead of a plain expiry.
+     */
+    superseded: z.literal(true).optional(),
     createdAt: time,
     resolvedAt: time.nullable(),
   })
@@ -132,6 +169,11 @@ export const ApprovalSchema = z
   .refine(
     (a) => a.category !== "memory" || (!a.canRemember && !a.canPreauthorize && !a.grantScope),
     "Memory confirmation cannot grant authority",
+  )
+  .refine(
+    (a) =>
+      !a.connectorNetworkSite || (a.category === "connector" && !a.canRemember && !a.grantScope),
+    "Invalid connection network approval",
   )
   .refine(
     (a) => !a.computer || (a.category === "computer" && !a.canRemember),
@@ -163,6 +205,15 @@ export const ApprovalSchema = z
   .refine((a) => !a.login || (a.category === "web" && !a.computer), "Invalid login approval")
   .refine(
     (a) =>
+      a.directRunRemember === undefined ||
+      (a.category === "run_command" &&
+        a.risk === "danger" &&
+        !a.canRemember &&
+        (a.directRunRemember === false || (!a.routineRunId && !a.secretUses?.length))),
+    "Invalid direct-run consent",
+  )
+  .refine(
+    (a) =>
       !a.connectorConsent ||
       (a.category === "connector" &&
         a.canRemember &&
@@ -182,6 +233,7 @@ export const ApprovalEvents = {
     id: IdSchema,
     status: ApprovalFinalStatusSchema,
     remembered: z.boolean(),
+    superseded: z.literal(true).optional(),
   }),
 } as const;
 export const ApprovalPageSchema = BotPageSchema.extend({
@@ -200,6 +252,7 @@ export const ApprovalMethods = {
       id: IdSchema,
       decision: z.enum(["allow", "deny"]),
       remember: z.boolean(),
+      rememberDirectRun: z.literal(true).optional(),
       rememberSecrets: z
         .array(z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/))
         .max(200)
@@ -212,10 +265,20 @@ export const ApprovalMethods = {
       allowSession: z.boolean().optional(),
       conversationId: IdSchema.optional(),
       connectorConsent: z.enum(["once", "bot", "all"]).optional(),
+      modelOptionId: ApprovalModelOptionSchema.shape.id.optional(),
     }),
-    result: ok,
+    /** `superseded`: the paused card was out of date and is now closed; nothing was run. */
+    result: ok.extend({ superseded: z.literal(true).optional() }),
   },
   "approvals.pending": { params: ApprovalPageSchema, result: z.array(ApprovalSchema).max(200) },
+  "approvals.groupTimeline": {
+    params: PageSchema.extend({ groupId: IdSchema, topicId: IdSchema, since: time.optional() }),
+    result: z.array(ApprovalSchema).max(200),
+  },
+  "approvals.groupFocus": {
+    params: z.strictObject({ groupId: IdSchema }),
+    result: z.strictObject({ topicId: IdSchema, approvalId: IdSchema }).nullable(),
+  },
 } as const;
 export type Approval = z.infer<typeof ApprovalSchema>;
 export type ApprovalFact = z.infer<typeof ApprovalFactSchema>;

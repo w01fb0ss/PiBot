@@ -15,8 +15,11 @@ import { provisionBuiltinMethods } from "./builtin/methods.ts";
 import { BuiltinService, registerBuiltinRpc } from "./builtin/service.ts";
 import { BuiltinUpdates, registerBuiltinUpdateRpc } from "./builtin/updates.ts";
 import { RoleCatalogService, withoutAlwaysCommands } from "./cloud/role-catalog.ts";
+import { registerPiHealth } from "./health/index.ts";
+import { RoutingCatalog } from "./manager/catalog.ts";
 import { registerPiManager } from "./manager/index.ts";
 import { defaultBuiltinDir } from "./resources/builtin-dir.ts";
+import { registerPiSettings } from "./settings/index.ts";
 import { registerTeamRpc, TeamService } from "./teams/team-service.ts";
 
 /** The version each shipped role and template declares, read from its team.json only. */
@@ -147,6 +150,9 @@ export function teamsCapability(
         dir: builtinDir,
         dataDir: ctx.dataDir,
         ensureMethods: scheduleMethods,
+        imageInspirationConnected: (botId) =>
+          !!ctx.local.connectors?.availability?.({ kind: "bot", id: botId }, "image-inspiration")
+            .connectorId,
         cloud,
       });
       const catalogStarted = performance.now();
@@ -198,17 +204,27 @@ export function teamsCapability(
           return work;
         });
       registerTeamRpc(handle, teams);
-      const piManager = registerPiManager(ctx, handle);
+      const installCatalogPack = async (
+        kind: "role" | "group",
+        id: string,
+        routing?: Parameters<RoleCatalogService["install"]>[2],
+      ) => {
+        const version = await cloud.install(kind, id, routing);
+        builtin.reload();
+        return { ok: true as const, version };
+      };
+      const piManager = registerPiManager(
+        ctx,
+        handle,
+        new RoutingCatalog(ctx, builtin, cloud, installCatalogPack),
+      );
+      const piHealth = registerPiHealth(ctx, handle);
+      const piSettings = registerPiSettings(ctx);
       registerBuiltinRpc(handle, builtin);
       registerBuiltinUpdateRpc(handle, updates);
       handle("roleCatalog.get", () => cloud.state());
       handle("roleCatalog.check", () => cloud.check());
-      handle("roleCatalog.install", async ({ kind, id }) => {
-        const version = await cloud.install(kind, id);
-        // The next read merges the new archive; Bots on that role take it like a shipped update.
-        builtin.reload();
-        return { ok: true as const, version };
-      });
+      handle("roleCatalog.install", ({ kind, id }) => installCatalogPack(kind, id));
       // The newest built-in roles and templates apply themselves on start, including to
       // the Bots and groups the user changed. A failure is logged and retried on the next start;
       // it never keeps the app from opening.
@@ -248,9 +264,12 @@ export function teamsCapability(
           scheduleMethods();
         },
         afterReady: (signal) => builtin.checkConsistency(signal),
+        onGroupChanged: piManager.groupChanged,
         async stop() {
           closed = true;
           piManager.stop();
+          piHealth.stop();
+          await piSettings.stop();
           methodsAbort.abort();
           await updates.stop();
           await Promise.all([methodsWork, autoWork]);

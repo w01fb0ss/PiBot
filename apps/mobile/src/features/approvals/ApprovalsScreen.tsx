@@ -1,3 +1,4 @@
+import { approvalPausesAtDeadline } from "@pibot/client-core";
 import { useRouter } from "expo-router";
 import { RefreshControl, ScrollView, View } from "react-native";
 import { useLinkState, useText } from "../../runtime/context.tsx";
@@ -8,6 +9,7 @@ import { OfflineBanner, TabHeader } from "../../ui/headers.tsx";
 import { useTabBarInset } from "../../ui/tab-bar.tsx";
 import { ApprovalCard } from "./ApprovalCard.tsx";
 import { useApprovals } from "./approvals-context.tsx";
+import { HeldPlans } from "./HeldPlans.tsx";
 
 export function ApprovalsScreen() {
   const colors = useColors(),
@@ -16,22 +18,23 @@ export function ApprovalsScreen() {
     mobile = useLinkState(),
     approvals = useApprovals(),
     tabInset = useTabBarInset();
-  const items = approvals.items;
+  const { items, waiting } = approvals;
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <TabHeader
         title={t("approvals")}
         tab="approvals"
-        subtitle={
-          items.length ? t("approvalsWaitingLine", { count: items.length }) : t("approvalsNone")
-        }
+        subtitle={waiting ? t("approvalsWaitingLine", { count: waiting }) : t("approvalsNone")}
       />
       <ScrollView
         contentContainerStyle={{ paddingBottom: tabInset, gap: 10 }}
         refreshControl={
           <RefreshControl
             refreshing={false}
-            onRefresh={() => void approvals.load()}
+            onRefresh={() => {
+              void approvals.load();
+              void approvals.held.load();
+            }}
             tintColor={colors.text2}
           />
         }
@@ -42,6 +45,8 @@ export function ApprovalsScreen() {
           </View>
         )}
         <ErrorLine text={approvals.action.error && t(approvals.action.error)} />
+        {/* The computer's inbox lists plans waiting for a choice; the phone shows them here too. */}
+        <HeldPlans online={mobile.status === "online"} />
         {items.length > 0 ? (
           <>
             {items.map((approval) => (
@@ -58,10 +63,14 @@ export function ApprovalsScreen() {
                 onPress={() => void approvals.load(true)}
               />
             )}
-            <FootNote text={t("approvalsFoot")} />
+            {items.some(approvalPausesAtDeadline) && <FootNote text={t("approvalsFootChat")} />}
+            {items.some((approval) => approval.routineRunId && !approval.draft) && (
+              <FootNote text={t("approvalsFootRoutine")} />
+            )}
           </>
         ) : (
-          !approvals.action.busy && (
+          !approvals.action.busy &&
+          !approvals.held.plans.length && (
             <EmptyState icon="inbox" title={t("approvalsEmpty")} hint={t("approvalsEmptyHint")} />
           )
         )}

@@ -1,6 +1,6 @@
 import { lstat, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
-import { fileIdentity } from "@pibot/execution";
+import { fileIdentity, samePathSpelling } from "@pibot/execution";
 import { containsPath } from "@pibot/policy";
 import {
   type ExecutionLocationTarget,
@@ -27,7 +27,11 @@ export async function workspaceBoundary(
     const canonical = await realpath(root.path),
       info = await lstat(root.path, { bigint: true });
     signal.throwIfAborted();
-    if (canonical !== resolve(root.path) || !info.isDirectory() || info.isSymbolicLink())
+    if (
+      !samePathSpelling(canonical, resolve(root.path)) ||
+      !info.isDirectory() ||
+      info.isSymbolicLink()
+    )
       throw new RpcError(-32602, "workspace_boundary_changed");
     const existing = roots.find((r) => r.canonicalPath === canonical);
     if (existing) {

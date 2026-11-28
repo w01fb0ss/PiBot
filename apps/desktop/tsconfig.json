@@ -169,6 +169,12 @@
       "path": "../../packages/ui"
     },
     {
+      "path": "../../packages/videos"
+    },
+    {
+      "path": "../../packages/videos-contract"
+    },
+    {
       "path": "../../packages/workspaces"
     },
     {

@@ -16,6 +16,7 @@ import {
   transientRequestError,
 } from "../core/errors.ts";
 import type { ToolSetSnapshot } from "../core/types.ts";
+import { knownRate } from "./memory-draft.ts";
 import type { RequestAccounting } from "./request-observer.ts";
 import { CONNECTION_RETRY_DELAYS, RequestRecovery, type RequestRetry } from "./request-recovery.ts";
 
@@ -96,6 +97,29 @@ function failed(model: Model<Api>, error: unknown, partial?: AssistantMessage): 
     stopReason: code === "aborted" ? "aborted" : "error",
     // SDK diagnostics can carry credentials; only fixed codes and the HTTP number survive.
     errorMessage: `${diagnostic}${status ? ` HTTP ${status}` : ""}`,
+  };
+}
+
+/** The SDK persists the forwarded message itself. Account for raw usage before clamping this copy. */
+function forSession(message: AssistantMessage): AssistantMessage {
+  const { cost } = message.usage;
+  const valid = (value: number) => Number.isFinite(value) && value >= 0;
+  const partsValid = [cost.input, cost.output, cost.cacheRead, cost.cacheWrite].every(valid);
+  if (partsValid && valid(cost.total)) return message;
+  const providerTotal = cost.totalFromProvider === true && valid(cost.total);
+  return {
+    ...message,
+    usage: {
+      ...message.usage,
+      cost: {
+        input: knownRate(cost.input),
+        output: knownRate(cost.output),
+        cacheRead: knownRate(cost.cacheRead),
+        cacheWrite: knownRate(cost.cacheWrite),
+        total: partsValid || providerTotal ? knownRate(cost.total) : 0,
+        ...(providerTotal ? { totalFromProvider: true } : {}),
+      },
+    },
   };
 }
 
@@ -246,7 +270,7 @@ export function retryStream(input: {
               ...attempt,
               outcome: "done",
             });
-            output.push({ type: "done", reason: "length", message: kept });
+            output.push({ type: "done", reason: "length", message: forSession(kept) });
             return;
           }
           retry = { kind: "connection", delayMs, ...attempt };
@@ -306,10 +330,10 @@ export function retryStream(input: {
           output.push({
             type: "error",
             reason: final.stopReason === "aborted" ? "aborted" : "error",
-            error: final,
+            error: forSession(final),
           });
-        } else if (result.stopReason === "pending") output.end(result);
-        else output.push({ type: "done", reason: result.stopReason, message: result });
+        } else if (result.stopReason === "pending") output.end(forSession(result));
+        else output.push({ type: "done", reason: result.stopReason, message: forSession(result) });
         return;
       }
     } catch (error) {
@@ -329,7 +353,7 @@ export function retryStream(input: {
       output.push({
         type: "error",
         reason: final.stopReason === "aborted" ? "aborted" : "error",
-        error: final,
+        error: forSession(final),
       });
     } finally {
       output.end();

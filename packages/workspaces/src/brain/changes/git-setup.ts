@@ -25,45 +25,45 @@ export class GitSetup {
   private running?: Promise<void>;
   private failure?: Failure;
   private readonly lifetime = new AbortController();
-  private readonly versions = new Map<string, string | undefined>();
 
   constructor(private readonly local: LocalService) {}
 
   private get options() {
     const deps = this.local.deps;
-    return { platform: deps.platform, env: deps.env, resourcesDir: deps.resourcesDir };
-  }
-
-  private async version(program: string, signal: AbortSignal) {
-    if (!this.versions.has(program)) {
-      const version = await gitVersion(program, signal);
-      // An unanswered version is retried next time rather than remembered as unknown.
-      if (version === undefined) return undefined;
-      this.versions.set(program, version);
-    }
-    return this.versions.get(program);
-  }
-
-  private describe(plan: GitInstallPlan): Partial<GitSetupStatus> {
-    if (plan.kind === "xcode")
-      return { installer: "xcode", command: plan.command, manualCommand: plan.manualCommand };
-    if (plan.kind === "package")
-      return { installer: "package", command: plan.command, manualCommand: plan.manualCommand };
-    return plan.kind === "manual" ? { installer: "manual" } : {};
+    return {
+      platform: deps.platform,
+      env: deps.env,
+      userHome: deps.userHome,
+      resourcesDir: deps.resourcesDir,
+    };
   }
 
   async status(signal: AbortSignal): Promise<GitSetupStatus> {
     const program = await findGit(this.options);
     if (program) {
-      this.failure = undefined;
-      const version = await this.version(program, signal);
-      return { state: "available", ...(version ? { version } : {}) };
+      const version = await gitVersion(this.options, program, signal);
+      signal.throwIfAborted();
+      // A file can exist while Apple's developer tools or Windows application controls block it.
+      if (version) {
+        this.failure = undefined;
+        return { state: "available", version };
+      }
     }
     const plan = await gitInstallPlan(this.local.deps.platform);
     if (plan.kind === "unsupported") return { state: "unsupported" };
+    if (plan.kind === "manual" || (plan.kind === "package" && !plan.elevate))
+      return {
+        state: "missing",
+        installer: "manual",
+        ...(plan.kind === "package"
+          ? { manualCommand: plan.manualCommand, reason: "no_elevation" }
+          : {}),
+      };
     return {
       state: this.running ? "installing" : this.failure ? "failed" : "missing",
-      ...this.describe(plan),
+      installer: plan.kind,
+      command: plan.command,
+      manualCommand: plan.manualCommand,
       ...(!this.running && this.failure ? { reason: this.failure } : {}),
     };
   }
@@ -72,8 +72,14 @@ export class GitSetup {
   async install(signal: AbortSignal): Promise<GitSetupStatus> {
     if (this.running || this.lifetime.signal.aborted) return this.status(signal);
     const current = await this.status(signal);
-    if (current.state !== "missing" && current.state !== "failed") return current;
+    if (
+      current.installer === "manual" ||
+      (current.state !== "missing" && current.state !== "failed")
+    )
+      return current;
     const plan = await gitInstallPlan(this.local.deps.platform);
+    if (plan.kind !== "xcode" && (plan.kind !== "package" || !plan.elevate))
+      return this.status(signal);
     // Re-checked after the awaits above: two clicks in the same tick start one installer.
     if (this.running) return this.status(signal);
     this.failure = undefined;

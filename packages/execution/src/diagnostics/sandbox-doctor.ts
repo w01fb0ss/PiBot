@@ -39,7 +39,11 @@ export async function sandboxDoctor(
         : (session.isolation.reason ?? "isolation_unavailable"),
       kinds: [],
       rules: [],
-      signatures: [],
+      // Only the probing isolation status carries a probe; other shapes report no signature.
+      signatures: (() => {
+        const probe = "probe" in session.isolation ? session.isolation.probe : undefined;
+        return probe ? [probe.stage, ...(probe.stderr ? [probe.stderr] : [])] : [];
+      })(),
     },
   ];
   try {

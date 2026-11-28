@@ -14,5 +14,13 @@ export const PRIVATE_NETWORK_REASON = "private_network_confirmation";
 export const BOT_SEND_CONFIRMATION_REASON = "bot_send_confirmation";
 
 export const WINDOWS_READ_ONLY = "windows_read_only";
+export const WINDOWS_FILE_READ_CONFIRMATION = "windows_file_read_confirmation";
 export const WINDOWS_ORDINARY_COMMAND = "windows_ordinary_command";
 export const WINDOWS_REQUIRES_APPROVAL = "windows_requires_approval";
+
+/** The person must confirm the directory for this dispatch. */
+export const DISPATCH_FOLDER_CONFIRM = "dispatch_folder_confirmation";
+export const DISPATCH_MODEL_CONFIRM = "dispatch_model_confirmation";
+
+/** A security settings change requires an explicit answer to its own card. */
+export const SETTINGS_SECURITY_CONFIRM = "settings_security_confirm";

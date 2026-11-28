@@ -21,6 +21,7 @@ export const LiveActivityItemSchema = z.strictObject({
   key: z.string().min(1).max(200),
   botId: IdSchema,
   botName: z.string().min(1).max(200),
+  runnerName: z.string().min(1).max(200).optional(),
   avatar: z.strictObject({
     shape: label,
     color: label,
@@ -30,6 +31,13 @@ export const LiveActivityItemSchema = z.strictObject({
   kind: LiveIslandKindSchema,
   /** Plain short text; null when the work has no title yet (the island names the kind). */
   title: z.string().min(1).max(200).nullable(),
+  /** Chat tool summary format: the tool name and, when safe, a short target excerpt. */
+  step: z
+    .string()
+    .max(106)
+    .regex(/^[a-z][a-z0-9_]{0,63}(?:: [^\p{Cc}\p{Cf}\p{Zl}\p{Zp}]{1,40})?$/u)
+    .optional(),
+  replying: z.literal(true).optional(),
   /** Approval cards carry their title in both UI languages. */
   localizedTitle: z
     .strictObject({ zh: z.string().min(1).max(200), en: z.string().min(1).max(200) })

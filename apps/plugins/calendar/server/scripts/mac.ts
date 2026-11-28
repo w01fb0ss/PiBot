@@ -34,7 +34,8 @@ function calendar(req) {
     var selected = ids ? calendars.filter(function(item) { return ids.indexOf(plain(item.calendarIdentifier)) >= 0; }) : calendars;
     if (selected.length > 100) throw Error('read_failed');
     if (ids && selected.length !== ids.length) throw Error('not_found');
-    var offset = number(args.cursor, 0, 100000), limit = number(args.limit, 50, 100);
+    var cursor = String(args.cursor).trim(), offset = /^[0-9]+$/.test(cursor) && Number(cursor) <= 100000 ? Number(cursor) : 0;
+    var limit = number(args.limit, 50, 100);
     if (limit < 1) throw Error('invalid_arguments');
     if (!selected.length) return { items: [], nextCursor: null };
     stage = 'query';

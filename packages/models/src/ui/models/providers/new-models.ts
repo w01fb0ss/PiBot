@@ -51,6 +51,7 @@ export function useNewModels(providers: readonly Provider[], active: boolean) {
           offeredCache.current.set(id, offered);
           const known = new Set([
             ...saved.models.map((model) => model.id),
+            ...(saved.videoModels ?? []).map((model) => model.id),
             ...(saved.imageModels ?? []).map((model) => model.id),
           ]);
           const fresh = [...new Set(offered)].filter((model) => !known.has(model));

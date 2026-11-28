@@ -1,4 +1,10 @@
-import { finalizeConnectorPreview } from "./connector-import.ts";
+import type { ConnectorNetworkApproval } from "@pibot/plugins-contract/full";
+import {
+  finalizeConnectorPreview,
+  importSavedKeys,
+  USER_SECRET_SCOPE,
+} from "./connector-import.ts";
+import { connectorWebsites, resolveBlockedWebsite } from "./connector-network.ts";
 import {
   buildTargetStep,
   confirmWindowsServerStep,
@@ -25,12 +31,18 @@ import {
   importStep,
   pickImportStep,
   previewImportStep,
+  scrubSymlinkError,
   uninstallStep,
 } from "./connector-service/connector-service-plugins.ts";
 import {
   diagnosticsStep,
   setOutsideSandboxStep,
 } from "./connector-service/connector-service-sandbox.ts";
+import {
+  pluginSettingsStep,
+  sourceWithInstalledSettings,
+  updatePluginSettingsStep,
+} from "./connector-service/connector-service-settings.ts";
 import type { ConnectorServiceDeps } from "./connector-service/connector-service-shared.ts";
 
 export type { ConnectorServiceDeps } from "./connector-service/connector-service-shared.ts";
@@ -53,22 +65,30 @@ import {
 } from "@pibot/brain/kit";
 import type {
   CapabilityId,
+  ConnectionTarget,
   Connector,
+  ConnectorCommand,
   ConnectorManifest,
   ConnectorOperation,
   ConnectorStartFailure,
 } from "@pibot/plugins-contract/full";
-import { type ConnectorUpdateSchema, RpcError, RpcErrorCodes } from "@pibot/plugins-contract/full";
+import {
+  type ConnectorUpdateSchema,
+  connectorStartupSeconds,
+  isConnectorPackageRunner,
+  RpcError,
+  RpcErrorCodes,
+} from "@pibot/plugins-contract/full";
 import type { z } from "zod";
 import type { ConnectorsRepo } from "../../store/index.ts";
 import { PluginRegistry } from "../apps/registry.ts";
 import { mapConnectorCapabilities } from "../capability-mappings/index.ts";
 import { sourceLayouts } from "../discovery/locations.ts";
 import { broughtOverId, entryDescription, entryManifest } from "../discovery/mcp.ts";
-import { readMcpFile } from "../discovery/scan.ts";
+import { itemKey, readMcpFile } from "../discovery/scan.ts";
 import type { ConnectorPoolTarget } from "../pool/pool.ts";
 import { connectionAvailability } from "./connection-availability.ts";
-import { ConnectorAppService } from "./connector-app-service.ts";
+import { ConnectorAppService, canConfigureRemoteKey } from "./connector-app-service.ts";
 import { ConnectorPreviewStore } from "./connector-import.ts";
 import { sourceUpdate } from "./connector-source-update.ts";
 import { createPluginSecrets } from "./plugin-secrets.ts";
@@ -86,6 +106,7 @@ export class ConnectorService {
       sourceDigest: string;
       sourceKind: "json" | "plugin";
       fileChanges?: import("@pibot/plugins-contract/full").ConnectorImportFileChanges;
+      broughtOver?: import("@pibot/plugins-contract/full").ConnectorImportOrigin;
       expiresAt: string;
     }
   >();
@@ -162,14 +183,29 @@ export class ConnectorService {
     return installation;
   }
 
+  pickWorkingDirectory(signal: AbortSignal) {
+    if (!this.deps.pickWorkingDirectory)
+      throw new RpcError(RpcErrorCodes.unsupported, "connector_folder_picker_unavailable");
+    return this.deps.pickWorkingDirectory(signal);
+  }
+
   pickImport(input: { kind: "file" | "directory" }) {
     return pickImportStep.call(this.operationContext(), input);
   }
 
+  scrubSymlinkError(error: unknown) {
+    return scrubSymlinkError(error, this.deps.displayRedact);
+  }
+
   previewImport(
     source:
-      | { kind: "json"; text: string }
-      | { kind: "selection"; selectionId: string; installationId?: string }
+      | { kind: "json"; text: string; moveCommandKeyTo?: string }
+      | {
+          kind: "selection";
+          selectionId: string;
+          installationId?: string;
+          moveCommandKeyTo?: string;
+        }
       | {
           kind: "configured";
           previewId: string;
@@ -321,8 +357,8 @@ export class ConnectorService {
     }
   }
 
-  cancelPreview({ previewId }: { previewId: string }) {
-    return cancelPreviewStep.call(this.operationContext(), { previewId });
+  cancelPreview(input: { previewId: string } | { selectionId: string }) {
+    return cancelPreviewStep.call(this.operationContext(), input);
   }
 
   import(
@@ -333,6 +369,8 @@ export class ConnectorService {
       botInstall?: boolean;
       expectedDigest: string;
       config: Record<string, string | number | boolean>;
+      plainFields?: string[];
+      useSavedKeys?: true;
       networkDomains?: Record<string, string[]>;
       broughtOver?: { tool: string; key: string; name?: string };
       sourcePath?: string;
@@ -346,6 +384,21 @@ export class ConnectorService {
     return uninstallStep.call(this.operationContext(), input);
   }
 
+  pluginSettings(input: { installationId: string }) {
+    return pluginSettingsStep.call(this.operationContext(), input);
+  }
+
+  updatePluginSettings(
+    input: {
+      installationId: string;
+      expectedRevision: number;
+      config: Record<string, string | number | boolean>;
+    },
+    signal?: AbortSignal,
+  ) {
+    return updatePluginSettingsStep.call(this.operationContext(), input, signal);
+  }
+
   // --- connectors.* ----------------------------------------------------------
 
   listConnectors(input: {
@@ -356,6 +409,42 @@ export class ConnectorService {
   }) {
     const page = this.deps.connectors.list(input);
     return { ...page, items: page.items.map((connector) => this.withAppId(connector)) };
+  }
+
+  commandCandidates(target: ConnectionTarget) {
+    const rows: { command: Omit<ConnectorCommand, "token">; available: boolean }[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = this.listConnectors({ cursor, limit: 100 });
+      for (const connector of page.items) {
+        const safeName = this.deps.displayRedact?.(connector.name) ?? connector.name;
+        const name =
+          safeName === connector.name &&
+          !/[@\p{Cc}\p{Cf}]/u.test(safeName) &&
+          safeName.length <= 200
+            ? safeName
+            : connector.serverId;
+        rows.push({
+          available:
+            connector.enabled &&
+            ["ready", "idle"].includes(connector.status) &&
+            this.availability(target, connector.id).reason === "available",
+          command: {
+            id: connector.id,
+            name,
+            kind:
+              connector.appId ||
+              connector.kind === "builtin" ||
+              connector.kind === "rest" ||
+              this.deps.plugins.isApplication(connector.pluginInstallationId)
+                ? "app"
+                : "mcp",
+          },
+        });
+      }
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+    return rows;
   }
 
   private withAppId(connector: Connector): Connector {
@@ -395,14 +484,61 @@ export class ConnectorService {
     const access = this.deps.connectors.access(id);
     const server = this.deps.connectors.configuration(id);
     const installation = this.deps.plugins.get(connector.pluginInstallationId);
+    const websites = connectorWebsites({ ...this.deps, registry: this.registry }, connector);
     return {
       connector: this.withAppId(connector),
       access,
       auth: server?.auth.kind ?? ("none" as const),
       canReplaceCredential: this.apps.canReplaceCredential(id),
-      networkDomains: server.networkDomains,
-      canEditNetworkDomains:
-        this.deps.plugins.get(connector.pluginInstallationId)?.sourceKind !== "builtin",
+      canAuthorizeInBrowser: server.auth.kind === "oauth" || canConfigureRemoteKey(server),
+      canAddRemoteKey: canConfigureRemoteKey(server),
+      hasSavedOAuth: this.deps.secrets.has(`connector:${id}`, "oauth"),
+      ...(server.transport !== "builtin" && installation?.sourceKind !== "builtin"
+        ? {
+            startup: {
+              seconds: connectorStartupSeconds(server),
+              ...(server.startupTimeoutSec !== undefined
+                ? { override: server.startupTimeoutSec }
+                : {}),
+              packageRunner:
+                server.transport === "stdio" && isConnectorPackageRunner(server.command),
+            },
+          }
+        : {}),
+      networkMode: websites.mode,
+      ...(websites.mode === "sandbox"
+        ? {
+            networkDomains: websites.domains,
+            declaredNetworkDomains: websites.declared,
+            blockedNetworkSites: this.deps.connectors
+              .blockedSites(id)
+              .filter(
+                ({ host, reason }) =>
+                  !["denied", "unattended", "timeout", "limit"].includes(reason) ||
+                  (!websites.declared.includes(host) && !websites.domains.includes(host)),
+              )
+              .map((site) => ({
+                ...site,
+                sessionDenied: this.deniedNetworkSites.has(`${id}/${site.host}`),
+              })),
+            canEditNetworkDomains:
+              this.deps.plugins.get(connector.pluginInstallationId)?.sourceKind !== "builtin",
+          }
+        : websites.mode === "remote"
+          ? {
+              declaredNetworkDomains: websites.declared,
+              canEditNetworkDomains:
+                websites.remote.allowed && installation?.sourceKind !== "builtin",
+              ...(!websites.remote.allowed && { blockedRemoteSite: websites.remote.site }),
+            }
+          : {}),
+      canUpdateFromSource: Boolean(
+        this.deps.plugins.origin(connector.pluginInstallationId) &&
+          this.deps.importHost &&
+          (installation?.sourceKind === "json" ||
+            (this.deps.importHost.adopt && this.deps.importHost.replaceMaterialize)),
+      ),
+      sharedSecretNames: server.auth.secretNames.filter((name) => !name.startsWith("IMPORT_")),
       bundledNode:
         installation?.sourceKind === "directory" &&
         server?.transport === "stdio" &&
@@ -424,8 +560,20 @@ export class ConnectorService {
         RpcErrorCodes.invalidParams,
         "Builtin write tools cannot be classified as read-only",
       );
+    if (input.networkDomains !== undefined) {
+      const websites =
+        connector && connectorWebsites({ ...this.deps, registry: this.registry }, connector);
+      // Remote approval is tied to the configured endpoint and has its own confirmation.
+      if (
+        websites?.mode !== "sandbox" &&
+        !(websites?.mode === "remote" && input.networkDomains.length === 0)
+      )
+        throw new RpcError(RpcErrorCodes.invalidParams, "connector_network_site_denied");
+    }
     const updated = this.deps.connectors.update(input, this.deps.actorBotId);
     if (input.networkDomains !== undefined) {
+      for (const host of input.networkDomains)
+        this.deniedNetworkSites.delete(`${updated.id}/${host}`);
       // A saved restriction must not leave an old process serving calls with its previous rules.
       this.targets.delete(updated.id);
       this.lifecycles.get(updated.id)?.abort();
@@ -442,6 +590,13 @@ export class ConnectorService {
     this.emitConnectorChanged(updated.id);
     this.emitToolsChanged(updated);
     return updated;
+  }
+
+  markDiscoveredPreview(
+    previewId: string,
+    origin: NonNullable<import("./connector-import.ts").ConnectorPreview["discovery"]>,
+  ) {
+    this.previews.markDiscovered(previewId, origin);
   }
 
   async updateFromSource(input: {
@@ -469,31 +624,52 @@ export class ConnectorService {
     let configurationDigest: string | undefined;
     try {
       let preview: Awaited<ReturnType<ConnectorService["previewImport"]>>;
-      if (origin.path.includes("#")) {
-        const [file, encoded] = origin.path.split("#", 2);
-        if (!file) return notFound();
-        const name = decodeURIComponent(encoded ?? "");
+      const current = this.deps.plugins.get(connector.pluginInstallationId);
+      if (!current)
+        throw new RpcError(RpcErrorCodes.connectorUnavailable, "Installation unavailable");
+      if (current.sourceKind === "json" && origin.path.includes("#")) {
         const source = sourceLayouts(this.deps.home, this.deps.commandEnv).find(
           (item) => item.id === origin.tool,
         );
-        const format = source?.mcpFiles.find((item) => item.path === file);
+        const format = source?.mcpFiles.find((item) => origin.path.startsWith(`${item.path}#`));
         if (!source || !format) return notFound();
         const entry = (
-          await readMcpFile(source.id, file, format.format, AbortSignal.timeout(30_000))
-        )?.find((item) => item.name === name)?.entry;
+          await readMcpFile(source.id, format.path, format.format, AbortSignal.timeout(30_000))
+        )?.find(
+          (item) =>
+            origin.path === `${format.path}#${encodeURIComponent(item.name)}` &&
+            origin.key ===
+              itemKey({
+                kind: "mcp",
+                source: source.id,
+                file: format.path,
+                format: format.format,
+                scope: item.scope,
+                entry: item.name,
+              }),
+        )?.entry;
         if (!entry) return notFound();
         const text = JSON.stringify(
           entryManifest(entry, {
-            id: broughtOverId(source.id, name),
-            name,
+            id: broughtOverId(source.id, entry.name),
+            name: entry.name,
             description: { zh: entryDescription(entry), en: entryDescription(entry) },
           }),
         );
         configurationDigest = createHash("sha256").update(text).digest("hex");
-        preview = await this.previewImport({ kind: "json", text }, AbortSignal.timeout(60_000));
+        preview = await previewImportStep.call(
+          this.operationContext(),
+          { kind: "json", text },
+          AbortSignal.timeout(60_000),
+          connector.pluginInstallationId,
+        );
       } else {
-        if (!importHost.adopt) return notFound();
-        selection = await importHost.adopt({ path: origin.path });
+        if (!importHost.adopt || !importHost.replaceMaterialize) return notFound();
+        try {
+          selection = await importHost.adopt({ path: origin.path });
+        } catch (error) {
+          throw scrubSymlinkError(error, this.deps.displayRedact);
+        }
         preview = await this.previewImport(
           {
             kind: "selection",
@@ -504,10 +680,9 @@ export class ConnectorService {
         );
       }
       sourcePreviewId = preview.previewId;
-      const current = this.deps.plugins.get(connector.pluginInstallationId);
-      if (!current)
-        throw new RpcError(RpcErrorCodes.connectorUnavailable, "Installation unavailable");
       const rawPreview = this.previews.peek(preview.previewId);
+      if (rawPreview.requiredKeys?.length)
+        throw new RpcError(RpcErrorCodes.pluginImportInvalid, "connector_paste_keyRequired");
       const oldManifest = this.deps.plugins.manifest(connector.pluginInstallationId);
       if (!oldManifest)
         throw new RpcError(RpcErrorCodes.connectorUnavailable, "Manifest unavailable");
@@ -516,13 +691,48 @@ export class ConnectorService {
         selectionPreview?.sourceDigest ?? configurationDigest ?? rawPreview.digest;
       if (input.confirmed && input.expectedDigest && input.expectedDigest !== sourceDigest)
         throw new RpcError(RpcErrorCodes.connectorStale, "Source changed during confirmation");
+      const next = sourceWithInstalledSettings(
+        this.operationContext(),
+        connector.pluginInstallationId,
+        rawPreview,
+      );
+      const savedKeyTarget = (manifest: ConnectorManifest, id: string) => {
+        const server = manifest.servers.find((candidate) => candidate.id === id);
+        if (server?.transport === "http") return new URL(server.url).origin;
+        if (server?.transport === "stdio") return [server.command, server.args, server.cwd];
+      };
+      const previousSavedKeys = new Map(
+        importSavedKeys(oldManifest, current.id).map(({ serverId, names }) => [serverId, names]),
+      );
+      for (const { serverId, names } of importSavedKeys(next.manifest, current.id)) {
+        if (
+          names.some((name) => !previousSavedKeys.get(serverId)?.includes(name)) ||
+          connectorDigest(savedKeyTarget(oldManifest, serverId)) !==
+            connectorDigest(savedKeyTarget(next.manifest, serverId))
+        )
+          throw new RpcError(RpcErrorCodes.pluginImportInvalid, "connector_paste_savedKeysChanged");
+      }
+      const allowedSites = new Map(
+        this.deps.plugins.connections(connector.pluginInstallationId).flatMap((row) => {
+          const stored = this.deps.connectors.configuration(row.id);
+          return stored.transport === "stdio"
+            ? [
+                [
+                  stored.id,
+                  connectorWebsites({ ...this.deps, registry: this.registry }, row).domains,
+                ] as const,
+              ]
+            : [];
+        }),
+      );
       const { manifest, changes, details } = sourceUpdate(
         oldManifest,
-        rawPreview.manifest,
+        rawPreview.plugin ? { ...next.manifest, name: oldManifest.name } : next.manifest,
         rawPreview.plugin?.components.length ?? 0,
         this.deps.displayRedact,
         selectionPreview?.fileChanges,
         rawPreview.secrets.map((secret) => secret.value),
+        allowedSites,
       );
       if (!input.confirmed)
         return {
@@ -533,20 +743,37 @@ export class ConnectorService {
           details,
           sourceDigest,
         };
-      if (selection && rawPreview.plugin && importHost.replaceMaterialize)
-        await importHost.replaceMaterialize({
-          selectionId: selection.selectionId,
-          installationId: connector.pluginInstallationId,
-          expectedDigest: selectionPreview?.sourceDigest ?? rawPreview.digest,
-        });
+      const secretNames = new Set(manifest.servers.flatMap((server) => server.auth.secretNames));
+      const secretsToSave = rawPreview.secrets.filter(({ name }) => secretNames.has(name));
+      const commits: (() => void)[] = [];
+      for (const { name, value } of secretsToSave)
+        commits.push(await this.deps.secrets.prepareSet(USER_SECRET_SCOPE, name, value));
+      if (selection && rawPreview.plugin && importHost.replaceMaterialize) {
+        try {
+          await importHost.replaceMaterialize({
+            selectionId: selection.selectionId,
+            installationId: connector.pluginInstallationId,
+            expectedDigest: selectionPreview?.sourceDigest ?? rawPreview.digest,
+          });
+        } catch (error) {
+          throw scrubSymlinkError(error, this.deps.displayRedact);
+        }
+      }
       const updated = this.deps.plugins.updateImported({
         installationId: connector.pluginInstallationId,
         expectedRevision: current.revision,
         manifest,
         digest: rawPreview.digest,
         actorBotId: this.deps.actorBotId,
+        commitSecrets: () => {
+          for (const commit of commits) commit();
+        },
         changed: changes,
       });
+      for (const { name, value } of secretsToSave)
+        this.deps.secrets.registerCommittedImport(USER_SECRET_SCOPE, name, value);
+      if (rawPreview.plugin)
+        this.deps.plugins.refreshSettingsTemplate(updated.id, next.template, next.config);
       this.previews.cancel(preview.previewId);
       this.selectionPreviews.delete(preview.previewId);
       this.emitConnectorChanged(connector.id);
@@ -789,13 +1016,25 @@ export class ConnectorService {
     input: ConnectorDiscoverInput,
     readOnly = false,
     groupId?: string,
+    knowledgeWrite = false,
   ) {
-    return discoverToolsForBotStep.call(this.operationContext(), botId, input, readOnly, groupId);
+    return discoverToolsForBotStep.call(
+      this.operationContext(),
+      botId,
+      input,
+      readOnly,
+      groupId,
+      knowledgeWrite,
+    );
   }
 
   /** Trusted target resolution precedes policy. A plugin hint is never a read grant. */
   resolveTool(botId: string, input: ConnectorCallInput, groupId?: string): PreparedConnector {
     return resolveToolStep.call(this.operationContext(), botId, input, groupId);
+  }
+
+  resolveKnowledgeWrite(botId: string, input: ConnectorCallInput, groupId?: string) {
+    return resolveToolStep.call(this.operationContext(), botId, input, groupId, true);
   }
 
   dispatchDraft(
@@ -805,6 +1044,7 @@ export class ConnectorService {
     approved: PreparedConnector,
     signal: AbortSignal,
     authorize: () => void,
+    networkApproval?: ConnectorNetworkApproval,
   ): Promise<unknown> {
     return dispatchDraftStep.call(
       this.operationContext(),
@@ -814,6 +1054,7 @@ export class ConnectorService {
       approved,
       signal,
       authorize,
+      networkApproval,
     );
   }
 
@@ -823,10 +1064,20 @@ export class ConnectorService {
     approved: PreparedConnector,
     signal: AbortSignal,
     authorize: () => void,
+    networkApproval?: ConnectorNetworkApproval,
   ): Promise<unknown> {
     if (!approved.tool.capabilityId || approved.tool.capabilityReadOnly !== true)
       throw new ConnectorToolError("connector_tool_denied");
-    return this.dispatchChecked(botId, input, approved, signal, authorize, false);
+    return this.dispatchChecked(
+      botId,
+      input,
+      approved,
+      signal,
+      authorize,
+      false,
+      undefined,
+      networkApproval,
+    );
   }
 
   dispatch(
@@ -835,8 +1086,43 @@ export class ConnectorService {
     approved: PreparedConnector,
     signal: AbortSignal,
     authorize: () => void,
+    networkApproval?: ConnectorNetworkApproval,
   ): Promise<unknown> {
-    return dispatchStep.call(this.operationContext(), botId, input, approved, signal, authorize);
+    return dispatchStep.call(
+      this.operationContext(),
+      botId,
+      input,
+      approved,
+      signal,
+      authorize,
+      networkApproval,
+    );
+  }
+
+  /** The capability owns the one-shot approval; retain the normal catalog, transport and access checks. */
+  dispatchKnowledgeWrite(
+    botId: string,
+    input: ConnectorCallInput,
+    approved: PreparedConnector,
+    signal: AbortSignal,
+    authorize: () => void,
+  ): Promise<unknown> {
+    if (
+      approved.tool.readOnly ||
+      this.deps.connectors.managedKnowledgeWriteAllowed(approved.connector, input.tool) !== true
+    )
+      throw new ConnectorToolError("connector_tool_denied");
+    return this.dispatchChecked(
+      botId,
+      input,
+      approved,
+      signal,
+      authorize,
+      false,
+      undefined,
+      undefined,
+      true,
+    );
   }
 
   private dispatchChecked(
@@ -847,6 +1133,8 @@ export class ConnectorService {
     authorize: () => void,
     draft: boolean,
     idempotencyKey?: string,
+    networkApproval?: ConnectorNetworkApproval,
+    knowledgeWrite = false,
   ): Promise<unknown> {
     return dispatchCheckedStep.call(
       this.operationContext(),
@@ -857,6 +1145,8 @@ export class ConnectorService {
       authorize,
       draft,
       idempotencyKey,
+      networkApproval,
+      knowledgeWrite,
     );
   }
 
@@ -1076,6 +1366,13 @@ export class ConnectorService {
   }
 
   // Keep live access to private state: an awaited step must observe later cancellation and scope changes.
+  private readonly deniedNetworkSites = new Map<string, "denied" | "timeout">();
+  private readonly networkPrompts = new Map<string, { live: boolean; started: number[] }>();
+
+  resolveBlockedWebsite(input: Parameters<typeof resolveBlockedWebsite>[1]) {
+    return resolveBlockedWebsite(this.operationContext(), input);
+  }
+
   private operationContext() {
     const owner = this;
     return {
@@ -1090,6 +1387,8 @@ export class ConnectorService {
         return owner.deps;
       },
       discoverTools: owner.discoverTools.bind(owner),
+      deniedNetworkSites: owner.deniedNetworkSites,
+      networkPrompts: owner.networkPrompts,
       dispatchChecked: owner.dispatchChecked.bind(owner),
       emitConnectorChanged: owner.emitConnectorChanged.bind(owner),
       emitOperation: owner.emitOperation.bind(owner),
@@ -1111,7 +1410,6 @@ export class ConnectorService {
         return owner.registry;
       },
       recordStartFailure: owner.recordStartFailure.bind(owner),
-      resolveTool: owner.resolveTool.bind(owner),
       runStart: owner.runStart.bind(owner),
       runUninstall: owner.runUninstall.bind(owner),
       get secretBindings() {

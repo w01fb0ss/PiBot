@@ -656,6 +656,7 @@ async function attachRunnerSession(options: SessionOptions, detached: () => void
       status: result.status,
       planId,
       ...(result.status === "confirmation-required" ? { facts: result.facts } : {}),
+      ...(result.plan.windowsReadScopeVerified ? { windowsReadScopeVerified: true as const } : {}),
     };
   });
   const managedPlans = new Map<
@@ -767,17 +768,18 @@ async function attachRunnerSession(options: SessionOptions, detached: () => void
   );
   handle("runner.command.run", async ({ idempotencyKey, issuedAt, dispatchOpId, input }, context) =>
     once(idempotencyKey, issuedAt, async () => {
-      if (options.control)
-        phonePolicy.claim(
-          dispatchOpId,
-          {
-            category: "run_command",
-            command: input.command,
-            cwd: input.cwd,
-            ...(input.policyWritePaths ? { writePaths: input.policyWritePaths } : {}),
-          },
-          input,
-        );
+      const phoneReadOnly = options.control
+        ? phonePolicy.claim(
+            dispatchOpId,
+            {
+              category: "run_command",
+              command: input.command,
+              cwd: input.cwd,
+              ...(input.policyWritePaths ? { writePaths: input.policyWritePaths } : {}),
+            },
+            input,
+          )
+        : false;
       const { gitEntryPlanId, policyWritePaths: _policyWritePaths, ...command } = input;
       ownedRuns.add(input.runId);
       const assertEntries = takeEntryPlan(gitEntryPlanId, input.command, context.signal);
@@ -785,6 +787,7 @@ async function attachRunnerSession(options: SessionOptions, detached: () => void
       try {
         return await options.target.runCommand({
           ...command,
+          ...(phoneReadOnly ? { windowsReadOnly: true as const } : {}),
           signal: context.signal,
           assertAuthorized: assertEntries,
           confirmDispatch: () => confirmDispatch(dispatchOpId, context.signal),

@@ -1,4 +1,13 @@
-import { canonicalImageModelId, chatReplyTo, type Message } from "@pibot/protocol";
+import type { TranslationKey, TranslationVars } from "@pibot/i18n";
+import {
+  type ConversationYolo,
+  canonicalImageModelId,
+  chatReplyTo,
+  imageApprovalDeclined,
+  imageGenerationUsage,
+  imageReplacementDeclined,
+  type Message,
+} from "@pibot/protocol";
 
 import type { ChatState } from "./types.ts";
 export function activeRun(state: ChatState) {
@@ -35,4 +44,37 @@ export function retryText(messages: Message[], messageId: string) {
         message.runId === reply.runId,
     )?.content;
   return messages.slice(0, index).findLast((message) => message.role === "user")?.content;
+}
+
+export function chatPermissionFailureText(
+  usage: Message["usage"],
+  externalAgent: boolean,
+  translate: (key: TranslationKey, vars?: TranslationVars) => string,
+) {
+  if (externalAgent) return translate("externalAgents.errors.launchDenied");
+  const replacement = imageReplacementDeclined(usage);
+  if (replacement) return translate("media.error.replacementApprovalDetails", replacement);
+  if (imageApprovalDeclined(usage)) return translate("media.error.approvalDeclined");
+  if (imageGenerationUsage(usage)) return translate("media.error.permission_denied");
+  // Older image refusals share this code with other denials and have no image marker.
+  return translate("chat.requestNotAllowed");
+}
+
+export function yoloScopeUnavailable({ isolation }: ConversationYolo): boolean {
+  return (
+    !isolation.available &&
+    (!isolation.reason ||
+      isolation.reason === "runner_offline" ||
+      isolation.reason === "isolation_unknown" ||
+      isolation.reason === "isolation_check_unfinished" ||
+      isolation.reason === "exec_closed")
+  );
+}
+
+export function sameYoloScope(current: ConversationYolo, shown: ConversationYolo): boolean {
+  return (
+    current.isolation.available === shown.isolation.available &&
+    current.isolation.reason === shown.isolation.reason &&
+    current.windowsDirectRun === shown.windowsDirectRun
+  );
 }

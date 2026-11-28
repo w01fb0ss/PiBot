@@ -67,6 +67,10 @@ export class BudgetService {
   private readonly halted = new Map<string, string>();
   private readonly timer: ReturnType<typeof setInterval>;
   private readonly notifications = new Map<string, BudgetSnapshot>();
+  private readonly optionalModelEstimates = new Map<
+    string,
+    { root: string; group: string | undefined; cost: number }
+  >();
   private readonly notificationTimer: ReturnType<typeof setInterval>;
   constructor(
     private readonly deps: {
@@ -178,7 +182,7 @@ export class BudgetService {
     context: ToolRunContext,
     id: string,
     kind: "tool" | "model" | "child",
-    options?: { pricingKnown?: boolean; depth?: number },
+    options?: { pricingKnown?: boolean; depth?: number; optional?: boolean },
   ) {
     this.assert(context);
     const groupReason = this.groups.reason(
@@ -187,7 +191,7 @@ export class BudgetService {
       options?.pricingKnown ?? false,
     )?.reason;
     if (groupReason) {
-      this.exhaust(this.root(context), groupReason, context.runId);
+      if (!options?.optional) this.exhaust(this.root(context), groupReason, context.runId);
       throw new BudgetExceededError(groupReason);
     }
     const result = this.repo.reserve(
@@ -197,7 +201,7 @@ export class BudgetService {
       options,
     );
     if ("reason" in result) {
-      this.exhaust(this.root(context), result.reason, context.runId);
+      if (!options?.optional) this.exhaust(this.root(context), result.reason, context.runId);
       throw new BudgetExceededError(result.reason);
     }
     this.publish(result);
@@ -333,21 +337,49 @@ export class BudgetService {
     this.repetitions.set(context.runId, { callId, fingerprint, count });
     if (count >= (isError ? 6 : 16)) this.stopRun(context, "repeated_operation");
   }
-  observer(context: ToolRunContext): AgentRequestObserver {
+  observer(context: ToolRunContext, options?: { optional?: boolean }): AgentRequestObserver {
     const modelRequest = this.deps.modelRequest;
     return {
       ...(modelRequest && { metrics: (request) => modelRequest(context.runId, request) }),
       beforeRequest: (request) => {
-        this.reserve(context, request.id, "model", { pricingKnown: request.pricingKnown });
+        let optionalEstimate: { root: string; group: string | undefined; cost: number } | undefined;
+        if (options?.optional) {
+          const root = this.root(context);
+          const budget = this.repo.get(root);
+          const rootCap = budget?.limits.costUsd;
+          const groupRemaining = this.groups.costRemaining(root);
+          if (rootCap != null || groupRemaining !== undefined) {
+            const cost = request.estimatedCostUsd;
+            if (!request.pricingKnown || cost === undefined || !Number.isFinite(cost) || cost <= 0)
+              throw new BudgetExceededError("cost_unknown");
+            const group = this.groups.key(root);
+            let rootRemaining = rootCap == null ? Infinity : rootCap - (budget?.knownCostUsd ?? 0);
+            let cycleRemaining = groupRemaining ?? Infinity;
+            for (const pending of this.optionalModelEstimates.values()) {
+              if (pending.root === root) rootRemaining -= pending.cost;
+              if (group && pending.group === group) cycleRemaining -= pending.cost;
+            }
+            if (cost >= Math.min(rootRemaining, cycleRemaining))
+              throw new BudgetExceededError("cost");
+            optionalEstimate = { root, group, cost };
+          }
+        }
+        this.reserve(context, request.id, "model", {
+          ...options,
+          pricingKnown: request.pricingKnown,
+        });
+        if (optionalEstimate)
+          this.optionalModelEstimates.set(
+            this.eventId(context, request.id, "model"),
+            optionalEstimate,
+          );
       },
       settled: (request) => {
         // Agent-attested zero-output transient attempts settle with explicit zero usage;
         // absent usage (including output without a bill) must still fail closed below.
-        const next = this.repo.settleModel(
-          this.root(context),
-          this.eventId(context, request.id, "model"),
-          request.usage,
-        );
+        const id = this.eventId(context, request.id, "model");
+        this.optionalModelEstimates.delete(id);
+        const next = this.repo.settleModel(this.root(context), id, request.usage);
         if (next) {
           this.publish(next);
           const reason = next.exhaustedReason ?? this.groups.reason(next.rootRunId)?.reason;

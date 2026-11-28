@@ -1,6 +1,11 @@
 // Verification follows durable code contributions so completed plans can resume after a crash.
 import { type GroupVerification, RpcError, type Run } from "@pibot/protocol-base";
-import { GroupVerificationRulesRepo, MessagesRepo } from "@pibot/storage";
+import {
+  ChatNoticesRepo,
+  GroupVerificationRulesRepo,
+  MessagesRepo,
+  transaction,
+} from "@pibot/storage";
 import type { GroupService } from "./group-service.ts";
 import { requestVerificationAssignee } from "./group-verification-assignment.ts";
 import { verificationFacts, verificationMembers } from "./group-verification-facts.ts";
@@ -273,43 +278,30 @@ export class GroupAutoVerification {
     if (!group || this.service.cycles.get(group.id).cycleId !== run.cycleId) return;
     // Startup recovery re-runs finished plans; the same cause for the same run is said once, not
     // again after every restart.
-    const said = this.service.deps.db
-      .prepare("INSERT OR IGNORE INTO settings(key,value) VALUES(?, 'true')")
-      .run(`group-verification-unstarted:${group.id}:${run.cycleId}:${run.id}:${code}`);
-    if (!Number(said.changes)) return;
-    new MessagesRepo(this.service.deps.db).create({
-      conversationId: group.conversationId,
-      botId: group.coordinatorBotId,
-      role: "assistant",
-      status: "done",
-      // Windows acceptance 2026-11-20: the line was raw bilingual text ending in the code, and
-      // after the user chose 「由统筹直接做完」 it read like an error. One language, a plain cause.
-      content: unstartedText(code, this.service.deps.chat.currentLanguage() === "en"),
+    const { db, peer } = this.service.deps;
+    const notice = transaction(db, () => {
+      const said = db
+        .prepare("INSERT OR IGNORE INTO settings(key,value) VALUES(?, 'true')")
+        .run(`group-verification-unstarted:${group.id}:${run.cycleId}:${run.id}:${code}`);
+      if (!Number(said.changes)) return;
+      return new ChatNoticesRepo(db).addGroupVerification({
+        conversationId: group.conversationId,
+        botId: group.coordinatorBotId,
+        reason:
+          code === "group_plan_waits_for_user"
+            ? "direct_completion"
+            : code === "verification_paused"
+              ? "paused"
+              : code === "verification_round_limit" || code === "group_plan_round_limit"
+                ? "round_limit"
+                : "unavailable",
+      });
     });
-    this.service.changed(group.id, "updated");
+    if (notice) peer.emit("chat.notice", notice);
   }
 
   async stop() {
     this.shutdown.abort();
     await Promise.allSettled([...(this.recovery ? [this.recovery] : []), ...this.jobs.values()]);
   }
-}
-
-/** Why the program's change check did not start, said in the app language; never "passed". */
-function unstartedText(code: string, en: boolean) {
-  if (code === "group_plan_waits_for_user")
-    return en
-      ? "You chose to let the coordinator finish this directly, so no independent check was scheduled; the change is not marked as verified."
-      : "你选了由统筹直接做完，这次没有安排独立核对；改动没有标记为已核对。";
-  if (code === "verification_paused")
-    return en
-      ? "The group is paused, so the independent check did not start; it is not marked as verified."
-      : "群已暂停，独立核对没有开始；改动没有标记为已核对。";
-  if (code === "verification_round_limit" || code === "group_plan_round_limit")
-    return en
-      ? "The group reached its automatic round limit, so the independent check did not start; it is not marked as verified."
-      : "群的自动回合已用完，独立核对没有开始；改动没有标记为已核对。";
-  return en
-    ? "The independent check could not start (check members, permissions and the group's rounds or budget); the change is not marked as verified."
-    : "独立核对没能开始（请核对成员、权限和群的回合或预算）；改动没有标记为已核对。";
 }

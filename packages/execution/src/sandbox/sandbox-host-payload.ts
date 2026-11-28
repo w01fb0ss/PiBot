@@ -62,14 +62,15 @@ export const SandboxHostPayloadSchema = z.strictObject({
     .refine((value) => !value.includes("\0")),
   commandId: z.string().min(1).max(128),
   cwd: path,
-  shell: path,
   env: z
     .record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/), z.string().max(131_072))
     .refine((value) => Object.keys(value).length <= 256),
   foreground: z.boolean().optional(),
+  isolationProbe: z.literal(true).optional(),
   waitForDispatch: z.boolean().optional(),
   /** MCP stdio server: the command's stdin/stdout are pipe fds 4/5, not the job log. */
   stdioServer: z.boolean().optional(),
+  connectorNetwork: z.literal(true).optional(),
   stdinPipe: z.boolean().optional(),
   commandText: z
     .string()

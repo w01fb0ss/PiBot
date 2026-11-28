@@ -49,18 +49,42 @@ export const remoteEn = {
   "remote.cap.dismiss": "Dismiss",
   "remote.cap.unregistered": "This device has not registered any capabilities yet.",
   "remote.error.relayInvalid":
-    "Relay address must use wss:// with no credentials, query or fragment.",
-  "remote.enableBeforePair": "Enable the connection before adding a phone.",
+    "Enter a secure address such as wss://example.com. Leave out sign-in details and anything starting with ? or #.",
+  "remote.waitingForConnection":
+    "Connecting to the service that links devices. This may take a moment…",
+  "remote.error.runnerPairStartFailed":
+    "Could not create a code for the other computer. Check that device connections are on, then try again.",
+  "remote.runner.role": "Pi Bot Runner lets your Bots work on the other computer.",
+  "remote.runner.download": "Download, install and open Pi Bot Runner on the other computer.",
+  "remote.runner.openTray":
+    "On Mac or Windows, choose Pair… from the Pi Bot Runner menu in the menu bar or taskbar.",
+  "remote.runner.pasteCode": "Copy the code below and paste it into Pi Bot Runner.",
+  "remote.runner.commandLine":
+    "On Linux, or from a terminal on the other computer, run this command with the full code.",
+  "remote.runner.creating": "Creating a pairing code…",
+  "remote.privacyDetails": "Privacy details",
+  "remote.disclosureDetails":
+    "The connection service (relay) sees IP addresses, connection times, message sizes and online status. It forwards encrypted data and does not store chats. The official service runs on Cloudflare and counts connections by day and device type without storing room IDs or IP addresses in those counts. If phone notifications are on, Expo and Android’s Google delivery service deliver short notices and encrypted references without chat or approval contents. For direct connections across networks, devices check their public address with a lookup service (STUN, Cloudflare by default). That service sees the public address and does not carry chats or files.",
+  "remote.direct.fallback":
+    "A direct connection was unavailable. Your devices are connected and you can use them normally.",
+  "remote.verifyCode": "Compare safety code",
+  "remote.shareCodeWarning": "Valid for 10 minutes. Use this code once and keep it private.",
+  "remote.copyPairCode": "Copy pairing code",
+  "remote.copied": "Copied",
+  "remote.copyFailed": "Could not copy. Try again.",
+  "remote.tryAgain": "Try again",
+  "remote.enableBeforePair":
+    "Turn on device connections before adding a phone or another computer.",
   "remote.runner.reconnecting": "Runner is reconnecting",
   "remote.runner.drainFailed": "Runner connection cleanup is unconfirmed; retrying cleanup",
   "remote.error.pairUnavailable":
-    "Remote access is not ready. Wait for saving to finish and enable remote access, then try again.",
+    "Device connections are still getting ready. Wait a moment, then try again.",
   "remote.error.pairFailed":
-    "Runner pairing did not complete. Check that both devices use the same relay, the runner is waiting for pairing, and the code has not expired.",
+    "Pairing did not finish. Keep the other computer’s Pi Bot Runner open and try a fresh code.",
   "remote.error.phonePairFailed":
-    "Couldn't create the phone pairing QR code: this computer couldn't reach the relay's pairing room. Check that the network can reach the relay, wait a few seconds and try again; if it keeps failing, export logs from Settings.",
+    "Could not create a phone pairing code. Check that this computer can reach the internet, then try again.",
   "remote.error.pairRelayMismatch":
-    "The runner uses another relay. Generate a code with Add runner on this computer and paste it on the runner so both use the same relay.",
+    "The other computer is using a different connection service. Generate a code here and paste it into Pi Bot Runner.",
   "remote.error.pairInvalid":
     "Invalid pairing code. Copy the complete code displayed by the runner again.",
   "remote.error.revocationPending":
@@ -70,24 +94,19 @@ export const remoteEn = {
   "remote.error.revocationPending.phone":
     "This phone is blocked locally; relay credential revocation is incomplete. Retry revoking it or choose Remove anyway.",
   "remote.error.busy": "Another operation is in progress. Wait for it to finish, then try again.",
-  "remote.runner.add": "Add runner",
+  "remote.runner.add": "Pair computer",
   "remote.runner.code": "Pairing code",
-  "remote.runner.copyCode": "Copy",
-  "remote.runner.newCode": "New code",
-  "remote.runner.addTitle": "Add runner",
-  "remote.runner.howTo":
-    "Paste this code into the Pi Bot runner on the other computer or server: Pair… in its tray menu, or pibot runner pair <code> on the command line",
-  "remote.runner.generatedNote": "Valid for 10 minutes, single use",
-  "remote.runner.viaRelay": " · via self-hosted relay {host}",
+  "remote.newPairCode": "New code",
+  "remote.runner.addTitle": "Add another computer or server",
   "remote.runner.addedNamed": "✓ Added “{name}”",
   "remote.runner.expired": "The code expired. Choose New code to generate another",
   "remote.runner.waiting": "Waiting for runner…",
   "remote.runner.relayUnreachable":
-    "This computer cannot reach the relay. Check the relay address, port and network; the runner must reach the same relay.",
+    "This computer cannot reach the service that links the devices. Check its internet connection.",
   "remote.runner.relayTls":
-    "The encrypted connection to the relay failed (TLS). Check the relay's HTTPS setup.",
+    "This computer could not make a secure connection to the service that links the devices. Check the service’s secure connection settings.",
   "remote.runner.relayCertificate":
-    "The relay's certificate is not trusted. If your relay uses its own internal certificate, install its root certificate on this computer.",
+    "This computer could not verify the connection service’s certificate. Check the service’s certificate and your computer’s clock.",
   "remote.runner.useLegacy": "Runner already has a code? Enter it",
   "remote.runner.useGenerated": "Use a code from this computer",
   "remote.runner.closeCode": "Close",
@@ -112,7 +131,7 @@ export const remoteEn = {
   "remote.runner.offlineFolder":
     "The runner is offline. Try again when it reconnects, or use a folder on this computer.",
   "remote.runner.pathUnavailable":
-    "The runner can't give this folder to a Bot: it contains the runner's own data, or it is a system folder or drive root. Choose a project folder inside it.",
+    "Choose a project folder on a local drive. The runner excludes mapped drives, network shares, system folders, drive roots, and its own data.",
   "remote.runner.unreadable": "Can't read this runner folder (missing or no permission).",
   "remote.runner.moveTitle": "{name} proposes working on a runner",
   "remote.runner.moveTarget": 'Runner "{runner}": {folder}',
@@ -136,7 +155,7 @@ export const remoteEn = {
     "This phone is blocked locally. Relay credential revocation is incomplete. Retry revoking it or choose Remove anyway.",
   "remote.removeAnyway": "Remove anyway",
   "remote.removeAnywayConfirm.runner":
-    "This stops revocation retries, retires the local room, and deletes local pairing credentials. Audit records are kept. The runner will keep its own pairing file until you run pibot runner revoke on that runner. Desktop trust is already revoked, so it can no longer connect to this computer. Remove anyway?",
+    "This computer has already blocked the other device. Removing it stops further attempts to tell it and clears this computer’s pairing details. The other device may still show the old pairing. On that device, choose Unpair in the Pi Bot Runner menu. On Linux, run pibot runner revoke.",
   "remote.removeAnywayConfirm.phone":
     "Relay credential revocation is incomplete. This stops revocation retries, retires the local room, and deletes local pairing credentials. Audit records are kept. The phone may still keep this pairing; unpair on the phone to clear it. Desktop trust is already revoked, so it can no longer connect to this computer. Remove anyway?",
   "audit.actor.phone": "Phone",
@@ -146,7 +165,7 @@ export const remoteEn = {
     "Chat, view tasks and handle approvals on a paired phone. This computer must be online.",
   "remote.enabled": "Allow paired devices to connect",
   "remote.disclosure":
-    "When enabled, this computer connects to the selected relay. The relay sees IP addresses, connection times, frame sizes and presence. It forwards end-to-end encrypted data without storing chats; the official relay only counts connections per day, without room IDs or IP addresses. Push notifications pass through the relay to Expo and contain no chat or approval content. To connect directly across different networks too, both ends ask a STUN service (Cloudflare by default) for their public address; STUN sees only the public IP and never handles data. You can switch Direct connection to LAN only.",
+    "When enabled, Pi Bot can link paired devices over the internet. Your devices encrypt what they send so the connection service cannot read the contents.",
   "remote.consent": "I understand what is sent and who receives it",
   "remote.relay": "Relay service",
   "remote.officialAddress":
@@ -155,13 +174,13 @@ export const remoteEn = {
   "remote.custom": "Self-hosted relay",
   "remote.address": "Relay address (wss://)",
   "remote.direct.mode": "Direct connection",
-  "remote.direct.lan": "LAN only",
-  "remote.direct.stun": "Allow NAT traversal",
+  "remote.direct.lan": "Same network only",
+  "remote.direct.stun": "Across networks (automatic)",
   "remote.direct.scope":
-    "Applies to this computer and paired phones. Hole punching is on by default: LAN direct on the same network, a direct tunnel across networks; changes reconnect devices.",
-  "remote.stun.address": "STUN address (self-hosting supported)",
+    "Pi Bot tries a direct connection automatically. Choose whether this can also happen when your devices use different networks.",
+  "remote.stun.address": "Public address lookup (STUN)",
   "remote.stun.disclosure":
-    "STUN sees only your public IP and never carries data. When allowed, both devices contact this service to discover their public address; chats and files remain end-to-end encrypted.",
+    "The lookup service sees your public network address. It does not carry chats or files.",
   "remote.stun.invalid": "Enter stun:host[:port] without credentials, paths or query parameters.",
   "remote.stun.privacy": "Privacy ledger · Outbound connections",
   "remote.stun.inventory":
@@ -195,48 +214,20 @@ export const remoteEn = {
   "remote.tab.offline": "When this computer is offline",
   "remote.tab.runners": "Runners it can direct",
   "remote.tab.phones": "Phone control",
-  "remote.runner.commandApproval": "Approve each command",
+  "remote.runner.commandsBlocked": "Commands that need system protection are blocked",
   "remote.empty": "No paired devices",
   "remote.add": "Add phone",
   "remote.more": "Load more",
   "remote.online": "Online",
   "remote.runner.path.lan": "Direct · LAN",
   "remote.runner.path.address": "Direct · Specified address",
-  "remote.runner.path.punched": "Direct · tunnel",
+  "remote.runner.path.punched": "Direct · across networks",
   "remote.runner.path.relay": "Via relay",
   "remote.path.direct": "Direct",
   "remote.path.relay": "Via relay",
-  "remote.path.directHint": "Sent directly between devices, end-to-end encrypted",
-  "remote.path.relayHint": "The relay sees only ciphertext; switches to direct when available",
-  "remote.direct.failure.peer_vpn_active":
-    "The phone reports an active VPN. Exclude Pi Bot in the VPN settings. Continuing via relay.",
-  "remote.direct.failure.local_tun_proxy":
-    "The computer detected a proxy TUN signature. Check LAN bypass settings. Continuing via relay.",
-  "remote.direct.failure.different_subnet":
-    "No shared subnet was found among the candidates. LAN discovery may be unavailable. Continuing via relay.",
-  "remote.direct.failure.local_mdns_only":
-    "One endpoint provided only .local candidates. Direct connection failed. Continuing via relay.",
-  "remote.direct.failure.ice_timeout":
-    "ICE connection timed out. Check VPN, firewall, or network isolation. Continuing via relay.",
-  "remote.direct.failure.rtc_unavailable":
-    "The direct connection component could not start. Continuing via relay.",
-  "remote.direct.failure.signaling_failed":
-    "Direct connection negotiation did not complete. Continuing via relay.",
-  "remote.direct.failure.negotiation_timeout":
-    "Direct connection timed out. Check LAN access in both VPNs and Wi-Fi client isolation. Continuing via relay.",
-  "remote.direct.failure.no_candidates":
-    "No direct connection candidates were collected on one or both devices. Check local network permissions, VPN and network settings. Continuing via relay.",
-  "remote.direct.failure.ice_failed":
-    "Direct connectivity checks failed. Check VPN, Wi-Fi client isolation or firewall settings. Continuing via relay.",
-  "remote.direct.failure.channel_failed": "The direct data channel closed. Switched back to relay.",
-  "remote.direct.failure.noise_failed":
-    "The direct encryption handshake did not complete. Continuing via relay.",
-  "remote.direct.failure.switch_failed":
-    "The switch to a direct connection did not complete. Continuing via relay.",
-  "remote.direct.failure.probe_failed":
-    "The direct channel opened but did not answer. Continuing via relay; it will try again shortly.",
-  "remote.direct.failure.path_mtu":
-    "The direct route drops larger packets (common inside a VPN or proxy tunnel). Continuing via relay; it will try again shortly.",
+  "remote.path.directHint": "Sent directly between devices with end-to-end encryption.",
+  "remote.path.relayHint":
+    "Connected through a relay that forwards encrypted data. Only your devices can read the contents.",
   "remote.phoneData": "The phone shares with this computer: {list}",
   "remote.phoneData.none": "The phone shares no data with this computer",
   "remote.phoneData.media": "Photos and videos",
@@ -252,19 +243,19 @@ export const remoteEn = {
   "remote.cancel": "Cancel",
   "remote.scan": "Scan with Pi Bot on your phone",
   "remote.expires": "Expires in {seconds} seconds",
-  "remote.securityCode": "Security code: {code}. Compare it with your phone.",
+  "remote.securityCode": "Safety code: {code}. Compare it with the one on your phone.",
   "remote.pairEnded": "Pairing ended. Add the phone again.",
   "remote.status.off": "Remote access is off",
-  "remote.status.connecting": "Connecting to relay",
+  "remote.status.connecting": "Connecting devices…",
   "remote.status.ready": "Remote access is enabled",
   "remote.status.sleeping": "Computer is on standby",
-  "remote.status.link_unavailable":
-    "The remote transport is not connected yet. Pairing and connections are unavailable.",
+  "remote.status.link_unavailable": "This installation does not support device connections.",
   "remote.status.rpc_unavailable":
-    "The remote business gateway is not connected yet. Connections are unavailable.",
+    "This installation cannot accept connections from other devices.",
   "remote.status.relay_unavailable":
-    "Configure a relay address. The official relay has not been configured.",
-  "remote.status.secrets_unavailable": "The system secret store is unavailable. Cannot connect.",
+    "No connection service is set up. Choose a service in Advanced.",
+  "remote.status.secrets_unavailable":
+    "This computer could not open its protected key storage. Unlock it and try again.",
   "remote.status.connection_failed": "Connection failed. Waiting to reconnect.",
   "remote.status.keep_awake_unsupported":
     "Keeping this computer awake for remote access is unsupported.",

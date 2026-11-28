@@ -247,6 +247,8 @@ const permissions: MethodResults["permissions.get"] = {
     agent_delegation: "ask",
     bot_management: "ask",
     work_dispatch: "ask",
+    pi_repair: "ask",
+    settings_change: "ask",
     run_command: "ask",
     computer: "never",
     read_file: "always",
@@ -461,13 +463,57 @@ const importStatus = {
 } as const;
 
 const methodCases = {
+  "videos.models": {
+    params: { offset: 0, limit: 200 },
+    result: [{ provider: id, providerName: "Test", id: "video" }],
+    badParams: { limit: 201 },
+    badResult: {},
+  },
+  "videos.get": {
+    params: { id, messageId: id },
+    result: { id, model: "video", status: "queued" },
+    badParams: {},
+    badResult: {},
+  },
+  "videos.cancel": {
+    params: { id, messageId: id },
+    result: { id, model: "video", status: "cancelled" },
+    badParams: {},
+    badResult: {},
+  },
   "import.detect": {
     params: { source: "fixture" },
     result: { available: true },
     badParams: {},
     badResult: {},
   },
+  "import.listConversations": {
+    params: { source: "codex", limit: 20 },
+    result: {
+      items: [{ id: "conv-1", title: "Session", updatedAt: null }],
+      total: 1,
+      next: null,
+      canExportContent: true,
+      hasMemory: false,
+      hasProjectRules: false,
+    },
+    badParams: { source: "chatgpt" },
+    badResult: {},
+  },
   "import.preview": { params: { source: "fixture" }, result: null, badParams: {}, badResult: {} },
+  "import.previewSelection": {
+    params: { source: "codex", conversationIds: ["conv-1"], includeMemory: true },
+    result: {
+      importId: id,
+      source: "codex",
+      topics: 1,
+      messages: 2,
+      from: null,
+      through: null,
+    },
+    badParams: { source: "codex", conversationIds: [] },
+    badResult: {},
+  },
   "import.reviewMemories": {
     params: { importId: id, botId: id, scope: "user" },
     result: { reviewId: id, items: [], omitted: 0 },
@@ -1490,6 +1536,27 @@ const methodCases = {
     badParams: { groupId: "bad" },
     badResult: { unexpected: true },
   },
+  "groups.rounds.continue": {
+    params: { groupId: id, roundLimitId: id, expectedLimit: 8, autoRoundLimit: 9 },
+    result: { ok: true },
+    badParams: { groupId: id, roundLimitId: id, expectedLimit: 8, autoRoundLimit: 11 },
+    badResult: { ok: false },
+  },
+  "chat.topicModel.set": {
+    params: {
+      conversationId: id,
+      override: { provider: "openai", id: "gpt-5.5", thinkingLevel: "high" },
+    },
+    result: {
+      ...conversation,
+      modelOverride: { provider: "openai", id: "gpt-5.5", thinkingLevel: "high" },
+    },
+    badParams: { conversationId: id },
+    badResult: {
+      ...conversation,
+      modelOverride: { provider: "openai", id: "", thinkingLevel: "high" },
+    },
+  },
   "chat.compact": {
     params: { botId: id, conversationId: id, requestId: id, fork: false },
     result: { conversationId: id, mechanical: false },
@@ -1638,9 +1705,22 @@ const methodCases = {
     badParams: {},
     badResult: { version: 2 },
   },
+  "runs.cleanupEstimate": {
+    params: { olderThanDays: 30 },
+    result: { runs: 2, files: 3, bytes: 4096, incomplete: false },
+    badParams: { olderThanDays: 0 },
+    badResult: { runs: -1, files: 0, bytes: 0, incomplete: false },
+  },
   "runs.cleanup": {
     params: { olderThanDays: 30, confirmed: true },
-    result: { runs: 2, events: 8, executions: 1, sessionFiles: 1, resultFiles: 1 },
+    result: {
+      runs: 2,
+      events: 8,
+      executions: 1,
+      sessionFiles: 1,
+      resultFiles: 1,
+      freedBytes: 2048,
+    },
     badParams: { olderThanDays: 0, confirmed: true },
     badResult: { runs: -1, events: 0, executions: 0, sessionFiles: 0, resultFiles: 0 },
   },
@@ -1711,6 +1791,15 @@ const methodCases = {
     result: { items: [], nextBefore: null, checkpoint: null, resultMessageId: null },
     badParams: {},
     badResult: [{}],
+  },
+  "groups.taskModel.set": {
+    params: { taskId: id, override: null },
+    result: task,
+    badParams: {
+      taskId: id,
+      override: { provider: "openai", id: "gpt-5.5", thinkingLevel: "max" },
+    },
+    badResult: { ...task, modelOverride: null },
   },
   "groups.tasks.resolve": {
     params: { groupId: id, taskId: id, status: "done", summary: "已完成", confirmed: true },
@@ -2040,6 +2129,18 @@ const methodCases = {
     badParams: { unexpected: true },
     badResult: { unexpected: true },
   },
+  "teams.healthRepair": {
+    params: { check: id, item: `run:${id}`, action: "stop_run" },
+    result: { runId: id },
+    badParams: { unexpected: true },
+    badResult: { unexpected: true },
+  },
+  "teams.healthReports": {
+    params: { messageId: id },
+    result: [],
+    badParams: { unexpected: true },
+    badResult: { unexpected: true },
+  },
   "teams.export": {
     params: { botIds: [id] },
     result: { saved: true },
@@ -2273,11 +2374,34 @@ const methodCases = {
     badParams: { botId: "bad" },
     badResult: [{ ...approval, status: "unknown" }],
   },
+  "approvals.groupTimeline": {
+    params: { groupId: id, topicId: id, limit: 10 },
+    result: [approval],
+    badParams: { groupId: id, since: "not-a-timestamp" },
+    badResult: [{ ...approval, status: "unknown" }],
+  },
+  "approvals.groupFocus": {
+    params: { groupId: id },
+    result: { topicId: id, approvalId: id },
+    badParams: { groupId: id, topicId: id },
+    badResult: { topicId: id, approvalId: "not-an-id" },
+  },
   "permissions.get": {
     params: undefined,
     result: permissions,
     badParams: { secret: true },
     badResult: { ...permissions, levels: {} },
+  },
+  "permissions.commandProtection": {
+    params: { action: "install", dependency: "bubblewrap" },
+    badParams: { action: "install", dependency: "another-package" },
+    result: {
+      available: false,
+      reason: "linux_bubblewrap_missing",
+      dependency: "bubblewrap",
+      outcome: "installed",
+    },
+    badResult: { available: false, outcome: "unknown" },
   },
   "permissions.paths.discover": {
     params: { source: "process" },
@@ -2473,15 +2597,37 @@ const methodCases = {
   },
   "app.about": {
     params: undefined,
-    result: { version: "0.0.5", phoneCompat: 1 },
+    result: { version: "0.1.0", phoneCompat: 1 },
     badParams: { extra: true },
-    badResult: { version: "0.0.5", phoneCompat: 1.5 },
+    badResult: { version: "0.1.0", phoneCompat: 1.5 },
   },
   "app.getInfo": {
     params: undefined,
     result: { version: "0.0.0", platform: "darwin", dataDir: "data", piVersion: "1.0" },
     badParams: { extra: true },
     badResult: { version: "1", platform: "android", dataDir: "data", piVersion: "1" },
+  },
+  "app.openDataDir": {
+    params: undefined,
+    result: null,
+    badParams: { path: "/tmp" },
+    badResult: { ok: true },
+  },
+  "app.storageInfo": {
+    params: undefined,
+    result: {
+      totalBytes: 1024,
+      categories: {
+        databaseBytes: 512,
+        botsAndMediaBytes: 256,
+        runtimesBytes: 128,
+        logsAndCacheBytes: 64,
+        otherBytes: 64,
+      },
+      truncated: false,
+    },
+    badParams: { path: "/tmp" },
+    badResult: { totalBytes: -1 },
   },
   "network.getConfig": {
     params: {},
@@ -2566,6 +2712,22 @@ const methodCases = {
     params: { providerId: "openai", modelId: "gpt-6.2-sol" },
     result: { ok: true },
     badParams: { providerId: "openai", modelId: "" },
+    badResult: { ok: false },
+  },
+  "providers.videoModels": {
+    params: { providerId: "openai" },
+    result: { models: [{ id: "sora-2", enabled: false }], fallback: false, unavailable: false },
+    badParams: { providerId: "openai-chatgpt" },
+    badResult: {
+      models: [{ id: "sora-2", enabled: "false" }],
+      fallback: false,
+      unavailable: false,
+    },
+  },
+  "providers.setVideoModel": {
+    params: { providerId: "google", modelId: "veo-3.1-generate-preview", enabled: true },
+    result: { ok: true },
+    badParams: { providerId: "google-vertex", modelId: "veo-3.1-generate-preview", enabled: true },
     badResult: { ok: false },
   },
   "providers.remove": {
@@ -2916,6 +3078,14 @@ const methodCases = {
     result: { ok: true },
     badParams: { conversationKey: `dm:${id}`, ids: [], state: "dismissed" },
     badResult: { ok: false },
+  },
+  "chat.dependencyNotices": {
+    params: { conversationId: id, limit: 30 },
+    result: [{ id, conversationId: id, runId: id, createdAt: date, dependency: "git" as const }],
+    badParams: { limit: 30 },
+    badResult: [
+      { id, conversationId: id, runId: id, createdAt: date, dependency: "git", text: "raw" },
+    ],
   },
   "chat.notices": {
     params: { conversationId: id, limit: 50 },
@@ -3597,6 +3767,19 @@ const hostCases = {
     badResult: { obsidian: { installed: true }, notion: { installed: false } },
   },
   // Only verified identities travel; an href or a path from the renderer is not a param.
+  "host.knowledge.trashNote": {
+    params: {
+      vault: { path: "/Users/me/Vault", device: "1", inode: "2" },
+      relativePath: "Notes/Plan.md",
+      expectedVersion: "version",
+    },
+    result: { trashed: true },
+    badParams: {
+      vault: { path: "/Users/me/Vault", device: "1", inode: "2" },
+      relativePath: "Plan.md",
+    },
+    badResult: { trashed: false },
+  },
   "host.knowledge.openNote": {
     params: {
       requestId: "00000000-0000-4000-8000-000000000001",
@@ -3621,10 +3804,16 @@ const hostCases = {
     badResult: { ok: true },
   },
   "host.pickFile": {
-    params: { defaultPath: "/folder" },
+    params: { defaultPath: "/folder", filters: [{ name: "Export", extensions: ["zip", "json"] }] },
     result: "/folder/input.txt",
     badParams: { defaultPath: "relative" },
     badResult: { path: "/folder/input.txt" },
+  },
+  "host.skills.takeDrop": {
+    params: { dropId: id },
+    result: ["/skills/script.py"],
+    badParams: { dropId: "/untrusted" },
+    badResult: ["relative/script.py"],
   },
   "host.skills.pickFile": {
     params: undefined,
@@ -4015,6 +4204,7 @@ function browserHostCases() {
   };
 }
 const eventCases = {
+  "videos.changed": { payload: { id, messageId: id }, bad: {} },
   "import.progress": { payload: importStatus, bad: {} },
   "acp.changed": { payload: { connected: false }, bad: { connected: true } },
   "botHooks.changed": { payload: { botId: id }, bad: { botId: "invalid" } },
@@ -4107,6 +4297,7 @@ const eventCases = {
   },
   "bots.changed": { payload: { botId: id, reason: "created" }, bad: { unexpected: true } },
   "teams.dispatch.changed": { payload: { messageId: id }, bad: { unexpected: true } },
+  "teams.health.changed": { payload: { messageId: id }, bad: { unexpected: true } },
   "groups.changed": { payload: { groupId: id, reason: "created" }, bad: { unexpected: true } },
   "group.task": { payload: { task }, bad: { unexpected: true } },
   "group.paused": {
@@ -4128,6 +4319,10 @@ const eventCases = {
   "sidebar.changed": {
     payload: { conversationKey: sidebarEntry.conversationKey },
     bad: { unexpected: true },
+  },
+  "sidebar.topicsChanged": {
+    payload: { conversationKey: sidebarEntry.conversationKey },
+    bad: {},
   },
   "providers.loginState": { payload: authState, bad: { unexpected: true } },
   "providers.loginStep": {
@@ -4186,6 +4381,16 @@ const eventCases = {
     bad: { runId: id, messageId: id, code: "oops", message: "Offline" },
   },
   "changes.changed": { payload: { runId: id, reason: "turn" }, bad: { reason: "poll" } },
+  "chat.dependencyNotice": {
+    payload: {
+      id,
+      conversationId: id,
+      runId: id,
+      createdAt: date,
+      dependency: "linux_socat_missing",
+    },
+    bad: { id, conversationId: id, runId: id, createdAt: date, dependency: "arbitrary" },
+  },
   "chat.notice": {
     payload: {
       id,

@@ -83,7 +83,7 @@ Turn on **YOLO mode** from "…" at the top right of a chat. Actions YOLO can ap
 
 - It only affects this conversation: a new topic starts with it off, and other conversations and routines are not affected.
 - **Allowed without asking**: running commands (including configured Docker), reading and writing files, visiting sites and submitting forms, first-use search prompts, operating the computer, sending things out, logging in with a single saved account.
-- **Still asks or refuses**: paid image generation, permissions set to Never, privilege escalation (such as sudo), dangerous operations, writes outside working folders, apps that can't be operated, unauthorized local network and loopback addresses, protected skill and data folders, read-only reference folders.
+- **Still asks or refuses**: paid image and video generation, security setting changes proposed by Pi, permissions set to Never, privilege escalation (such as sudo), dangerous operations, writes outside working folders, apps that can't be operated, unauthorized local network and loopback addresses, protected skill and data folders, read-only reference folders.
 - YOLO auto-approvals appear in the activity records. Turning YOLO off restores the usual permission rules. On macOS and Linux, commands still run in the sandbox.
 
 ## Command isolation (sandbox)

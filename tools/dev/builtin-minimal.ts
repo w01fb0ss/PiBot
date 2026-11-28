@@ -21,9 +21,16 @@ export const MINIMAL_BUILTIN_ROLES = [
   "finance-assistant",
   "operations-manager",
   "customer-support",
+  "image-designer",
+  "content-writer",
 ] as const;
 
-export const MINIMAL_BUILTIN_GROUPS = ["dev-lite", "research-group", "opc-team"] as const;
+export const MINIMAL_BUILTIN_GROUPS = [
+  "dev-lite",
+  "research-group",
+  "opc-team",
+  "content-desk",
+] as const;
 
 /** Only a generated directory may be replaced; the full catalog remains the release source. */
 export function copyMinimalBuiltin(source: string, destination: string): void {

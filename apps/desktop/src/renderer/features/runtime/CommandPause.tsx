@@ -9,6 +9,14 @@ import { useCommandPause } from "../../app/command-pause.ts";
  */
 export function CommandPauseBanner({ className }: { className?: string }) {
   const pause = useCommandPause();
+  const t = useT();
+  if (pause.cleanupUnconfirmed)
+    return (
+      <div role="status" className={className}>
+        <IconTile icon="warning" tone="red" size="sm" />
+        <span>{t("runtime.commandCleanupUnconfirmed")}</span>
+      </div>
+    );
   if (!pause.paused) return null;
   // Keyed by state: an earlier "still paused" answer belongs to that state only.
   return (

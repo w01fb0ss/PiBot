@@ -10,6 +10,10 @@ export async function probeAccount(
   signal: AbortSignal,
   isolation: "sandbox" | "unisolated",
 ): Promise<"unknown" | "login_required"> {
+  // Antigravity has no status command, and its plain start opens a Google sign-in in the browser
+  // when no login is saved. Its state comes from the ACP start instead: signed out, session/new
+  // answers auth_required (-32000) without opening anything (agy 1.5.17, 2026-11-25).
+  if (agentId === "antigravity") return "unknown";
   const args =
     agentId === "codex"
       ? ["login", "status"]

@@ -1,3 +1,4 @@
+import { commandNetworkNoteKey } from "@pibot/i18n";
 import { DomainSchema } from "@pibot/protocol";
 import {
   layoutStyles,
@@ -28,7 +29,8 @@ export function CommandNetworkRows({
         icon="network"
         tone="teal"
         label={t("permissions.allowNetwork")}
-        note={t("permissions.networkNote")}
+        note={`${t(data.network.allowAll ? "permissions.webNetworkOn" : "permissions.webNetworkOff")} ${t(commandNetworkNoteKey(window.pibot.platform, data.network.allowAll))}`}
+        info={t("permissions.networkExceptions")}
       >
         <Switch
           label={t("permissions.allowNetwork")}
@@ -41,7 +43,17 @@ export function CommandNetworkRows({
         icon="globe"
         tone="teal"
         label={t("permissions.domainsCount", { count: domains.length })}
-        note={domains.length ? domains.slice(0, 3).join("、") : t("permissions.commandDomainsNote")}
+        note={
+          domains.length
+            ? domains.slice(0, 3).join(t("tool.group.separator"))
+            : window.pibot.platform === "win32"
+              ? t("permissions.noExplicitDomains")
+              : t(
+                  data.network.allowAll
+                    ? "permissions.commandDomainsNote"
+                    : "permissions.commandDomainsNoteOff",
+                )
+        }
         onClick={openDomains}
       />
     </>

@@ -101,6 +101,12 @@ const Progress = z.strictObject({
     .refine((items) => Object.keys(items).length <= 20)
     .optional(),
   replanRunId: z.string().optional(),
+  roundHold: z
+    .strictObject({
+      limitId: z.string().uuid(),
+      status: z.enum(["running", "waiting"]),
+    })
+    .optional(),
   /**
    * Maintainers 2026-11-20: steps whose run the group's pause stopped. They wait as `ready` at the same
    * attempt (a pause is not a fix round) and run again when the group continues.
@@ -347,9 +353,9 @@ export class GroupWorkflowProgress {
   hardLimit(record: GroupWorkflowRunRecord, admitting = false): string | undefined {
     const cycle = this.service.cycles.get(record.groupId);
     if (cycle.cycleId !== record.cycleId) return "cycle_replaced";
-    if (cycle.limited) return "round_limit";
     const root = record.budgetRootRunId;
     if (root && this.service.runs.get(root)?.status === "aborted") return "source_stopped";
+    if (cycle.limited) return cycle.roundLimitId ? "round_limit" : "cycle_limited";
     const budget = root ? this.service.deps.local.budgets.repo.get(root) : undefined;
     if (!budget) return "budget_unavailable";
     return (
@@ -359,6 +365,40 @@ export class GroupWorkflowProgress {
   }
 
   stop(record: GroupWorkflowRunRecord, reason: string, actor: "user" | "system" = "system") {
+    if (reason === "round_limit" && actor === "system") {
+      const cycle = this.service.cycles.get(record.groupId);
+      const limitId = cycle.roundLimitId;
+      if (cycle.cycleId === record.cycleId && cycle.limited && limitId) {
+        transaction(this.service.deps.db, () => {
+          const latest = this.repo.get(record.id);
+          if (!latest || (latest.status !== "running" && latest.status !== "waiting")) return;
+          const progress = progressOf(latest);
+          if (progress.stoppedReason === "round_limit") return;
+          // This is an admission hold, not a failed plan. Already admitted steps can finish;
+          // their tasks, deliveries, workspaces and approval waiters remain owned by this plan.
+          this.repo.updateRun(record.id, "waiting");
+          this.save(latest, {
+            ...progress,
+            stoppedReason: "round_limit",
+            roundHold: { limitId, status: latest.status },
+          });
+          this.service.deps.local.approvals.audit.append({
+            botId: record.coordinatorBotId,
+            kind: "group.workflow.step_blocked",
+            summary: "Group plan waiting at round limit / 群计划等待重置回合计数",
+            detail: {
+              groupId: record.groupId,
+              workflowRunId: record.id,
+              reasonCode: reason,
+              actor,
+            },
+          });
+        });
+        this.service.changed(record.groupId, "updated");
+        return;
+      }
+      reason = cycle.cycleId === record.cycleId ? "cycle_limited" : "cycle_replaced";
+    }
     const runs: string[] = [];
     const stopped = transaction(this.service.deps.db, () => {
       const latest = this.repo.get(record.id);
@@ -371,6 +411,7 @@ export class GroupWorkflowProgress {
         ...progress,
         requested: false,
         hold: undefined,
+        roundHold: undefined,
         stoppedReason: reason,
       });
       for (const step of this.repo.steps(record.id)) {
@@ -389,10 +430,10 @@ export class GroupWorkflowProgress {
         status: "done",
         content: this.service.deps.redactor.redact(
           [
-            workflowStopText(record, states, reason, actor, language),
-            ...(progress.review ? reviewConclusion(progress.review, language === "zh") : []),
+            workflowStopText(latest, states, reason, actor, language),
+            ...(progress.review ? reviewConclusion(progress.review, latest, language) : []),
             ...(supplement
-              ? [supplementConclusion(this.service, latest, supplement, language === "zh")]
+              ? [supplementConclusion(this.service, latest, supplement, language)]
               : []),
           ].join("\n"),
         ),

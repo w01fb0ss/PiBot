@@ -441,6 +441,17 @@ export async function createBackgroundServer(options: {
         frameAcks.delete(listener);
       };
     },
+    sendToClient(id: string, message: BackgroundWire) {
+      const client = clients.get(id);
+      if (!client) return false;
+      try {
+        client.wire.send(message);
+        return true;
+      } catch {
+        drop(client.socket, "client_send_failed");
+        return false;
+      }
+    },
     broadcast(message: BackgroundWire) {
       for (const client of clients.values()) {
         if (client.role === "acp") continue;

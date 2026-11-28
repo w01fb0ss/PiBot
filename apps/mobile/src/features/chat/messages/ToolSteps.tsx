@@ -1,4 +1,10 @@
-import { toolGroupSummary, toolNameKey, toolSummaryLabel, toolTarget } from "@pibot/client-core";
+import {
+  toolDenialReason,
+  toolGroupSummary,
+  toolNameKey,
+  toolSummaryLabel,
+  toolTarget,
+} from "@pibot/client-core";
 import type { Message } from "@pibot/protocol";
 import { useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
@@ -16,6 +22,7 @@ function Step({ tool }: { tool: Tool }) {
   const target = summaryLabel ? undefined : toolTarget(tool.tool, tool.summary);
   const running = tool.status === "pending" || tool.status === "running";
   const done = tool.status === "done";
+  const denial = toolDenialReason(tool, shared);
   return (
     <View
       style={[
@@ -39,6 +46,18 @@ function Step({ tool }: { tool: Tool }) {
       <Text style={[type.tool, { flex: 1, minWidth: 0, color: colors.text }]}>
         {summaryLabel ?? shared(toolNameKey(tool.tool))}
         {!!target && <Text style={mono(12.5)}> {target}</Text>}
+        {tool.inputTranslation && (
+          <Text style={{ color: colors.text2 }}>
+            {"\n"}
+            {shared("tool.inputTranslation", { text: tool.inputTranslation })}
+          </Text>
+        )}
+        {denial && (
+          <Text style={{ color: colors.text2 }}>
+            {"\n"}
+            {denial}
+          </Text>
+        )}
       </Text>
       {running && (
         <Text style={[type.small, { color: colors.text2, flexShrink: 0 }]}>{t("liveNow")}</Text>
@@ -56,7 +75,10 @@ export function ToolSteps({ tools }: { tools: NonNullable<Message["tools"]> }) {
   const [open, setOpen] = useState(false);
   const summary = toolGroupSummary(tools, shared);
   const running = tools.filter((tool) => tool.status === "pending" || tool.status === "running");
-  const finished = tools.filter((tool) => !running.includes(tool));
+  const refused = tools.filter(
+    (tool) => tool.denialReason === "external_agent_explicit_always_required",
+  );
+  const finished = tools.filter((tool) => !running.includes(tool) && !refused.includes(tool));
   return (
     <View style={{ alignSelf: "stretch" }}>
       <Pressable
@@ -95,6 +117,9 @@ export function ToolSteps({ tools }: { tools: NonNullable<Message["tools"]> }) {
         </View>
       )}
       {running.map((tool) => (
+        <Step key={tool.toolCallId} tool={tool} />
+      ))}
+      {refused.map((tool) => (
         <Step key={tool.toolCallId} tool={tool} />
       ))}
     </View>

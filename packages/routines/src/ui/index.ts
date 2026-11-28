@@ -4,7 +4,7 @@
  * sections). It uses the app shell only through `@pibot/renderer-kit`; what it borrows from other
  * parts of the app comes in through `RoutinesUiProvider` (see `shell/ports.tsx`).
  */
-export { BotRoutines, RoutineTopicLabel } from "./bot/BotRoutines.tsx";
+export { BotRoutines, RoutineTopicLabel, RoutineTopicLabelProvider } from "./bot/BotRoutines.tsx";
 export { RoutineOverlay } from "./editor/RoutineOverlay.tsx";
 export { usePages } from "./page/paging.ts";
 export { RoutinesPage } from "./page/RoutinesPage.tsx";

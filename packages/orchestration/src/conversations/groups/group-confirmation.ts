@@ -32,7 +32,7 @@ export async function confirmGroupNotice(
     const queue = service.deps.chat.queue;
     queue.capacity([botId]);
     queue.assertTopicAdmission(conversationId);
-    const { bot } = await service.model(botId, signal);
+    const { bot } = await service.model(botId, signal, undefined, { groupId, conversationId });
     await confirmation.beforeCommit();
     signal.throwIfAborted();
     const result = transaction(service.deps.db, () => {

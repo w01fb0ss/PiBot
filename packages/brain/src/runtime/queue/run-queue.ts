@@ -1,4 +1,6 @@
 // Serializes admitted runs and owns their admission and drain state.
+
+import { type OrphanStopResult, stopOrphanStep } from "./run-orphans.ts";
 import {
   abortStep,
   abortTreeStep,
@@ -34,6 +36,7 @@ import {
   type RuntimeHealth,
 } from "@pibot/protocol-base";
 import {
+  ApprovalPausesRepo,
   AuditRepo,
   ChatAdditionsRepo,
   ConversationsRepo,
@@ -42,6 +45,7 @@ import {
   MessagesRepo,
   RunRecoveryRepo,
   RunsRepo,
+  type SupersededPause,
   ToolJournalRepo,
   transaction,
 } from "@pibot/storage";
@@ -49,6 +53,7 @@ import type { BrainRedactor } from "../../core/privacy.ts";
 import type { LocalService } from "../../local-service.ts";
 import { FORCE_RELEASE_TIMEOUT_MS } from "../continuation/continuation-limits.ts";
 import { workflowIdentity } from "../workflows/workflow-recovery.ts";
+import { announceSuperseded, supersedePause } from "./approval-pause-settle.ts";
 import type { ChatRun } from "./chat-run.ts";
 import { stopSession } from "./run-stop.ts";
 export class RunQueue {
@@ -341,6 +346,7 @@ export class RunQueue {
       ancestry: input.ancestry ?? [],
       triggerKey: input.triggerKey ?? null,
     });
+    this.supersedeEarlierPauses(record, input.resume?.fromRunId);
     // In the same transaction as the run row, so a restart finds what it needs.
     if (input.workflow || input.resume || input.budgetRootRunId)
       new RunRecoveryRepo(this.deps.db).record(id, {
@@ -349,6 +355,58 @@ export class RunQueue {
         ...(input.workflow ? { workflow: workflowIdentity(input.workflow) } : {}),
       });
     return record;
+  }
+  /**
+   * A new run in a conversation makes every earlier paused approval of that Bot there impossible
+   * to resume (the resume refuses once a later run exists), so they close as out of date with
+   * this insert instead of waiting forever. `resumedFrom` is the run a resume continues: its own
+   * pause is the one being answered. Routine and draft cards are left to their own recovery.
+   */
+  private supersedeEarlierPauses(record: Run, resumedFrom?: string) {
+    const { db, redactor } = this.deps;
+    const pauses = new ApprovalPausesRepo(db);
+    const audit = this.deps.local?.approvals.audit ?? new AuditRepo(db, redactor);
+    const settled: SupersededPause[] = [];
+    let failed = 0;
+    try {
+      for (const id of pauses.earlier(record.id, resumedFrom)) {
+        try {
+          const result = supersedePause(db, audit, id, {
+            actor: "system",
+            reasonCode: "approval_pause_superseded_by_new_run",
+            target: record.id,
+          });
+          if (result) settled.push(result);
+        } catch {
+          // Its savepoint rolled back; the card stays answerable and the click path or the next
+          // start closes it. A damaged old row must never block the user's new turn.
+          failed++;
+        }
+      }
+    } catch {
+      failed++;
+    }
+    if (failed)
+      this.deps.logger.warn(
+        JSON.stringify({ module: "approvals", event: "superseded_by_new_run_failed", failed }),
+      );
+    if (!settled.length) return;
+    // The caller's transaction commits synchronously before this runs; a rolled-back insert also
+    // rolled the settlement back, and those cards are then not announced.
+    queueMicrotask(() => {
+      try {
+        announceSuperseded(
+          db,
+          this.deps.peer,
+          settled.filter((pause) => pauses.get(pause.approvalId)?.superseded),
+        );
+      } catch {
+        // Only the live refresh is lost; the next read of the card or inbox shows it settled.
+        this.deps.logger.warn(
+          JSON.stringify({ module: "approvals", event: "superseded_announce_failed" }),
+        );
+      }
+    });
   }
   publish(record: Run, input: QueueInput) {
     if (this.entries.has(record.id) || this.repo.get(record.id)?.status !== "queued") return;
@@ -370,6 +428,7 @@ export class RunQueue {
       budgetWorkflow: input.budgetWorkflow,
       enforceBudgetCost: input.enforceBudgetCost,
       imageOperation: input.imageOperation,
+      imageGeneration: input.imageGeneration,
       workflow: input.workflow,
       ...(input.modelTier ? { modelTier: input.modelTier } : {}),
       resume: input.resume,
@@ -502,6 +561,17 @@ export class RunQueue {
     });
     this.status(record, "idle");
   }
+  /** Whether a queue entry (a queued, running or draining worker) owns this run right now. */
+  owns(id: string): boolean {
+    return this.entries.has(id);
+  }
+  /**
+   * Stops a run whose row says queued or running while no entry owns it (the person asked, through
+   * Pi's repair). A run with a live entry answers `live`: the caller uses the normal stop instead.
+   */
+  stopOrphan(id: string): Promise<OrphanStopResult> {
+    return stopOrphanStep.call(this.operationContext(), id, "user");
+  }
   private cancelQueued(entry: Entry): void {
     cancelQueuedStep.call(this.operationContext(), entry);
   }
@@ -527,6 +597,11 @@ export class RunQueue {
           !this.drainingSource(entry.record.id, drainingSourceRunId),
       )
     );
+  }
+  hasBusyTopic(matches: (topicId: string) => boolean) {
+    for (const topicId of this.changingTopics) if (matches(topicId)) return true;
+    for (const { record } of this.entries.values()) if (matches(record.conversationId)) return true;
+    return false;
   }
   async changeTopic<T>(conversationId: string, action: () => Promise<T>) {
     if (this.topicBusy(conversationId)) throw new RpcError(-32011, "topic_workplace_busy");

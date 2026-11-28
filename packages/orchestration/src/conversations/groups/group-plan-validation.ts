@@ -150,7 +150,7 @@ export const GROUP_PLAN_COMPACT_INSTRUCTION =
  * an image member get this line, so other groups' planning instructions stay unchanged.
  */
 export const GROUP_IMAGE_ON_DEMAND_INSTRUCTION =
-  "Image members are requested per picture through ask_bot once a deliverable needs one; never give an image member a plan step, never count a picture as a step output, and never plan several pictures ahead of an agreed direction. / 图像成员按需请求：确有配图需要时才用 ask_bot 交办；不要给它计划步骤，也不要把图片算作步骤产出，方向没对齐前不要一次计划多张图。";
+  "Request images through ask_bot once a deliverable needs them, using imageGeneration for a batch or model comparison. Never give image members plan steps or count images as step outputs. / 确有配图需求时用 ask_bot 交办，批量出图或模型对比用 imageGeneration。不要给图片成员计划步骤，也不要把图片算作步骤产出。";
 export const GROUP_IMAGE_ON_DEMAND_COMPACT =
   "图片按需请求，不写作计划步骤。 / Images on demand, never plan steps.";
 /** One member's usable method keys, named the way the group prompt already names it. */

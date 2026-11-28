@@ -7,6 +7,7 @@ import {
   KernelMethods,
 } from "@pibot/protocol-base";
 import { transaction } from "../database/database.ts";
+import { modelOverrideProjection } from "../database/model-override.ts";
 import { ConversationsRepo, importProjection, visibleImportedRows } from "./conversations.ts";
 import { TopicFoldersRepo } from "./topic-folders.ts";
 
@@ -23,6 +24,7 @@ export class TopicsRepo {
       limit = 50,
       query = "",
       archived = false,
+      importId,
       withMessages = false,
       currentOnly = false,
     } = KernelMethods["topics.list"].params.parse(params);
@@ -45,12 +47,13 @@ export class TopicsRepo {
     const rows = this.db
       .prepare(`SELECT * FROM (SELECT c.id,c.kind,c.bot_id AS botId,c.pi_session_file AS piSessionFile,
       c.routine_id AS routineId,c.workplace_folder_id AS workplaceFolderId,c.workplace_revision AS workplaceRevision,c.group_id AS groupId,c.thread_of AS threadOf,c.title,c.archived_at AS archivedAt,
-      c.created_at AS createdAt,c.updated_at AS updatedAt,c.import_source AS importSource,wf.name AS workplaceFolderName,
+      c.created_at AS createdAt,c.updated_at AS updatedAt,c.import_source AS importSource,c.model_override AS modelOverride,wf.name AS workplaceFolderName,
       (SELECT COUNT(*) FROM messages m WHERE m.conversation_id=c.id) AS messageCount,
       ${sortAt} AS sortAt
       FROM conversations c LEFT JOIN working_folders wf ON wf.bot_id=c.bot_id AND wf.id=c.workplace_folder_id
       WHERE c.kind='dm' AND c.bot_id=? AND (CASE WHEN ? THEN c.archived_at IS NOT NULL ELSE c.archived_at IS NULL END) AND c.internal_task_id IS NULL
       AND ${visibleImportedRows("c.import_id")}
+      ${importId ? "AND c.import_id=?" : ""}
       AND (? OR c.routine_id IS NOT NULL OR c.import_id IS NOT NULL OR c.id=? OR EXISTS(SELECT 1 FROM messages m WHERE m.conversation_id=c.id) OR EXISTS(SELECT 1 FROM conversation_retries cr WHERE cr.conversation_id=c.id AND cr.state='done'))
       AND instr(lower(c.title),lower(?))>0 AND (?=0 OR c.id=?)) t
       WHERE t.sortAt IS NOT NULL AND (? IS NULL OR t.sortAt<? OR (t.sortAt=? AND t.id<?))
@@ -58,6 +61,7 @@ export class TopicsRepo {
       .all(
         botId,
         archived ? 1 : 0,
+        ...(importId ? [importId] : []),
         archived ? 1 : 0,
         currentId ?? null,
         query,
@@ -70,9 +74,10 @@ export class TopicsRepo {
         limit,
       );
     return KernelMethods["topics.list"].result.parse(
-      rows.map(({ sortAt: _sortAt, importSource, ...row }) => ({
+      rows.map(({ sortAt: _sortAt, importSource, modelOverride, ...row }) => ({
         ...row,
         ...importProjection(importSource),
+        ...modelOverrideProjection(modelOverride),
         isCurrent: row.id === currentId,
         workplaceFolderName:
           typeof row.workplaceFolderName === "string"
@@ -109,6 +114,29 @@ export class TopicsRepo {
     );
   }
 
+  busyInImport(importId: string): boolean {
+    // Keep the active-work side first so large idle imports don't drive the joins.
+    return !!this.db
+      .prepare(`
+      SELECT 1 FROM task_instances t CROSS JOIN conversations c ON c.id=t.source_conversation_id
+        WHERE t.status IN ('queued','running','stopping') AND c.import_id=$importId
+      UNION ALL
+      SELECT 1 FROM runs r CROSS JOIN conversations c ON c.id=r.conversation_id
+        WHERE r.status IN ('queued','running','waiting') AND c.import_id=$importId
+      UNION ALL
+      SELECT 1 FROM unattended_runs r CROSS JOIN conversations c ON c.id=r.conversation_id
+        WHERE r.status IN ('scheduled','running','waiting') AND c.import_id=$importId
+      UNION ALL
+      SELECT 1 FROM unattended_runs r CROSS JOIN conversations c ON c.routine_id=r.definition_id
+        WHERE r.status IN ('scheduled','running','waiting') AND c.import_id=$importId
+      UNION ALL
+      SELECT 1 FROM approvals a CROSS JOIN messages m ON m.id=a.message_id
+        CROSS JOIN conversations c ON c.id=m.conversation_id
+        WHERE a.status='pending' AND c.import_id=$importId
+      LIMIT 1`)
+      .get({ $importId: importId });
+  }
+
   /**
    * Replaces the topic's folders (primary + read-only references). Binding is metadata:
    * updated_at / page ordering stay; refused while the topic has active work.
@@ -128,7 +156,6 @@ export class TopicsRepo {
         new ConversationsRepo(this.db).isInternal(topicId)
       )
         throw new TypeError("Unknown topic");
-      if (topic.readOnly) throw new TypeError("import_topic_read_only");
       if (this.busy(topicId)) throw new TypeError("topic_workplace_busy");
       new TopicFoldersRepo(this.db).set(botId, topicId, selection, options);
       const updated = new ConversationsRepo(this.db).get(topicId);

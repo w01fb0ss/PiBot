@@ -1,5 +1,6 @@
 // A failing independent review must schedule a repair and same-owner recheck without a planning wake.
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { GroupPlan } from "../../../packages/protocol/src/index.ts";
@@ -80,6 +81,28 @@ export async function verdictRepairScenario(root: string) {
     assert.equal(wakes?.n, 0, "program repair must not call the coordinator model");
     const owner = read((db) => db.prepare("SELECT owner_bot_id FROM group_workflow_steps WHERE step_id=?").get(recheck));
     assert.equal(owner?.owner_bot_id, reviewer.id);
+    const history = await f.client.call("chat.history", { groupId, limit: 100 });
+    const summaries = history.filter(({ usage }) =>
+      usage && typeof usage === "object" && !Array.isArray(usage) && usage.groupPlanConclusion,
+    );
+    assert.equal(summaries.length, 1);
+    const summary = summaries[0];
+    assert(summary);
+    assert.match(summary.content, /\*\*(?:Steps|步骤)\*\*\n\n- ✅/u);
+    assert.match(summary.content, /Repair failed checks|修复不通过项/u);
+    assert.match(summary.content, /Recheck the repair|修复后复验/u);
+    assert.match(summary.content, /no item-by-item check|没有逐条核对/u);
+    assert.doesNotMatch(summary.content, /repair\d+_\d+_check|修复不通过项 \/ Repair failed checks|\.pibot\/out/u);
+    const outputs = summary.attachments ?? [];
+    const reviews = outputs.filter((item) => item.name === "review.md");
+    assert.equal(reviews.length, 1, "declared and observed copies share one file card");
+    const reviewFile = reviews[0];
+    assert(reviewFile);
+    const preview = await f.client.call("preview.read", {
+      attachmentId: reviewFile.id, messageId: summary.id, requestId: randomUUID(),
+    });
+    assert.match(preview.text ?? "", /Verdict: FAIL/u);
+    assert.equal(history.filter((item) => /(?:progress|进度) 5\/5 ·/u.test(item.content)).length, 1);
     return { passed: true, proposals, repairs: progress.replans };
   } finally { await f.cleanup(); }
 }

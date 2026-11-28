@@ -59,6 +59,31 @@ function literalInvocation(node: Node): CommandInvocation | undefined {
     return { program: words[0] as string, args: words.slice(1) as string[] };
 }
 
+function leadingAndCommand(statement: Node, text: string) {
+  // Walk the left spine of Bash's left-associative &&/|| lists. A || in this
+  // spine would make it possible to continue after a failed initialization.
+  const left: { node: Node; after: number }[] = [];
+  let node = statement;
+  while (node.type === "list") {
+    const [first, operator, second] = node.children;
+    if (node.children.length !== 3 || !first || !second || operator?.type !== "&&") return;
+    left.push({ node: second, after: operator.endIndex });
+    node = first;
+  }
+  if (!left.length) return;
+  const first = literalInvocation(node);
+  if (!first) return;
+  const cdArgs = first.args[0] === "--" ? first.args.slice(1) : first.args;
+  const directory = first.program === "cd" && cdArgs.length === 1 ? cdArgs[0] : undefined;
+  if (directory === "-" || directory?.startsWith("-")) return;
+  const next = directory ? left.pop()?.node : node;
+  const invocation = next && literalInvocation(next);
+  if (!invocation) return;
+  const suffix = left.at(-1);
+  const remainder = suffix && text.slice(suffix.after).trimStart();
+  return { invocation, directory, remainder };
+}
+
 /** A pipeline stage after the first: its stdin is the previous stage's output. */
 function pipedStage(node: Node) {
   const stage = node.parent?.type === "redirected_statement" ? node.parent : node;
@@ -138,6 +163,7 @@ function collect(
         if (words.some((word) => word === undefined)) uncertain(result, "dynamic_argument");
         const readStart = result.reads.length;
         const writeStart = result.writes.length;
+        const scriptStart = result.scriptEntryPoints?.length ?? 0;
         const commandStart = result.commands.length;
         const innerCommands: string[] = [];
         // Retain literal operands around dynamic words for hard-deny path checks.
@@ -185,6 +211,14 @@ function collect(
         const writes = result.writes.splice(writeStart);
         result.reads.push(...project(reads, state));
         result.writes.push(...project(writes, state));
+        const scripts = result.scriptEntryPoints?.splice(scriptStart);
+        if (scripts?.length)
+          result.scriptEntryPoints?.push(
+            ...project(
+              state.unknown ? scripts.filter((path) => path.startsWith("/")) : scripts,
+              state,
+            ),
+          );
         for (const text of innerCommands) nested(text, state);
         if (state.unknown) {
           uncertain(result, "unknown_command_directory");
@@ -302,6 +336,16 @@ export async function createCommandAnalyzer(options: PolicyOptions) {
           if (tree.rootNode.hasError) uncertain(result, "syntax_error");
           const single =
             tree.rootNode.children.length === 1 ? tree.rootNode.children[0] : undefined;
+          if (depth === 0 && single && !tree.rootNode.hasError) {
+            const list =
+              single.type === "redirected_statement" ? single.childForFieldName("body") : single;
+            if (list?.type === "list") {
+              const chain = leadingAndCommand(list, text);
+              // A trailing redirect belongs to the last command. Keep it in the suffix;
+              // if Git is last, the fixed recipe cannot reproduce that redirect.
+              if (single === list || chain?.remainder) result.leadingAndCommand = chain;
+            }
+          }
           if (depth === 0 && single?.type === "redirected_statement" && !tree.rootNode.hasError) {
             const body = single.childForFieldName("body");
             const redirect = single.namedChildren[1];

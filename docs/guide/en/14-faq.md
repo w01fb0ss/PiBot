@@ -57,7 +57,7 @@ Check in order:
 2. Is there an unanswered approval card in the chat (a count on **Inbox**)?
 3. Linux: are `bubblewrap` and `socat` installed? When they're missing the Bot shows the install command; install and retry.
 4. The sandbox blocked the command: the Bot explains why and can ask you to confirm running it once outside the sandbox. With **Strict sandbox** on, that option isn't offered.
-5. Windows: every command needs your approval and can't be set to Always, because Windows doesn't support command isolation yet.
+5. Windows has no command isolation. Settings disables **Always** for **Run commands**. Verified read-only commands within your file permissions can run without asking. Other ordinary commands usually ask. To allow them automatically, turn on YOLO for the topic and give consent (see [5 · Command isolation](05-approvals-and-permissions.md#command-isolation-sandbox)).
 
 **I can't open the local preview server.**
 Background commands Bots start can only listen on 127.0.0.1. Use **Open … in Bot browser** on the background command card, or open the address from the card in your own browser.

@@ -15,10 +15,10 @@ export function imagesCapability(): BrainCapability {
         name: imageBotName,
         assertVisible: (context, operation) => artifacts.assertVisible(context, operation),
         execute: (context, operation) => artifacts.execute(context, operation),
-        run: (deps, run, text, bot, images) =>
+        run: (deps, run, text, bot, images, dispatchModel) =>
           run.imageOperation
             ? reuseImageRun(deps, run, artifacts)
-            : generateImageRun(deps, run, text, null, bot, images, artifacts),
+            : generateImageRun(deps, run, text, bot, images, artifacts, dispatchModel),
       };
       ctx.images.provide(port);
       ctx.rpc.handle("images.reuse", async (params) => artifacts.enqueue(ctx.chat.queue, params));

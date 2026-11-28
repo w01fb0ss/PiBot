@@ -2,6 +2,7 @@ import {
   type BuiltinApp,
   CAPABILITIES,
   type CapabilityId,
+  CONNECTOR_STARTUP_MAX_SECONDS,
   type Connector,
   type ConnectorAccess,
   ConnectorFailureCodeSchema,
@@ -25,8 +26,10 @@ import { ConnectionAccessProposal } from "./ConnectionAccessProposal.tsx";
 import { ConnectorAccessEditor } from "./ConnectorAccessEditor.tsx";
 import { ConnectorDataDestinations } from "./ConnectorDataDestinations.tsx";
 import { ConnectorFeedback, OperationStatus } from "./ConnectorFeedback.tsx";
+import { ConnectorNetworkSummary } from "./ConnectorNetworkSummary.tsx";
 import { ConnectorPanel } from "./ConnectorPanel.tsx";
 import { ConnectorRecentUse } from "./ConnectorRecentUse.tsx";
+import { ConnectorRecovery } from "./ConnectorRecovery.tsx";
 import { ConnectorStartFailureView } from "./ConnectorSandbox.tsx";
 import {
   connectionFailureCode,
@@ -38,6 +41,7 @@ import drawerStyles from "./connections/drawer.module.css";
 import styles from "./connectors.module.css";
 import { DirectToolGrants } from "./DirectToolGrants.tsx";
 import { AdvancedTab, type SourceUpdate } from "./details/AdvancedTab.tsx";
+import { PluginSettingsFields, usePluginSettings } from "./details/PluginSettings.tsx";
 import { ToolKindRows, ToolsTab, useToolLabels } from "./details/ToolsTab.tsx";
 import { ImportedSkillAssignment } from "./ImportedSkillAssignment.tsx";
 import { connectorName } from "./presentation.ts";
@@ -78,6 +82,7 @@ export function ConnectorDetails({
   operations,
   suggestedCapabilities = [],
   remove,
+  openTokens,
   changed,
   close,
 }: {
@@ -91,6 +96,8 @@ export function ConnectorDetails({
   suggestedCapabilities?: readonly CapabilityId[];
   /** Removes the package this connection came from (高级 → 删除). */
   remove?(): void;
+  /** Opens the Access tokens dialog, optionally focused on one shared token name. */
+  openTokens?(secretName?: string): void;
   changed(): void;
   close(): void;
 }) {
@@ -102,6 +109,9 @@ export function ConnectorDetails({
     [id],
   );
   const detail = useConnectorRead(load);
+  useRpcEvent("connectors.changed", (event) => {
+    if (event.connectorId === id) detail.refresh();
+  });
   const catalog = useConnectorRead(
     useCallback(
       (peer: Peer, signal: AbortSignal) =>
@@ -148,6 +158,10 @@ export function ConnectorDetails({
     refreshLastUse();
   }, [snapshot, refreshDetail, refreshDiagnostics, refreshTokens, refreshLastUse]);
   useRpcEvent("chat.done", refreshLastUse);
+  useRpcEvent("connectors.changed", (event) => {
+    if (event.connectorId === id && (event.status === "needs_auth" || event.status === "error"))
+      setAuthorization(undefined);
+  });
   const refresh = () => {
     detail.refresh();
     diagnostics.refresh();
@@ -157,6 +171,7 @@ export function ConnectorDetails({
   };
   const action = useConnectorAction(refresh);
   const connector = detail.value?.connector;
+  const pluginSettings = usePluginSettings(connector?.pluginInstallationId, snapshot);
   const name = connector
     ? connectorName(connector, catalog.value?.items ?? [], language)
     : t("connectors.title");
@@ -251,9 +266,9 @@ export function ConnectorDetails({
   useEffect(() => {
     if (connector?.status === "ready" || connector?.status === "idle") setAuthorization(undefined);
   }, [connector?.status]);
-  const authorize = async () => {
+  const authorize = async (useKey = false) => {
     if (!connector || action.disabled) return;
-    const submitted = token;
+    const submitted = useKey ? token.trim() : "";
     setToken("");
     const result = await action.run((peer, signal) =>
       peer.call(
@@ -266,7 +281,7 @@ export function ConnectorDetails({
         { signal },
       ),
     );
-    if (result && detail.value?.auth === "oauth") setAuthorization(result);
+    if (result && !submitted) setAuthorization(result);
   };
   // Same path as 访问令牌's replace: the new value is checked by reconnecting.
   const replaceToken = async (tokenName: string, value: string) => {
@@ -326,6 +341,44 @@ export function ConnectorDetails({
     setWaitingNative(false);
     if (value?.operationId) operations.track(value.operationId, connector.pluginInstallationId, id);
   };
+  const saveStartup = async (seconds: number | null, retry = false) => {
+    if (!connector || disabled) return;
+    const mayConfirm = retry && (hostPlatform() === "win32" || connector.outsideSandbox);
+    setWaitingNative(mayConfirm);
+    const result = await action.run(
+      async (peer, signal) => {
+        const saved = await peer.call(
+          "connectors.update",
+          { id, expectedRevision: connector.revision, startupTimeoutSec: seconds },
+          { signal },
+        );
+        if (!retry) return undefined;
+        const params = { id, expectedRevision: saved.revision };
+        if (connector.outsideSandbox && hostPlatform() !== "win32")
+          return peer.call(
+            "connectors.setOutsideSandbox",
+            { ...params, enabled: true },
+            { signal },
+          );
+        return peer.call("connectors.restart", params, { signal });
+      },
+      mayConfirm ? 330_000 : 30_000,
+    );
+    setWaitingNative(false);
+    if (result?.operationId)
+      operations.track(result.operationId, connector.pluginInstallationId, id);
+  };
+  const currentWait = detail.value?.startup?.seconds;
+  const retryWithMoreTime =
+    currentWait !== undefined && currentWait < CONNECTOR_STARTUP_MAX_SECONDS
+      ? () => void saveStartup(Math.min(CONNECTOR_STARTUP_MAX_SECONDS, currentWait + 60), true)
+      : undefined;
+  const authorizeInline =
+    !authorization &&
+    detail.value?.canAuthorizeInBrowser &&
+    (connector?.status === "needs_auth" || (failure.success && failure.data === "auth_required"));
+  const canEnterKey = detail.value?.canAddRemoteKey && connector?.status === "needs_auth";
+  const showTokenInput = !!(detail.value?.canReplaceCredential || canEnterKey);
   const update = (
     patch: {
       networkDomains?: string[];
@@ -480,28 +533,75 @@ export function ConnectorDetails({
             {(["needs_setup", "needs_auth", "error"] as Connector["status"][]).includes(
               connector.status,
             ) &&
+              !(diagnostics.value?.needsReconfirm && !diagnostics.value.lastFailure) &&
               (diagnostics.value?.lastFailure ? (
-                <ConnectorStartFailureView failure={diagnostics.value.lastFailure} />
+                <ConnectorStartFailureView failure={diagnostics.value.lastFailure}>
+                  <ConnectorRecovery
+                    key={`${id}:${connector.revision}`}
+                    diagnostics={diagnostics.value}
+                    disabled={disabled}
+                    askRunAsMe={() => void setOutsideSandbox(true)}
+                    retry={() => void lifecycle("restart")}
+                    retryWithMoreTime={retryWithMoreTime}
+                  />
+                </ConnectorStartFailureView>
               ) : (
-                <p className={styles.warn}>
-                  {failure.success
-                    ? t(`connectors.failure.${failure.data}`)
-                    : t("connectors.setupNote")}
-                  {connector.kind === "mcp_stdio" && connector.status === "error" && (
-                    <> {t("connectors.startFailure.restartToSee")}</>
+                <div className={`${styles.warn} ${styles.stack}`} role="status">
+                  <p>
+                    {failure.success
+                      ? t(`connectors.failure.${failure.data}`)
+                      : t("connectors.setupNote")}
+                    {connector.kind === "mcp_stdio" &&
+                      connector.status === "error" &&
+                      !authorizeInline && <> {t("connectors.startFailure.restartToSee")}</>}
+                  </p>
+                  {authorizeInline && detail.value?.hasSavedOAuth && (
+                    <p>{t("connectors.recovery.oauthRenewal")}</p>
                   )}
-                </p>
+                  {authorizeInline && (
+                    <Button
+                      variant="secondary"
+                      disabled={action.disabled}
+                      onClick={() => void authorize()}
+                    >
+                      {t("connectors.recovery.authorize")}
+                    </Button>
+                  )}
+                  {failure.success && failure.data === "timeout" && retryWithMoreTime && (
+                    <Button variant="secondary" disabled={disabled} onClick={retryWithMoreTime}>
+                      {t("connectors.recovery.extend")}
+                    </Button>
+                  )}
+                </div>
               ))}
+            {diagnostics.value?.needsReconfirm && !diagnostics.value.lastFailure && (
+              <div className={`${styles.warn} ${styles.stack}`} role="status">
+                <p>{t("connectors.outsideSandbox.reconfirm")}</p>
+                <Button
+                  variant="secondary"
+                  disabled={disabled}
+                  onClick={() => void setOutsideSandbox(true)}
+                >
+                  {t("connectors.recovery.reconfirm")}
+                </Button>
+              </div>
+            )}
+            {connector.status === "starting" && detail.value?.startup?.packageRunner && (
+              <p className={styles.note} role="status">
+                {t("connectors.recovery.downloading")}
+              </p>
+            )}
             {hostPlatform() === "win32" && connector.kind === "mcp_stdio" && (
               <p className={styles.warn}>{t("connectors.windowsWarning")}</p>
             )}
             {(connector.status === "needs_auth" ||
               connector.status === "needs_setup" ||
               connector.status === "disabled") &&
-              ((detail.value?.auth === "bearer" && detail.value.canReplaceCredential !== false) ||
-                detail.value?.auth === "oauth") && (
+              (showTokenInput ||
+                (detail.value?.auth === "oauth" && !authorizeInline) ||
+                !!authorization) && (
                 <SettingsSection title={t("connections.drawer.fill")}>
-                  {detail.value?.auth === "bearer" && (
+                  {showTokenInput && (
                     <label className={drawerStyles.field}>
                       <span className={drawerStyles.fieldLabel}>{t("connectors.appToken")}</span>
                       <span className={drawerStyles.inputBox}>
@@ -546,26 +646,78 @@ export function ConnectorDetails({
                         </>
                       ) : (
                         <Button
-                          disabled={
-                            action.disabled || (detail.value?.auth === "bearer" && !token.trim())
-                          }
-                          onClick={() => void authorize()}
+                          disabled={action.disabled || (showTokenInput && !token.trim())}
+                          onClick={() => void authorize(showTokenInput)}
                         >
-                          {t("connectors.reauthorize")}
+                          {t(
+                            canEnterKey
+                              ? "connectors.recovery.saveRemoteKey"
+                              : "connectors.reauthorize",
+                          )}
                         </Button>
                       )}
                     </div>
                   </div>
                 </SettingsSection>
               )}
-            {detail.value?.auth === "bearer" && detail.value.canReplaceCredential === false && (
-              <p className={styles.note}>{t("connectors.sharedCredentialNote")}</p>
+            {!!detail.value?.sharedSecretNames?.length && (
+              <div className={drawerStyles.inlineNotice}>
+                <p className={styles.note}>{t("connectors.sharedCredentialNote")}</p>
+                {openTokens && (
+                  <div className={drawerStyles.inlineActions}>
+                    {detail.value.sharedSecretNames.map((secretName) => (
+                      <Button
+                        key={secretName}
+                        variant="secondary"
+                        onClick={() => openTokens(secretName)}
+                      >
+                        {t("connectors.openAccessTokenNamed", { name: secretName })}
+                      </Button>
+                    ))}
+                  </div>
+                )}
+              </div>
             )}
+            {detail.value?.auth === "bearer" &&
+              detail.value.canReplaceCredential === false &&
+              ownTokens.length > 0 && (
+                <div className={drawerStyles.inlineNotice}>
+                  <p className={styles.note}>{t("connectors.privateCredentialsNote")}</p>
+                  <Button variant="secondary" onClick={() => setTab("advanced")}>
+                    {t("connectors.advanced")}
+                  </Button>
+                </div>
+              )}
             <OperationStatus
-              row={latest}
+              // A finished operation is already told by the hero's status chip; a bare
+              // 「操作成功」 under it read as a stray line.
+              row={latest?.operation?.state === "done" && !latest.unknown ? undefined : latest}
               check={operations.check}
               systemAuth={detail.value?.auth === "system"}
             />
+            {detail.value?.networkMode && detail.value.networkMode !== "none" && (
+              <ConnectorNetworkSummary
+                mode={detail.value.networkMode}
+                declared={detail.value.declaredNetworkDomains ?? []}
+                blockedRemoteSite={detail.value.blockedRemoteSite}
+                blocked={detail.value.blockedNetworkSites ?? []}
+                disabled={disabled}
+                revokeRemote={
+                  detail.value.canEditNetworkDomains
+                    ? () => void update({ networkDomains: [] })
+                    : undefined
+                }
+                resolve={(site, choice) =>
+                  void action.run((peer, signal) =>
+                    peer.call(
+                      "connectors.network.resolve",
+                      { id, host: site, action: choice },
+                      { signal },
+                    ),
+                  )
+                }
+              />
+            )}
             <DrawerTabs<Tab>
               label={name}
               value={tab}
@@ -682,11 +834,31 @@ export function ConnectorDetails({
                   disabled={disabled}
                   restart={() => void lifecycle("restart")}
                   sourceUpdate={sourceUpdate}
-                  updateFromSource={(confirmed) => void updateFromSource(confirmed)}
+                  updateFromSource={
+                    detail.value?.canUpdateFromSource
+                      ? (confirmed) => void updateFromSource(confirmed)
+                      : undefined
+                  }
                   tokens={ownTokens}
                   replaceToken={replaceToken}
+                  settings={
+                    pluginSettings.value?.editable ? (
+                      <PluginSettingsFields
+                        settings={pluginSettings.value}
+                        disabled={disabled}
+                        changed={() => {
+                          pluginSettings.refresh();
+                          refresh();
+                        }}
+                        saved={(operationIds) => {
+                          for (const operationId of operationIds)
+                            operations.track(operationId, connector.pluginInstallationId, null);
+                        }}
+                      />
+                    ) : undefined
+                  }
                   network={
-                    detail.value?.canEditNetworkDomains || detail.value?.networkDomains?.length
+                    detail.value?.networkMode === "sandbox" && detail.value.canEditNetworkDomains
                       ? {
                           domains: detail.value.networkDomains ?? [],
                           editable: !!detail.value.canEditNetworkDomains,
@@ -695,6 +867,8 @@ export function ConnectorDetails({
                       : undefined
                   }
                   diagnostics={diagnostics.value}
+                  startup={detail.value?.startup}
+                  saveStartup={(seconds) => void saveStartup(seconds)}
                   setOutsideSandbox={(enabled) => void setOutsideSandbox(enabled)}
                   toolKinds={
                     <ToolKindRows

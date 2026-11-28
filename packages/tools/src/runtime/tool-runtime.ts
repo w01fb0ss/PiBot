@@ -1,4 +1,10 @@
-import type { DockerConnection, ExecutionTarget, fetchPage, NetworkProxy } from "@pibot/execution";
+import type {
+  DockerConnection,
+  ExecutionTarget,
+  fetchPage,
+  NetworkProxy,
+  RunCommandOptions,
+} from "@pibot/execution";
 import type {
   AuditDetail,
   BackgroundCommand,
@@ -22,6 +28,9 @@ export interface ToolCallView {
 export interface PreparedToolView {
   call: ToolCallView;
   result: {
+    windowsReadProven?: true;
+    windowsReadOnly?: true;
+    command?: string;
     /** Policy's reason code; the local-service card is told apart by it. */
     reason?: string;
     facts?: readonly { kind: string; value?: string }[];
@@ -32,10 +41,15 @@ export interface PreparedToolView {
     path?: { path: string; root?: string };
     analysis?: {
       literalCommand?: CommandLiteralView;
+      leadingAndCommand?: {
+        invocation: CommandLiteralView;
+        directory?: string;
+        remainder?: string;
+      };
       commands?: CommandLiteralView[];
       incomplete?: boolean;
       /** Script files the verdict read by content; execution re-checks them before the run. */
-      scriptPins?: readonly { path: string; sha256: string }[];
+      scriptPins?: readonly { path: string; sha256: string; canonicalPath?: string }[];
       /** Interpreters the verdict assumed are the system ones; resolved again before the run. */
       scriptInterpreters?: readonly string[];
     };
@@ -257,10 +271,14 @@ export interface ToolRuntime {
     prepared: PreparedToolView,
     signal: AbortSignal,
   ): Promise<{ env: Record<string, string>; values: { handle: string; value: string }[] }>;
-  /** The prepared runtime for this command's skill; brain-only, never model input. */
-  commandSkillEnvironment?(
+  commandSkillSecrets?(
     prepared: PreparedToolView,
-  ): Promise<{ id: string; dir: string; bin: string; python?: string; node?: string } | undefined>;
+    signal: AbortSignal,
+  ): Promise<
+    { env: Record<string, string>; values: { handle: string; value: string }[] } | undefined
+  >;
+  /** The prepared runtime for this command's skill; brain-only, never model input. */
+  commandSkillEnvironment?(prepared: PreparedToolView): Promise<RunCommandOptions["skillEnv"]>;
   commandGroupId(): string | undefined;
   /**
    * Maintainers 2026-11-14: local-network hosts a person allowed in this run, read at dispatch so a
@@ -289,6 +307,8 @@ export interface ToolRuntime {
     outsideSandbox?: boolean,
     sandboxedExecution?: boolean,
     network?: { allowAll: boolean; domains: readonly string[] },
+    commands?: readonly CommandLiteralView[],
+    ranOutsideSandbox?: boolean,
   ): string | undefined;
   /**
    * Undefined once this run already said it — a per-call reminder would train the model to
@@ -298,6 +318,11 @@ export interface ToolRuntime {
   /** One hint after a successful system-browser command. */
   commandBrowserOpenGuidance(literal: CommandLiteralView | undefined): string | undefined;
   /** Remember a block of this call; true when running outside the sandbox may be offered. */
+  retrySandboxWebsite?(
+    prepared: PreparedToolView,
+    block: Parameters<ToolRuntime["recordSandboxBlock"]>[1],
+    signal: AbortSignal,
+  ): Promise<ToolResult | undefined>;
   recordSandboxBlock(
     prepared: PreparedToolView,
     block: import("@pibot/execution").SandboxBlock,

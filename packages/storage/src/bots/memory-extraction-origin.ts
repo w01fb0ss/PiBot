@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 
 /** Trusted message provenance only; model text and topic titles never identify a person. */
-export const memoryHumanMessageSql = `m.role='user' AND m.status='done' AND m.bot_id IS NULL
+export const memoryHumanMessageSql = `m.import_id IS NULL AND m.role='user' AND m.status='done' AND m.bot_id IS NULL
   AND m.routine_trigger IS NULL AND COALESCE(json_extract(m.usage,'$.systemEvent'),0)=0
   AND COALESCE(json_extract(m.usage,'$.inputOrigin'),'')<>'acp'
   AND NOT EXISTS (SELECT 1 FROM runs mr WHERE mr.user_message_id=m.id AND mr.automatic=1)

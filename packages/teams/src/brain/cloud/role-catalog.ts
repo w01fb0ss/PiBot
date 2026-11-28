@@ -123,8 +123,12 @@ export class RoleCatalogService {
       }
     });
   }
-  private async download(path: string, max: number) {
-    const signal = AbortSignal.any([this.deps.signal, AbortSignal.timeout(TIMEOUT_MS)]);
+  private async download(path: string, max: number, parent?: AbortSignal) {
+    const signal = AbortSignal.any([
+      this.deps.signal,
+      AbortSignal.timeout(TIMEOUT_MS),
+      ...(parent ? [parent] : []),
+    ]);
     let response: Response;
     try {
       response = await this.deps.fetch(new URL(path, this.base), {
@@ -135,6 +139,7 @@ export class RoleCatalogService {
       });
     } catch {
       this.deps.signal.throwIfAborted();
+      parent?.throwIfAborted();
       throw new CatalogFailure("offline");
     }
     if (!response.ok) {
@@ -174,7 +179,10 @@ export class RoleCatalogService {
     for (const kind of ["role", "group"] as const)
       for (const name of await this.archives(kind)) {
         const match = /^([a-z0-9][a-z0-9-]*)\.v([1-9][0-9]*)\.pibot$/.exec(name);
-        if (match) versions.set(`${kind}:${match[1]}`, Number(match[2]));
+        if (match) {
+          const key = `${kind}:${match[1]}`;
+          versions.set(key, Math.max(versions.get(key) ?? 0, Number(match[2])));
+        }
       }
     return versions;
   }
@@ -273,25 +281,45 @@ export class RoleCatalogService {
       return this.state();
     });
   }
-  install(kind: Kind, id: string): Promise<number> {
+  install(
+    kind: Kind,
+    id: string,
+    routing?: {
+      version: number;
+      signal: AbortSignal;
+      guard(): void;
+      availableRoles: ReadonlySet<string>;
+    },
+  ): Promise<number> {
     return this.serial(async () => {
+      routing?.guard();
       const catalog = await this.cached();
       if (!catalog) throw new RpcError(RpcErrorCodes.invalidParams, "role_catalog_unavailable");
+      const target = catalog[KINDS[kind]].find((entry) => entry.id === id);
+      if (!target) throw new RpcError(RpcErrorCodes.invalidParams, "role_catalog_unknown");
+      if (target.minApp && older(this.deps.appVersion, target.minApp))
+        throw new RpcError(RpcErrorCodes.invalidParams, "role_catalog_app_too_old");
       const installed = await this.installedVersions();
+      const installedVersion = installed.get(`${kind}:${id}`) ?? 0;
+      if (routing && (routing.version !== target.version || installedVersion > target.version))
+        throw new RpcError(RpcErrorCodes.invalidParams, "builtin_routing_changed");
+      if ((routing || kind === "role") && installedVersion >= target.version) return target.version;
       const items: { kind: Kind; item: RoleCatalogItem }[] = [];
-      const add = (itemKind: Kind, itemId: string) => {
-        const item = catalog[KINDS[itemKind]].find((entry) => entry.id === itemId);
-        if (!item) throw new RpcError(RpcErrorCodes.invalidParams, "role_catalog_unknown");
-        if (item.minApp && older(this.deps.appVersion, item.minApp))
-          throw new RpcError(RpcErrorCodes.invalidParams, "role_catalog_app_too_old");
-        if (itemKind === "role" && (installed.get(`role:${itemId}`) ?? 0) >= item.version) return;
-        if (!items.some((entry) => entry.kind === itemKind && entry.item.id === itemId))
+      const add = (itemKind: Kind, item: RoleCatalogItem) => {
+        if (!items.some((entry) => entry.kind === itemKind && entry.item.id === item.id))
           items.push({ kind: itemKind, item });
       };
-      add(kind, id);
+      add(kind, target);
       if (kind === "group") {
-        const group = items[0]?.item;
-        for (const member of group?.members ?? []) add("role", member);
+        for (const member of target.members ?? []) {
+          // A routing install provisions a new recipient. Any existing local roles keep their version.
+          if (routing?.availableRoles.has(member)) continue;
+          const role = catalog.roles.find((entry) => entry.id === member);
+          if (!role) throw new RpcError(RpcErrorCodes.invalidParams, "role_catalog_unknown");
+          if (role.minApp && older(this.deps.appVersion, role.minApp))
+            throw new RpcError(RpcErrorCodes.invalidParams, "role_catalog_app_too_old");
+          if ((installed.get(`role:${member}`) ?? 0) < role.version) add("role", role);
+        }
       }
       const downloaded: { kind: Kind; item: RoleCatalogItem; data: Buffer }[] = [];
       for (const entry of items) {
@@ -300,6 +328,7 @@ export class RoleCatalogService {
           data = await this.download(
             entry.item.archive,
             Math.min(entry.item.bytes, ARCHIVE_MAX_BYTES),
+            routing?.signal,
           );
         } catch (caught) {
           if (caught instanceof CatalogFailure)
@@ -314,6 +343,8 @@ export class RoleCatalogService {
         this.deps.validate(zipEntries(data), entry.kind, entry.item.id);
         downloaded.push({ ...entry, data });
       }
+      routing?.guard();
+      this.deps.signal.throwIfAborted();
       for (const entry of downloaded) {
         const destination = join(
           this.dir,
@@ -330,8 +361,8 @@ export class RoleCatalogService {
           )
             await rm(join(this.dir, "installed", KINDS[entry.kind], name), { force: true });
       }
-      this.deps.audit("catalog_installed", `${kind}:${id}@${items[0]?.item.version ?? 0}`);
-      return items[0]?.item.version ?? 0;
+      this.deps.audit("catalog_installed", `${kind}:${id}@${target.version}`);
+      return target.version;
     });
   }
   /** Checks an imported archive against the currently cached, signature-verified catalog. */

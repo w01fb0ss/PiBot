@@ -8,12 +8,12 @@ export class GroupCyclesRepo {
   get(groupId: string) {
     const row = this.db
       .prepare(
-        "SELECT cycle_id AS cycleId,rounds,limited,handoffs FROM group_cycles WHERE group_id=?",
+        "SELECT cycle_id AS cycleId,rounds,limited,handoffs,round_limit_id AS roundLimitId FROM group_cycles WHERE group_id=?",
       )
       .get(groupId);
     return GroupCycleSchema.parse(
       row
-        ? { ...row, limited: row.limited === 1 }
+        ? { ...row, limited: row.limited === 1, roundLimitId: row.roundLimitId ?? undefined }
         : { cycleId: null, rounds: 0, limited: false, handoffs: 0 },
     );
   }
@@ -21,7 +21,9 @@ export class GroupCyclesRepo {
     const id = randomUUID();
     this.db
       .prepare(
-        "INSERT INTO group_cycles(group_id,cycle_id,rounds,limited) VALUES (?,?,0,0) ON CONFLICT(group_id) DO UPDATE SET cycle_id=excluded.cycle_id,rounds=0,limited=0,handoffs=0",
+        `INSERT INTO group_cycles(group_id,cycle_id,rounds,limited) VALUES (?,?,0,0)
+        ON CONFLICT(group_id) DO UPDATE SET cycle_id=excluded.cycle_id,rounds=0,limited=0,
+          handoffs=0,round_limit_id=NULL`,
       )
       .run(groupId, id);
     return id;
@@ -30,7 +32,7 @@ export class GroupCyclesRepo {
    * One automatic step of this cycle. `free` (discussion: asks, replies, plain assignments) uses
    * the group's round limit; `handoff`
    * uses its own cap so a 3–4 stage pipeline is not cut off, while a looping one still stops.
-   * Either cap stops the whole cycle (`limited`) until the user writes again.
+   * A round-limit stop can be lifted while keeping this cycle's tasks and pending wakes.
    */
   consume(
     groupId: string,
@@ -45,8 +47,11 @@ export class GroupCyclesRepo {
       kind === "handoff"
         ? (cycle.handoffs ?? 0) >= HANDOFF_LIMIT
         : cycle.rounds >= group.autoRoundLimit;
-    if (cycle.limited || exhausted) {
-      this.db.prepare("UPDATE group_cycles SET limited=1 WHERE group_id=?").run(groupId);
+    if (cycle.limited) return "limit";
+    if (exhausted) {
+      this.db
+        .prepare("UPDATE group_cycles SET limited=1,round_limit_id=? WHERE group_id=?")
+        .run(kind === "free" ? randomUUID() : null, groupId);
       return "limit";
     }
     this.db
@@ -58,11 +63,21 @@ export class GroupCyclesRepo {
       .run(groupId, cycleId);
     return "ok";
   }
+  continueRounds(groupId: string, roundLimitId: string) {
+    return (
+      this.db
+        .prepare(`UPDATE group_cycles SET rounds=0,limited=0,round_limit_id=NULL
+          WHERE group_id=? AND limited=1 AND round_limit_id=?`)
+        .run(groupId, roundLimitId).changes > 0
+    );
+  }
   /** Stops the current cycle: a hand-off still unmet after its send-back waits for the user. */
   limit(groupId: string, cycleId: string) {
     return (
       this.db
-        .prepare("UPDATE group_cycles SET limited=1 WHERE group_id=? AND cycle_id=?")
+        .prepare(
+          "UPDATE group_cycles SET limited=1,round_limit_id=NULL WHERE group_id=? AND cycle_id=?",
+        )
         .run(groupId, cycleId).changes > 0
     );
   }

@@ -442,6 +442,61 @@ describe("prompt lifecycle with fake pi streams", () => {
       testedModels: ["gpt-5-nano"],
     });
   });
+
+  it.each(["primary", "auxiliary", "auxiliary only"])(
+    "charges one tool translation to the run (%s)",
+    async (selection) => {
+      keys.set("openai", "fake-key");
+      const primary = { provider: "openai", id: "gpt-5-mini" };
+      const auxiliary = { provider: "openai", id: "gpt-5-nano" };
+      const agent = createAgentRuntime({
+        dataDir,
+        hasApiKey: (id) => keys.has(id),
+        getApiKey: async (id) => keys.get(id),
+        customProviders: () => [],
+        auxiliaryModel: () => (selection === "primary" ? undefined : auxiliary),
+      });
+      const english = '["used books book swap warm","poster"]';
+      const query = '["旧书 交换 温暖","海报"]';
+      const complete = vi
+        .spyOn(pi.ModelRuntime.prototype, "completeSimple")
+        .mockImplementation(async (model) => {
+          const result = message(model, english);
+          result.usage.cost.total = 0.001;
+          return result;
+        });
+      streamRestorers.push(() => complete.mockRestore());
+      const observer = { beforeRequest: vi.fn(), settled: vi.fn() };
+      await expect(
+        agent.transformMessage?.({
+          kind: "tool_input_translation",
+          model: selection === "auxiliary only" ? undefined : primary,
+          text: query,
+          language: "en",
+          observer,
+          signal: new AbortController().signal,
+        }),
+      ).resolves.toBe(english);
+      expect(complete).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining(selection === "primary" ? primary : auxiliary),
+        expect.objectContaining({
+          messages: [expect.objectContaining({ role: "user", content: query })],
+        }),
+        expect.objectContaining({
+          maxTokens: 192,
+          maxRetries: 0,
+          timeoutMs: 8_000,
+          signal: expect.any(AbortSignal),
+        }),
+      );
+      expect(observer.beforeRequest).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ kind: "auxiliary" }),
+      );
+      expect(observer.settled).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ usage: { tokens: 5, costUsd: 0.001 } }),
+      );
+    },
+  );
 });
 
 describe("custom model discovery using fetch stubs", () => {

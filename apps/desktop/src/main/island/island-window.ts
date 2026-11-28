@@ -1,9 +1,10 @@
 import { join } from "node:path";
+import type { Logger } from "@pibot/observability";
 import tokens from "@pibot/ui/tokens.css?raw";
 import { BrowserWindow, ipcMain, nativeTheme, screen, session } from "electron";
 import {
   IslandActionSchema,
-  type IslandState,
+  type IslandPresentation,
   LIVE_ISLAND_ACTION,
   LIVE_ISLAND_READY,
   LIVE_ISLAND_STATE,
@@ -13,8 +14,8 @@ const PARTITION = "pibot-island";
 // The first frame before the preload reports the pill's laid-out size.
 const INITIAL = { width: 584, height: 72 };
 const TOP_GAP = 6;
-// Window opacity exists on macOS and Windows only; Linux hides and shows the window instead.
-const FADE = process.platform === "darwin" || process.platform === "win32";
+// The macOS panel needs to stay ordered in to avoid its show animation.
+const FADE = process.platform === "darwin";
 
 // Same look as the computer-use bar: the page colours inverted (--prim pill, --bg text), pill
 // radius, theme shadow, 13 px. Colours come only from the shared theme tokens. Images are the
@@ -31,7 +32,9 @@ html,body{margin:0;background:transparent;overflow:hidden;font-family:var(--font
 .pill.avatars{gap:6px;padding:0 12px 0 9px}
 .face{width:26px;height:26px;flex:none;display:inline-flex;border-radius:50%;background:var(--bg);overflow:hidden}
 .face svg,.face img{width:26px;height:26px;display:block}
-.text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.details{display:flex;align-items:baseline;flex:1;min-width:0}
+.text,.runner{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.runner{flex:none;max-width:38%;margin-left:4px}
 .text b{font-weight:600}
 .sep{opacity:.6}
 .time{opacity:.65;font-variant-numeric:tabular-nums}
@@ -46,45 +49,56 @@ html,body{margin:0;background:transparent;overflow:hidden;font-family:var(--font
 .index{font-variant-numeric:tabular-nums;font-size:12px;padding-right:4px}
 .peek{width:480px;height:10px;margin-top:-4px;border-radius:0 0 14px 14px;
   background:color-mix(in srgb,var(--prim) 55%,var(--bg));box-shadow:var(--shadow)}
-.text.flip{animation:flip 180ms ease-out}
+.tooltip{box-sizing:border-box;max-width:520px;margin-top:6px;padding:5px 10px;
+  border-radius:var(--radius-pill);background:var(--prim);color:var(--bg);font-size:13px;
+  overflow-wrap:anywhere;pointer-events:none}
+.details.flip{animation:flip 180ms ease-out}
 @keyframes pulse{50%{opacity:.35}}
 @keyframes flip{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
-@media (prefers-reduced-motion:reduce){.dot,.text.flip{animation:none!important}}
+@media (prefers-reduced-motion:reduce){.dot,.details.flip{animation:none!important}}
 </style></head><body><div id="host" role="status" aria-live="polite"></div></body></html>`;
 
 /**
- * The live island window: always on top, never takes focus, on every desktop space, owned by the
- * process that runs the brain so it also shows with no Pi Bot window open. Modelled on the
- * computer-use indicator; `destroy()` closes the window and removes every listener it added.
+ * The live island window: always on top and never takes focus. Modelled on the computer-use
+ * indicator; `destroy()` closes the window and removes every listener it added.
  */
 export function createIslandWindow(options: {
   outputDir: string;
-  title: string;
-  onAction(raw: unknown): void;
+  logger: Logger;
+  open(key: string): void;
 }) {
   let window: BrowserWindow | undefined;
   let ready = false;
-  let latest: Omit<IslandState, "theme"> | undefined;
+  let canShow = false;
+  let latest: IslandPresentation["view"] | undefined;
   let size = INITIAL;
-  session
-    .fromPartition(PARTITION)
-    .setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+  const report = (event: "create" | "show" | "failed", reason: string) => {
+    const line = JSON.stringify({
+      module: "live-island",
+      event,
+      platform: process.platform,
+      reason,
+    });
+    if (event === "failed") options.logger.warn(line);
+    else options.logger.info(line);
+  };
   const bounds = () => {
     const area = screen.getPrimaryDisplay().workArea;
-    const width = Math.min(size.width, area.width);
+    const gap = Math.min(TOP_GAP, Math.max(0, area.height - 1));
+    const width = Math.max(1, Math.min(size.width, area.width));
     return {
       width,
-      height: size.height,
+      height: Math.max(1, Math.min(size.height, area.height - gap)),
       x: Math.round(area.x + (area.width - width) / 2),
-      y: area.y + TOP_GAP,
+      y: area.y + gap,
     };
   };
   const send = () => {
-    if (!window || window.isDestroyed() || !ready || !latest) return;
-    window.webContents.send(LIVE_ISLAND_STATE, {
-      ...latest,
-      theme: nativeTheme.shouldUseDarkColors ? "dark" : "light",
-    });
+    if (!window || window.isDestroyed() || !ready) return;
+    window.webContents.send(
+      LIVE_ISLAND_STATE,
+      latest ? { ...latest, theme: nativeTheme.shouldUseDarkColors ? "dark" : "light" } : null,
+    );
   };
   const fromWindow = (event: Electron.IpcMainEvent) =>
     !!window && !window.isDestroyed() && event.sender === window.webContents;
@@ -92,9 +106,15 @@ export function createIslandWindow(options: {
     if (!fromWindow(event)) return;
     ready = true;
     send();
+    // The X11 owner can start with no mapped windows. The preload is ready even when
+    // Chromium hasn't produced the hidden window's first compositor frame.
+    if (process.platform === "linux" && window) {
+      canShow = true;
+      show(window);
+    }
   };
   const onAction = (event: Electron.IpcMainEvent, raw: unknown) => {
-    if (!fromWindow(event)) return;
+    if (!latest || !fromWindow(event)) return;
     const parsed = IslandActionSchema.safeParse(raw);
     if (!parsed.success) return;
     if (parsed.data.kind === "size") {
@@ -102,7 +122,8 @@ export function createIslandWindow(options: {
       if (window && !window.isDestroyed()) window.setBounds(bounds());
       return;
     }
-    options.onAction(parsed.data);
+    const { key } = parsed.data;
+    if (latest.items.some((item) => item.key === key)) options.open(key);
   };
   // The work area moves with the menu bar, Dock, taskbar and display changes.
   const onDisplay = () => {
@@ -115,7 +136,20 @@ export function createIslandWindow(options: {
   screen.on("display-added", onDisplay);
   screen.on("display-removed", onDisplay);
 
-  const create = () => {
+  const show = (created: BrowserWindow) => {
+    if (!latest || !canShow || created.isDestroyed() || created.isVisible()) return;
+    try {
+      created.showInactive();
+      if (created.isVisible()) report("show", "shown_inactive");
+      else report("failed", "window_not_visible");
+    } catch {
+      report("failed", "show_inactive_failed");
+    }
+  };
+  const create = (title: string) => {
+    session
+      .fromPartition(PARTITION)
+      .setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
     const created = new BrowserWindow({
       ...bounds(),
       show: false,
@@ -129,7 +163,7 @@ export function createIslandWindow(options: {
       focusable: false,
       alwaysOnTop: true,
       hasShadow: false,
-      title: options.title,
+      title,
       // A non-activating panel on macOS: clicks work without pulling focus from the user's app.
       ...(process.platform === "darwin" ? { type: "panel" } : {}),
       webPreferences: {
@@ -142,34 +176,65 @@ export function createIslandWindow(options: {
         backgroundThrottling: false,
       },
     });
-    // One level below the computer-use bar ("screen-saver"), which wins whenever both show.
-    created.setAlwaysOnTop(true, "pop-up-menu");
-    // skipTransformProcessType keeps the dock-less background owner from becoming a regular app.
-    created.setVisibleOnAllWorkspaces(true, {
-      visibleOnFullScreen: true,
-      skipTransformProcessType: true,
-    });
-    created.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-    created.webContents.on("will-navigate", (event) => event.preventDefault());
-    created.on("closed", () => {
-      if (window === created) {
-        window = undefined;
-        ready = false;
-      }
-    });
-    void created.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(PAGE)}`);
-    created.once("ready-to-show", () => {
-      if (latest && !created.isDestroyed()) created.showInactive();
-    });
-    return created;
+    window = created;
+    report("create", "window_created");
+    const fail = (reason: string) => {
+      if (window !== created || created.isDestroyed()) return;
+      report("failed", reason);
+      created.destroy();
+    };
+    try {
+      // One level below the computer-use bar ("screen-saver"), which wins whenever both show.
+      created.setAlwaysOnTop(true, "pop-up-menu");
+      if (process.platform !== "win32")
+        // skipTransformProcessType keeps the dock-less background owner from becoming a regular app.
+        created.setVisibleOnAllWorkspaces(true, {
+          visibleOnFullScreen: true,
+          skipTransformProcessType: true,
+        });
+      created.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+      created.webContents.on("will-navigate", (event) => event.preventDefault());
+      created.webContents.on("preload-error", () => fail("preload_failed"));
+      created.webContents.on("render-process-gone", () => fail("renderer_gone"));
+      created.once("closed", () => {
+        if (window === created) {
+          window = undefined;
+          ready = false;
+          canShow = false;
+        }
+      });
+      const showWhenReady = () => {
+        if (window !== created || created.isDestroyed()) return;
+        canShow = true;
+        show(created);
+      };
+      if (process.platform === "darwin") created.once("ready-to-show", showWhenReady);
+      // Windows can defer a hidden transparent window's first paint. Its document load does
+      // not need a compositor frame, and showing the transparent page won't steal focus.
+      void created.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(PAGE)}`).then(
+        () => {
+          if (process.platform === "win32") showWhenReady();
+        },
+        () => fail("document_load_failed"),
+      );
+    } catch {
+      fail("window_setup_failed");
+      window = undefined;
+    }
   };
 
   return {
-    show(state: Omit<IslandState, "theme">) {
-      latest = state;
-      if (!window || window.isDestroyed()) window = create();
-      else {
-        if (!window.isVisible()) window.showInactive();
+    show({ title, view }: IslandPresentation) {
+      latest = view;
+      if (!window || window.isDestroyed()) {
+        try {
+          create(title);
+        } catch {
+          report("failed", "window_create_failed");
+        }
+      } else {
+        if (window.getTitle() !== title) window.setTitle(title);
+        show(window);
         if (FADE) {
           window.setIgnoreMouseEvents(false);
           window.setOpacity(1);
@@ -178,7 +243,10 @@ export function createIslandWindow(options: {
       send();
     },
     hide() {
+      if (!latest) return;
       latest = undefined;
+      // Opacity and click-through do not necessarily dispatch pointerleave to the document.
+      send();
       if (!window || window.isDestroyed()) return;
       if (!FADE) {
         window.hide();
@@ -189,9 +257,6 @@ export function createIslandWindow(options: {
       // has nothing to animate.
       window.setOpacity(0);
       window.setIgnoreMouseEvents(true);
-    },
-    setTitle(title: string) {
-      if (window && !window.isDestroyed()) window.setTitle(title);
     },
     destroy() {
       ipcMain.off(LIVE_ISLAND_READY, onReady);

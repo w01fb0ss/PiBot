@@ -1,4 +1,4 @@
-// Brain-side connector orchestration: the 13 registered RPCs, lifecycle
+// Brain-side connector orchestration: registered RPCs, lifecycle
 // operations, the connection pool and tool catalog publishing live here. The
 // pool borrows connections; dispatch permissions are enforced per call and
 // never inherited from a plugin manifest.
@@ -11,7 +11,12 @@ import type {
   ConnectorImportHost,
   EventPayloads,
 } from "@pibot/plugins-contract/full";
-import { ConnectorToolSchema } from "@pibot/plugins-contract/full";
+import {
+  ConnectorInputLanguageSchema,
+  ConnectorToolSchema,
+  RpcError,
+  RpcErrorCodes,
+} from "@pibot/plugins-contract/full";
 import type { AuditRepo, DraftsRepo, SecretStore } from "@pibot/storage";
 import { z } from "zod";
 import type {
@@ -23,8 +28,10 @@ import type {
 import type { ConnectorPool } from "../../pool/pool.ts";
 import type { ConnectorService } from "../connector-service.ts";
 
+const discoveryDigest = z.string().regex(/^[a-f0-9]{64}$/);
 export const discoveryCursor = z.strictObject({
-  snapshot: z.string().length(64),
+  scope: discoveryDigest.optional(),
+  snapshot: discoveryDigest,
   after: z.number().int().nonnegative().safe(),
 });
 
@@ -42,6 +49,7 @@ export const remotePageSchema = z.strictObject({
         title: z.string().max(200).optional(),
         description: z.string().max(4096).optional(),
         inputSchema: ConnectorToolSchema.shape.schema,
+        inputLanguage: ConnectorInputLanguageSchema.optional(),
         readOnlyHint: z.boolean().optional(),
         idempotentHint: z.boolean().optional(),
         destructiveHint: z.boolean().optional(),
@@ -53,14 +61,20 @@ export const remotePageSchema = z.strictObject({
 
 export type Emit = <K extends keyof EventPayloads>(event: K, payload: EventPayloads[K]) => void;
 
-/** The 13 registered connector RPCs, through brain's single RPC wrapper. */
+/** The connector RPCs, through brain's single RPC wrapper. */
 export function registerConnectorRpc(handle: RegisterRpc, service: ConnectorService) {
   handle("apps.list", () => Promise.resolve(service.apps.list()));
+  handle("connectors.pickWorkingDirectory", (_, context) =>
+    service.pickWorkingDirectory(context.signal),
+  );
   handle("plugins.pickImport", (params) => service.pickImport(params));
   handle("apps.connect", (params) => service.apps.connect(params));
   handle("connectors.authorize", (params) => service.apps.authorize(params));
   handle("connectors.cancelAuthorization", (params) =>
     Promise.resolve(service.apps.cancel(params.authorizationId)),
+  );
+  handle("connectors.waitAuthorization", (params, context) =>
+    service.apps.waitAuthorization(params.authorizationId, context.signal),
   );
   handle("plugins.list", (params) => Promise.resolve(service.listPlugins(params)));
   handle("plugins.setEnabled", (params) => Promise.resolve(service.setPluginEnabled(params)));
@@ -70,11 +84,20 @@ export function registerConnectorRpc(handle: RegisterRpc, service: ConnectorServ
   handle("plugins.cancelPreview", (params) => Promise.resolve(service.cancelPreview(params)));
   handle("plugins.import", (params, context) => service.import(params, context.signal));
   handle("plugins.uninstall", (params) => Promise.resolve(service.uninstall(params)));
+  handle("plugins.settings", (params) => Promise.resolve(service.pluginSettings(params)));
+  handle("plugins.updateSettings", (params, context) =>
+    service.updatePluginSettings(params, context.signal),
+  );
   handle("connectors.list", (params) => Promise.resolve(service.listConnectors(params)));
   handle("connectors.get", (params) => Promise.resolve(service.getConnector(params)));
   handle("connectors.update", (params) => Promise.resolve(service.updateConnector(params)));
   handle("connectors.updateFromSource", (params) => service.updateFromSource(params));
   handle("connectors.operation", (params) => Promise.resolve(service.getOperation(params)));
+  handle("connectors.network.resolve", (params, context) => {
+    if (context.source === "acp")
+      throw new RpcError(RpcErrorCodes.unsupported, "connector_network_settings_desktop");
+    return service.resolveBlockedWebsite(params);
+  });
   handle("connectors.tools", (params) => Promise.resolve(service.listTools(params)));
   handle("connectors.setEnabled", (params, context) => service.setEnabled(params, context.signal));
   handle("connectors.disconnect", (params) => Promise.resolve(service.disconnect(params)));
@@ -86,6 +109,7 @@ export function registerConnectorRpc(handle: RegisterRpc, service: ConnectorServ
 }
 
 export interface ConnectorServiceDeps {
+  commitInteractiveOAuth?(connectorId: string, commit: () => void): void;
   commandRisk?(
     command: string,
     signal: AbortSignal,
@@ -119,6 +143,7 @@ export interface ConnectorServiceDeps {
   };
   pluginDefinitions: readonly Plugin[];
   importHost?: ConnectorImportHost;
+  pickWorkingDirectory?(signal: AbortSignal): Promise<{ path: string } | null>;
   confirmUnisolated?(
     input: ConnectorCommandConfirmation,
     signal?: AbortSignal,
@@ -144,6 +169,7 @@ export interface ConnectorServiceDeps {
   commandEnv: NodeJS.ProcessEnv;
   /** Settings → Permissions extra command folders; read at each start so a change applies then. */
   pathEntries?(): readonly string[];
+  proxy?(): { url: string } | undefined;
   home: string;
   dataDir?: string;
   tempDir: string;

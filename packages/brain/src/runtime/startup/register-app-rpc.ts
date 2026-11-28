@@ -25,6 +25,7 @@ import { feedbackIssueUrl } from "../../integrations/system/feedback.ts";
 import type { NetworkProxyService } from "../../integrations/system/network-proxy.ts";
 import type { LocalService } from "../../local-service.ts";
 import type { RunRetention } from "../history/run-retention.ts";
+import { measureStorageInfo } from "../history/storage-info.ts";
 import type { ModelProvidersPort } from "../models/port.ts";
 
 interface StartupContext {
@@ -99,6 +100,11 @@ export function registerAppRpc(ctx: StartupContext) {
   ctx.handle("app.about", async () => ({
     version: ctx.opts.version,
     phoneCompat: PHONE_COMPAT_LEVEL,
+    ...(ctx.opts.platform === "darwin" ||
+    ctx.opts.platform === "win32" ||
+    ctx.opts.platform === "linux"
+      ? { platform: ctx.opts.platform }
+      : {}),
   }));
   ctx.handle("app.dependencies", async () => {
     try {
@@ -115,9 +121,36 @@ export function registerAppRpc(ctx: StartupContext) {
   ctx.handle("app.getInfo", async () => ({
     version: ctx.opts.version,
     platform: ctx.opts.platform as "darwin" | "win32" | "linux",
-    dataDir: ctx.dataDir,
+    dataDir: ctx.opts.dataDirDisplayPath ?? ctx.dataDir,
     piVersion: PI_VERSION,
   }));
+  ctx.handle("app.openDataDir", async (_params, context) => {
+    if (context.phone || context.source === "acp")
+      throw new RpcError(RpcErrorCodes.unsupported, "desktop_only");
+    if (!ctx.opts.host.revealPath)
+      throw new RpcError(RpcErrorCodes.unsupported, "path_reveal_unavailable");
+    await ctx.opts.host.revealPath(
+      { path: ctx.dataDir, allowedRoots: [ctx.dataDir] },
+      AbortSignal.any([
+        context.signal,
+        ctx.capabilities.shutdown.signal,
+        AbortSignal.timeout(15_000),
+      ]),
+    );
+    return null;
+  });
+  ctx.handle("app.storageInfo", async (_params, context) => {
+    if (context.phone || context.source === "acp")
+      throw new RpcError(RpcErrorCodes.unsupported, "desktop_only");
+    return measureStorageInfo(
+      ctx.dataDir,
+      AbortSignal.any([
+        context.signal,
+        ctx.capabilities.shutdown.signal,
+        AbortSignal.timeout(15_000),
+      ]),
+    );
+  });
   ctx.networkChanged = (value) => {
     ctx.search.resetCooldown();
     ctx.peer.emit("network.changed", value);
@@ -165,7 +198,7 @@ export function registerAppRpc(ctx: StartupContext) {
       ctx.audit.append({
         botId: ctx.bots.getMain()?.id ?? "",
         kind: "permissions.changed",
-        summary: "Automatic outside-sandbox commands changed",
+        summary: "Remembered direct-run permissions changed",
         detail: {
           actor: "user",
           reasonCode: "sandbox_outside_auto_changed",
@@ -187,6 +220,10 @@ export function registerAppRpc(ctx: StartupContext) {
     ctx.capabilities.computerGrants.runs.guard.changed();
     if (value.main) ctx.peer.emit("bots.changed", { botId: value.main.id, reason: "updated" });
     return value.settings;
+  });
+  ctx.handle("runs.cleanupEstimate", async ({ olderThanDays }, { signal }) => {
+    await ctx.waitForSessionRecovery(signal);
+    return ctx.runRetention.estimate(olderThanDays, signal);
   });
   ctx.handle("runs.cleanup", async ({ olderThanDays }, { signal }) => {
     await ctx.waitForSessionRecovery(signal);

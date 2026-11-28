@@ -276,8 +276,11 @@ export const SkillImportPreviewSchema = z.strictObject({
  * A runtime the package needs. Detection only proposes it; the environment is created from
  * a plan the user approved, and the state below says which of the five states it is in.
  */
+export const SkillManagedRuntimeSchema = z.enum(["python", "node"]);
+export type SkillManagedRuntime = z.infer<typeof SkillManagedRuntimeSchema>;
+
 export const SkillRuntimeRequirementSchema = z.strictObject({
-  runtime: z.enum(["python", "node"]),
+  runtime: SkillManagedRuntimeSchema,
   /** The author's constraint (`>=3.10`, `>=20`); the probe checks it but never installs anything. */
   version: z.string().max(200).optional(),
   packages: z.array(z.string().max(500)).max(1000).optional(),
@@ -308,6 +311,10 @@ export const SkillPackageSummarySchema = z.strictObject({
       }),
     )
     .max(SKILL_IMPORT_MAX_FILES),
+  bindableEnvironmentVariables: z
+    .array(z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/))
+    .max(64)
+    .optional(),
   /** T3 owns the runtime requirement payload; absence means it has not been analyzed. */
   runtimeRequirements: z.array(SkillRuntimeRequirementSchema).max(2).optional(),
   /** Compiled-extension hints (advisory, shown on the approval card). */

@@ -16,11 +16,12 @@ import {
 
 type NetworkSettings = Permissions["network"];
 const rank: Record<Level, number> = { never: 0, ask: 1, always: 2 };
-const covered = (domain: string, allowed: readonly string[]) =>
-  allowed.some((entry) => domain === entry || domain.endsWith(`.${entry}`));
 function widerNetwork(next: NetworkSettings, current: NetworkSettings) {
-  if (current.allowAll) return false;
-  return next.allowAll || next.domains.some((domain) => !covered(domain, current.domains));
+  // Image services use exact hosts, and restricted automatic commands use the list even with allowAll.
+  return (
+    (next.allowAll && !current.allowAll) ||
+    next.domains.some((domain) => !current.domains.includes(domain))
+  );
 }
 /** Removing Bots from a selected list, or replacing "all" by a list, never gives anyone more. */
 function narrowerAccess(next: ConnectorAccess, current: ConnectorAccess) {

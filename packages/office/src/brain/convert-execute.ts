@@ -1,6 +1,11 @@
 import { basename, extname, join } from "node:path";
 import type { BinaryToolRun, PreparedTool } from "@pibot/brain/kit";
-import { convertOfficeDocument, type OfficeConvertSource, owningWriteRoot } from "@pibot/execution";
+import {
+  libreOfficeInstalled,
+  libreOfficePlatformSupported,
+  type OfficeConvertSource,
+  owningWriteRoot,
+} from "@pibot/execution";
 import type { OfficeFormat, OfficeToolInput } from "@pibot/office-contract/full";
 import { OFFICE_FAILURES, OfficeError } from "./errors.ts";
 import { officeFileContext } from "./file-context.ts";
@@ -12,17 +17,23 @@ type ConvertInput = Extract<OfficeToolInput, { tool: "office_convert" }>;
 const CONVERT_MAX_BYTES = 100 * 1024 * 1024;
 
 /** Reasons are fixed strings; the note only explains what the user can do next. */
-const LIBREOFFICE_NOTES: Record<string, string> = {
+export const LIBREOFFICE_NOTES = {
   libreoffice_missing:
-    "LibreOffice is not installed on this computer. Install it to convert to PDF or from DOC/XLS/PPT; Pi Bot never installs it for you. / 这台电脑没有安装 LibreOffice。安装后才能输出 PDF 或从 DOC/XLS/PPT 转换；Pi Bot 不会替你安装。",
+    "Install LibreOffice, then ask Pi Bot to try the conversion again. Pi Bot shows the official download link on the computer doing the conversion.",
+  libreoffice_platform_unsupported:
+    "This conversion is available on macOS and Linux with system protection enabled. On Windows, use the source app to save or export the file in the format you need.",
+  libreoffice_ready_to_retry:
+    "LibreOffice is now available. Ask the user to retry so Pi Bot can check permission to write the converted file.",
   libreoffice_isolation_unavailable:
-    "LibreOffice conversion needs the command sandbox, which is unavailable on this computer right now. / LibreOffice 转换需要命令沙箱，这台电脑上目前不可用。",
+    "System protection needed for conversion could not start. Ask the user to check Settings → Permissions before retrying.",
+  libreoffice_cleanup_unconfirmed:
+    "Pi Bot is waiting for the conversion process to exit before deleting its private temporary files. The user can export the original file in their office app. / Pi Bot 正在等待转换进程退出，届时会清理此次转换的私有临时文件。可先用原来的办公软件导出文件。",
   libreoffice_timeout:
     "The conversion did not finish within 120 seconds and was stopped. / 转换在 120 秒内没有完成，已停止。",
   libreoffice_unsupported_format:
     "This source and target combination is not supported. / 不支持这组源格式与目标格式。",
   libreoffice_failed:
-    "LibreOffice could not convert this file; the file itself may be damaged or password protected. / LibreOffice 无法转换这个文件，它可能已损坏或受密码保护。",
+    "LibreOffice could not complete the conversion. Try opening and exporting the file in LibreOffice. / LibreOffice 未能完成转换。请尝试在 LibreOffice 中打开并导出文件。",
 };
 
 /**
@@ -57,6 +68,7 @@ async function executeConvertInner(
   assertCurrent: () => void,
 ) {
   const { local, context, target } = run;
+  signal.throwIfAborted();
   const args = input.args;
   const from = convertSource(args.path);
   if (!from) throw new OfficeError("office_unsupported");
@@ -78,6 +90,21 @@ async function executeConvertInner(
   const to = args.to;
   // A legacy input converts to its own OOXML family or to PDF; both run the LibreOffice recipe.
   const libreOffice = to === "pdf" || from === "legacy";
+  const convert = libreOffice ? local.target.convertOfficeDocument : undefined;
+  const unavailable = (reason: keyof typeof LIBREOFFICE_NOTES) => ({
+    text: json({ status: "unsupported", reason, to, note: LIBREOFFICE_NOTES[reason] }),
+    isError: true,
+    details: { errorCode: reason },
+  });
+  if (libreOffice) {
+    const { platform, env } = local.deps;
+    if (!libreOfficePlatformSupported(platform))
+      return unavailable("libreoffice_platform_unsupported");
+    if (!convert) return unavailable("libreoffice_isolation_unavailable");
+    if (!libreOfficeInstalled(platform, env)) return unavailable("libreoffice_missing");
+    // If it appeared after the discovery-only check, a fresh call must authorize the write.
+    if (!prepared.result.path) return unavailable("libreoffice_ready_to_retry");
+  }
   const answer = await run.approve(
     { id: prepared.call.id, tool: "read_file", input: { path: args.path, limit: 1 } },
     signal,
@@ -103,41 +130,22 @@ async function executeConvertInner(
   let candidates: { path: string; data: Uint8Array | undefined }[];
   if (libreOffice) {
     // One fixed recipe inside the execution sandbox; the model never supplies a program or argument.
-    const converted = await convertOfficeDocument(
-      {
-        platform: local.deps.platform,
-        env: local.deps.env,
-        systemHome: local.deps.userHome,
-        tempDir: local.deps.tempDir,
-        ...(local.deps.resourcesDir ? { resourcesDir: local.deps.resourcesDir } : {}),
-        redactor: local.deps.redactor,
-        ...(local.deps.proxy ? { proxy: local.deps.proxy } : {}),
-        dataDir: local.deps.dataDir,
-      },
-      {
-        bytes: read.bytes,
-        source: extension as OfficeConvertSource,
-        // The checks above only admit PDF or a legacy source's own OOXML target here.
-        target: (to === "pdf" ? "pdf" : (legacyTarget as OfficeConvertSource)) as
-          | "docx"
-          | "xlsx"
-          | "pptx"
-          | "pdf",
-        signal,
-        assertCurrent,
-      },
-    );
-    if (converted.status === "unavailable")
-      return {
-        text: json({
-          status: "unsupported",
-          reason: converted.reason,
-          to,
-          source: sourcePath,
-          note: LIBREOFFICE_NOTES[converted.reason],
-        }),
-        isError: true,
-      };
+    if (!convert) return unavailable("libreoffice_isolation_unavailable");
+    const converted = await convert({
+      dataDir: local.deps.dataDir,
+      runId: context.runId,
+      bytes: read.bytes,
+      source: extension as OfficeConvertSource,
+      // The checks above only admit PDF or a legacy source's own OOXML target here.
+      target: (to === "pdf" ? "pdf" : (legacyTarget as OfficeConvertSource)) as
+        | "docx"
+        | "xlsx"
+        | "pptx"
+        | "pdf",
+      signal,
+      assertCurrent,
+    });
+    if (converted.status === "unavailable") return unavailable(converted.reason);
     assertCurrent();
     candidates = [{ path: output, data: converted.bytes }];
   } else {

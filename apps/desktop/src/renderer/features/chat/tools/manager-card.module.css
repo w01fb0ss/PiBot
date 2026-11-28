@@ -13,3 +13,7 @@
 .choices .check {
   margin: 0;
 }
+.settingsFacts.settingsFacts > div {
+  display: grid;
+  grid-template-columns: fit-content(60%) minmax(0, 1fr);
+}

@@ -1,8 +1,8 @@
 # Pi Bot 用户指南 · Pi Bot User Guide
 
-Pi Bot 是一个桌面应用：一群有名字的 Bot 在你自己的电脑上干活。本指南适用于 Pi Bot 0.0.3，macOS、Windows 和 Linux。
+Pi Bot 是一个桌面应用：一群有名字的 Bot 在你自己的电脑上干活。本指南适用于 Pi Bot 0.1.0，macOS、Windows 和 Linux。
 
-Pi Bot is a desktop app where a team of named Bots works on your own computer. This guide covers Pi Bot 0.0.3 on macOS, Windows and Linux.
+Pi Bot is a desktop app where a team of named Bots works on your own computer. This guide covers Pi Bot 0.1.0 on macOS, Windows and Linux.
 
 | # | 中文 | English |
 |---|---|---|

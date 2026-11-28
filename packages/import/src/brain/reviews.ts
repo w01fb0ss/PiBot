@@ -8,11 +8,13 @@ import type { ImportParams } from "@pibot/import-contract/full";
 import { RpcError, RpcErrorCodes } from "@pibot/protocol-base";
 import type { ImportStore } from "../store/index.ts";
 import type { ImportInput } from "./adapter.ts";
+import { type DistillationPlan, type DistillationScope, quoteImport } from "./distillation.ts";
 import {
   assertFolderAllowed,
   displayPath,
   documentsFolder,
   folderName,
+  resolveFolder,
   sameName,
 } from "./folders.ts";
 import {
@@ -21,8 +23,9 @@ import {
   reviewMemories,
   reviewPlan,
 } from "./memory-review.ts";
-import type { ProjectImport, ProjectInfo, ProjectReview } from "./project.ts";
-import { failureReason } from "./run.ts";
+import type { ProjectImport, ProjectInfo, ProjectReview, ProjectReviewOutcome } from "./project.ts";
+import type { DistillationSource } from "./records.ts";
+import { failureReason, type ProjectPlan } from "./run.ts";
 
 const PREVIEW_MS = 90_000;
 const PREVIEW_VALID_MS = 10 * 60_000;
@@ -32,12 +35,13 @@ type Selection = {
   preview: ImportPreview;
   input: ImportInput;
   expiresAt: number;
+  distillationSources: readonly DistillationSource[];
   projects: Map<string, ProjectInfo>;
   plan?: ReviewedPlan;
   persona?: ReviewedImport;
   /** The last reviewed AGENTS.md change per project key. */
   reviewed: Map<string, ProjectReview>;
-  quote?: { quoteId: string; botId: string; modelId: string };
+  quote?: DistillationPlan & { botId: string; scope: DistillationScope };
 };
 
 /** Each project gets a distinct folder name; unnamed ChatGPT projects are numbered. */
@@ -79,10 +83,16 @@ export class ImportReviews {
     return !!this.reviewing;
   }
 
-  set(preview: ImportPreview, input: ImportInput, paths: ReadonlyMap<string, string>) {
+  set(
+    preview: ImportPreview,
+    input: ImportInput,
+    paths: ReadonlyMap<string, string>,
+    distillationSources: readonly DistillationSource[] = [],
+  ) {
     this.selection = {
       preview,
       input,
+      distillationSources,
       expiresAt: Date.now() + PREVIEW_VALID_MS,
       projects: projectInfos(preview, paths),
       reviewed: new Map(),
@@ -235,9 +245,9 @@ export class ImportReviews {
     const info = selection.projects.get(key);
     if (!info) throw new RpcError(-32602, "import_project_unavailable");
     selection.reviewed.delete(key);
-    let review: ProjectReview;
+    let outcome: ProjectReviewOutcome;
     try {
-      review = await this.exclusive(caller, (signal) =>
+      outcome = await this.exclusive(caller, (signal) =>
         this.project.review(selection.preview, selection.input, info, folder, signal),
       );
     } catch (error) {
@@ -246,28 +256,75 @@ export class ImportReviews {
       if (error instanceof RpcError) throw error;
       throw new RpcError(-32602, "import_project_unavailable");
     }
-    this.requireSelection(importId).reviewed.set(key, review);
+    this.requireSelection(importId);
+    if ("unchanged" in outcome) {
+      return {
+        reviewId: randomUUID(),
+        file: "AGENTS.md" as const,
+        ...this.project.display(outcome),
+        diff: "",
+        lines: 0,
+      };
+    }
+    this.requireSelection(importId).reviewed.set(key, outcome);
     return {
-      reviewId: review.reviewId,
+      reviewId: outcome.reviewId,
       file: "AGENTS.md" as const,
-      ...this.project.display(review),
-      diff: review.diff,
-      lines: review.lines,
-      ...(!review.folder.exists
+      ...this.project.display(outcome),
+      diff: outcome.diff,
+      lines: outcome.lines,
+      ...(!outcome.folder.exists
         ? { create: "folder" as const }
-        : review.before === null
+        : outcome.before === null
           ? { create: "file" as const }
           : {}),
     };
   }
 
-  estimateDistillation({ importId, botId }: ImportParams<"import.estimateDistillation">) {
+  async assertProjectsCurrent(projects: ProjectPlan[], caller: AbortSignal) {
+    await this.exclusive(caller, async (signal) => {
+      for (const { info, target, review } of projects) {
+        if (!review) continue;
+        const folder = await resolveFolder(this.ctx, target, info, signal);
+        await this.project.assertReview(review, folder, signal);
+      }
+    });
+  }
+
+  estimateDistillation(
+    {
+      importId,
+      botId,
+      conversations = true,
+      projectKeys = [],
+    }: ImportParams<"import.estimateDistillation">,
+    caller: AbortSignal,
+  ) {
     const selection = this.requireSelection(importId);
-    const estimate = this.ctx.local.memoryImportDistillation?.estimate(botId);
-    selection.quote = undefined;
-    if (!estimate || !selection.preview.messages) return null;
-    const quoteId = randomUUID();
-    selection.quote = { quoteId, botId, modelId: estimate.modelId };
-    return { quoteId, ...estimate };
+    return this.exclusive(caller, async (signal) => {
+      selection.quote = undefined;
+      const port = this.ctx.local.memoryImportDistillation;
+      if (!port || !selection.preview.messages) return null;
+      const keys = [...new Set(projectKeys)];
+      if (keys.some((key) => !selection.projects.has(key)))
+        throw new RpcError(RpcErrorCodes.invalidParams, "import_memory_selection_invalid");
+      const projects = selection.preview.projects ?? [];
+      const scope = {
+        projectKeys: keys.filter((key) =>
+          projects.some((project) => project.key === key && project.topics > 0),
+        ),
+        conversations:
+          conversations &&
+          selection.preview.topics > projects.reduce((sum, project) => sum + project.topics, 0),
+      };
+      if (!scope.conversations && !scope.projectKeys.length) return null;
+      const model = await port.estimate(botId, signal);
+      if (!model) return null;
+      const quote = quoteImport(model, selection.distillationSources, scope);
+      signal.throwIfAborted();
+      if (!quote) return null;
+      selection.quote = { botId, scope, port, model, quote };
+      return quote;
+    });
   }
 }

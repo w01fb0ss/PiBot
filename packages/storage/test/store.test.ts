@@ -9,15 +9,21 @@ import { createRedactor, type SecretCipher } from "@pibot/secrets";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProvidersRepo } from "../../models/src/store/index.ts";
 import {
+  ApprovalsRepo,
   BotsRepo,
   ConversationsRepo,
   DEFAULT_SETTINGS,
+  GroupsRepo,
+  LiveActivityRepo,
   MessagesRepo,
   openDatabase,
+  RunsRepo,
   resolveDataDir,
   runMigrations,
   SecretStore,
   SettingsRepo,
+  ToolCallsRepo,
+  transaction,
 } from "../src/index.ts";
 
 let dir: string;
@@ -117,6 +123,8 @@ describe("database and migrations", () => {
       "chat_search_fts_data",
       "chat_search_fts_docsize",
       "chat_search_fts_idx",
+      "chat_search_pruned_imports",
+      "chat_search_rebuild",
       "code_files",
       "code_roots",
       "code_symbols",
@@ -185,6 +193,13 @@ describe("database and migrations", () => {
       "import_project_files",
       "import_project_notes",
       "knowledge_assignments",
+      "knowledge_index_files",
+      "knowledge_index_fts",
+      "knowledge_index_fts_config",
+      "knowledge_index_fts_data",
+      "knowledge_index_fts_docsize",
+      "knowledge_index_fts_idx",
+      "knowledge_index_walks",
       "knowledge_managed_installations",
       "knowledge_sources",
       "managed_git_operations",
@@ -213,7 +228,9 @@ describe("database and migrations", () => {
       "messages",
       "office_render_checks",
       "personal_todos",
+      "pi_dispatch_models",
       "pi_dispatches",
+      "pi_health_reports",
       "plugin_access",
       "plugin_installations",
       "plugin_skill_access",
@@ -262,6 +279,7 @@ describe("database and migrations", () => {
       "skill_document_metadata",
       "skill_packages",
       "skill_proposals",
+      "skill_secret_bindings",
       "skill_updates",
       "skills",
       "sqlite_sequence",
@@ -273,12 +291,13 @@ describe("database and migrations", () => {
       "tool_executions",
       "topic_folders",
       "topic_writable_folders",
+      "video_jobs",
       "working_folders",
       "worktree_allocations",
     ]);
     const versions = db.prepare("SELECT * FROM schema_migrations").all();
-    expect(versions).toHaveLength(181);
-    expect(versions.at(-1)?.version).toBe(183);
+    expect(versions).toHaveLength(205);
+    expect(versions.at(-1)?.version).toBe(215);
     expect(versions[0]?.version).toBe(1);
     expect(String(versions[0]?.applied_at)).toMatch(/Z$/);
     const bot = new BotsRepo(db).ensureMainBot();
@@ -516,6 +535,175 @@ describe("repositories", () => {
     expect(messages.update(message.id, { status: "done" })).toBeUndefined();
   });
 
+  it("projects the run's paired runner on busy rows and parked approvals", () => {
+    const bot = new BotsRepo(db).ensureMainBot();
+    const conversation = new ConversationsRepo(db).ensureDm(bot.id);
+    const runId = randomUUID();
+    const message = new MessagesRepo(db).create({
+      conversationId: conversation.id,
+      botId: bot.id,
+      role: "assistant",
+      content: "",
+      status: "streaming",
+      runId,
+    });
+    const runs = new RunsRepo(db);
+    runs.create({
+      id: runId,
+      botId: bot.id,
+      conversationId: conversation.id,
+      groupId: null,
+      kind: "chat",
+      messageId: message.id,
+      userMessageId: null,
+      taskId: null,
+      cycleId: null,
+      automatic: false,
+      parentRunId: null,
+      afterRunId: null,
+      ancestry: [],
+      triggerKey: null,
+    });
+    runs.start(runId);
+    const activity = new LiveActivityRepo(db);
+    expect(activity.list()).toMatchObject([{ kind: "chat" }]);
+    expect(activity.list()[0]).not.toHaveProperty("runnerName");
+
+    const runnerId = randomUUID();
+    db.prepare("INSERT INTO remote_devices(id,name,kind,created_at) VALUES (?,?,'runner',?)").run(
+      runnerId,
+      "Build machine",
+      message.createdAt,
+    );
+    runs.setRunnerDevice(runId, runnerId);
+    expect(activity.list()).toMatchObject([{ kind: "chat", runnerName: "Build machine" }]);
+
+    const tool = new ToolCallsRepo(db).create({
+      messageId: message.id,
+      toolCallId: "command",
+      tool: "run_command",
+      summary: "Approve command",
+    });
+    new ApprovalsRepo(db).create({
+      botId: bot.id,
+      runId,
+      messageId: message.id,
+      toolCallId: tool.toolCallId,
+      category: "run_command",
+      risk: "normal",
+      title: tool.summary,
+      facts: [],
+      canRemember: false,
+      isolation: { available: true },
+    });
+    runs.finish(runId, "aborted", "approval_paused");
+    db.prepare("UPDATE remote_devices SET name=? WHERE id=?").run("Build host", runnerId);
+    expect(activity.list()).toMatchObject([{ kind: "waiting", runnerName: "Build host" }]);
+
+    db.prepare("UPDATE remote_devices SET revoked_at=? WHERE id=?").run(
+      message.createdAt,
+      runnerId,
+    );
+    expect(activity.list()).toMatchObject([{ kind: "waiting" }]);
+    expect(activity.list()[0]).not.toHaveProperty("runnerName");
+  });
+
+  it("keeps member approvals and receipts in their group topic and finds the oldest pending card", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const bots = new BotsRepo(db);
+    const coordinator = bots.ensureMainBot();
+    const member = bots.create({
+      name: "Designer",
+      isMain: false,
+      avatarShape: "blob",
+      avatarColor: "orange",
+      avatarEyes: "marks",
+      modelProvider: null,
+      modelId: null,
+      thinkingLevel: "off",
+      systemPrompt: "",
+    });
+    const groups = new GroupsRepo(db);
+    const group = groups.create({ name: "Studio", botIds: [coordinator.id, member.id] });
+    const otherGroup = groups.create({ name: "Other studio", botIds: [coordinator.id, member.id] });
+    const conversations = new ConversationsRepo(db);
+    const thread = conversations.createGroup(group.id, group.conversationId);
+    const nextTopic = conversations.createGroup(group.id);
+    const dm = conversations.ensureDm(member.id);
+    const approvals = new ApprovalsRepo(db);
+    const request = (botId: string, conversationId: string, groupId: string | null) => {
+      const runId = randomUUID();
+      const message = new MessagesRepo(db).create({
+        botId,
+        conversationId,
+        runId,
+        role: "assistant",
+        content: "",
+        status: "streaming",
+      });
+      new RunsRepo(db).create({
+        id: runId,
+        botId,
+        conversationId,
+        groupId,
+        kind: "chat",
+        messageId: message.id,
+        userMessageId: null,
+        taskId: null,
+        cycleId: null,
+        automatic: false,
+        parentRunId: null,
+        afterRunId: null,
+        ancestry: [],
+        triggerKey: null,
+      });
+      const tool = new ToolCallsRepo(db).create({
+        messageId: message.id,
+        toolCallId: "command",
+        tool: "run_command",
+        summary: "Approval",
+      });
+      return approvals.create({
+        botId,
+        runId,
+        messageId: message.id,
+        toolCallId: tool.toolCallId,
+        category: "run_command",
+        risk: "normal",
+        title: tool.summary,
+        facts: [],
+        canRemember: false,
+        isolation: { available: true },
+      });
+    };
+    const privateCard = request(member.id, dm.id, null);
+    const foreignCard = request(member.id, otherGroup.conversationId, otherGroup.id);
+    vi.setSystemTime(new Date("2026-01-01T00:00:01.000Z"));
+    const step = request(member.id, thread.id, group.id);
+    vi.setSystemTime(new Date("2026-01-01T00:00:02.000Z"));
+    const coordinatorCard = request(coordinator.id, group.conversationId, group.id);
+    const newerTopicCard = request(member.id, nextTopic.id, group.id);
+    const scope = { groupId: group.id, topicId: group.conversationId };
+    const since = "2026-01-01T00:00:03.000Z";
+    expect(approvals.groupTimeline({ ...scope, since, limit: 1 })).toEqual([coordinatorCard]);
+    expect(approvals.groupTimeline({ ...scope, since, before: coordinatorCard.id })).toEqual([
+      step,
+    ]);
+    for (const foreign of [privateCard, foreignCard, newerTopicCard])
+      expect(approvals.groupTimeline({ ...scope, before: foreign.id })).toEqual([]);
+    expect(approvals.groupFocus(group.id)).toEqual({
+      topicId: group.conversationId,
+      approvalId: step.id,
+    });
+
+    vi.setSystemTime(new Date(since));
+    const receipt = approvals.resolve(step.id, "denied");
+    expect(receipt?.createdAt).toBe(step.createdAt);
+    expect(approvals.groupTimeline({ ...scope, since })).toEqual([coordinatorCard, receipt]);
+    expect(approvals.groupFocus(group.id)?.approvalId).not.toBe(step.id);
+  });
+
   it("paginates 123 same-timestamp messages with no gaps or duplicates and isolates conversations", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
@@ -663,6 +851,32 @@ describe("SecretStore", () => {
   };
   // Running every migration can exceed the 10 s default when the machine is busy (verify, 2026-11-16).
   beforeEach(() => runMigrations(db), 30_000);
+
+  it("protects a committed import before its first read without registering rolled-back values", async () => {
+    const redactor = createRedactor();
+    const store = new SecretStore(db, cipher, redactor);
+    const scope = "user-secret";
+    const name = `IMPORT_${randomUUID().replaceAll("-", "").toUpperCase()}_SESSION`;
+    const value = randomUUID();
+    const write = await store.prepareSet(scope, name, value);
+    expect(() =>
+      transaction(db, () => {
+        write();
+        throw new Error("rollback fixture");
+      }),
+    ).toThrow("rollback fixture");
+    expect(store.has(scope, name)).toBe(false);
+    expect(redactor.redact(value)).toBe(value);
+
+    transaction(db, write);
+    store.registerCommittedImport(scope, name, value);
+    expect(redactor.redact(value)).toBe("[REDACTED]");
+    expect(db.prepare("SELECT last_used_at FROM secrets").get()?.last_used_at).toBeNull();
+
+    const shortValue = "1";
+    await store.set(scope, name, shortValue);
+    expect(redactor.redact("audit-123")).toBe("audit-123");
+  });
 
   it("roundtrips only ciphertext, registers decrypted values and preserves UNIQUE metadata on replacement", async () => {
     const redactor = createRedactor();

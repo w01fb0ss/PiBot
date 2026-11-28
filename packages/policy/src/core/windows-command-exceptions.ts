@@ -15,6 +15,7 @@ const inlineType =
 const dynamicExecution =
   /\b(?:invoke-expression|iex)\b|[-\u2013-\u2015](?:enc(?:odedcommand)?|encodedarguments)(?=$|[\s"'=:])|\[\s*(?:system\.management\.automation\.)?scriptblock\s*\]\s*::\s*create\b|\$\s*\(|(?:^|[;|\r\n])\s*[.&]\s*(?:\$|[(])|[-\u2013-\u2015]scriptblock(?=$|[\s:=])|--%/i;
 const cmdExpansion = /\bcmd(?:\.exe)?\b[^\r\n]*?\/[ck]\s+[^\r\n]*(?:%[^%\s]+%|![^!\s]+!)/i;
+const gitEnvironment = /(?:^|[;|&\r\n])\s*(?:(?:set|export)\s+"?|\$env:)?GIT_[a-z0-9_]+\s*=/i;
 
 function encodedShellArgument(command: string) {
   const launch = /\b(?:powershell|pwsh)(?:\.exe)?\b/i.exec(command);
@@ -42,6 +43,7 @@ export function windowsObfuscatedCommand(command: string) {
     command.includes("`") ||
     /(?:^|[\s"'=;(])[a-z]:(?![\\/])/i.test(command) ||
     dynamicExecution.test(command) ||
+    gitEnvironment.test(command) ||
     encodedShellArgument(command) ||
     cmdExpansion.test(command) ||
     parsed.pieces.some(
@@ -76,10 +78,9 @@ export function safeWindowsDeletePath(
   path: string,
   protectedRoots: readonly string[],
   scope: CommandPathScope,
-  ownRoots: readonly string[] = [],
 ) {
   return (
-    !windowsProtectedCommandPath(path, protectedRoots, ownRoots) &&
+    !windowsProtectedCommandPath(path, protectedRoots) &&
     isWritableCommandPath(path, "win32", scope) &&
     ![...scope.writeRoots, ...scope.denyWriteRoots, ...protectedRoots].some((root) =>
       containsPath(path, root, "win32"),

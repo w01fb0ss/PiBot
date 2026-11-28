@@ -48,7 +48,7 @@ export async function fixture(
   /** Probe-only brain options (a stubbed page source for web_fetch). */
   extraBrain: Pick<
     Parameters<typeof startBrain>[0],
-    "pageFetch" | "imageGenerationTimeoutMs" | "plugins"
+    "pageFetch" | "imageGenerationTimeoutMs" | "plugins" | "video"
   > = {},
   /** Cache probe: wire API and compat flags of the synthetic provider, raw request bodies. */
   probe: {
@@ -57,6 +57,8 @@ export async function fixture(
     onRequest?: (body: Record<string, unknown>, route: string, index: number) => void;
     /** Image probe: delay of the n-th fake image response. */
     imageDelayMs?: (index: number) => number;
+    /** Additional fake model endpoints used by this scenario. */
+    allowedFetchOrigins?: readonly string[];
   } = {},
 ) {
   const scenario =
@@ -122,7 +124,7 @@ export async function fixture(
     const url = new URL(
       typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
     );
-    if (url.origin !== server.url) {
+    if (url.origin !== server.url && !probe.allowedFetchOrigins?.includes(url.origin)) {
       blocked++;
       return Promise.reject(new Error("演练禁止非指定假模型端口"));
     }

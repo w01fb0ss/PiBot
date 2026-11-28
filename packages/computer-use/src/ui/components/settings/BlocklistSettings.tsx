@@ -23,7 +23,11 @@ import {
   useState,
 } from "react";
 import styles from "../computer.module.css";
-import { computerErrorKey } from "../presentation.ts";
+import {
+  computerErrorKey,
+  installedAppsUnavailableText,
+  isInstalledAppsRetryable,
+} from "../presentation.ts";
 import { RemoveIcon } from "./AppListEditor.tsx";
 import { isBlocking, useBlocklist, useInstalledApps } from "./use-apps.ts";
 
@@ -167,7 +171,15 @@ function AddAppPopover({
             )}
             {installed.data?.supported === false && (
               <p className={styles.listNote}>
-                {t("computerUse.picker.unsupported", { reason: installed.data.reason })}
+                {installedAppsUnavailableText(installed.data.reason, t)}
+                {isInstalledAppsRetryable(installed.data.reason) && (
+                  <>
+                    {" "}
+                    <Button variant="ghost" onClick={installed.reload}>
+                      {t("common.retry")}
+                    </Button>
+                  </>
+                )}
               </p>
             )}
             {installed.error && (

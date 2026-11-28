@@ -15,6 +15,7 @@ import {
 } from "@pibot/brain/kit";
 import {
   envExampleFilter,
+  type MethodParams,
   progressDeadline,
   RpcError,
   RpcErrorCodes,
@@ -123,7 +124,10 @@ async function referencedDocuments(
 interface PreviewOptions {
   linkOrigin?: SkillDocument["linkOrigin"];
   rename?: (name: string) => string;
-  create?: Pick<NonNullable<Parameters<SkillService["create"]>[3]>, "enabled" | "afterInsert">;
+  create?: Pick<
+    NonNullable<Parameters<SkillService["create"]>[3]>,
+    "enabled" | "afterInsert" | "expectedHash" | "importSource"
+  >;
   /**
    * Previews held at once. A picked file or link candidate is one at a time, so 8 is plenty;
    * 「带过来」 previews every chosen skill in one batch (up to its 100-key limit) before the person
@@ -340,11 +344,18 @@ export class SkillImports {
     this.release(previewId);
     return { ok: true as const };
   }
-  import(previewId: string, signal: AbortSignal): Promise<Skill> {
+  import(
+    previewId: string,
+    signal: AbortSignal,
+    bindings?: MethodParams["skills.import"]["bindings"],
+  ): Promise<Skill> {
     this.prune();
     const entry = this.previews.get(previewId);
     if (!entry) return Promise.reject(invalid("skill_preview_expired"));
     if (entry.running) return entry.running;
+    const variables = entry.source.pack.summary.bindableEnvironmentVariables ?? [];
+    if (bindings?.length)
+      this.skills.validateSecretBindings(entry.preview.botId, bindings, variables);
     const work = progressDeadline(
       AbortSignal.any([signal, this.stopped.signal, entry.abort.signal]),
       entry.source.pack.summary.fileCount,
@@ -398,6 +409,12 @@ export class SkillImports {
           // The digest and seal passes after the copy report no file progress; on ppt-master
           // (13,000 files) they outlasted this deadline's 60 s idle limit and the import failed.
           onActivity: () => work.touch(),
+          afterInsert: (record) => {
+            entry.options?.create?.afterInsert?.(record);
+            if (!bindings?.length) return;
+            this.skills.validateSecretBindings(record.botId, bindings, variables);
+            this.skills.writeSecretBindings(record, bindings);
+          },
         },
       )
       .then(

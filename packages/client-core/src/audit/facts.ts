@@ -209,6 +209,9 @@ export const auditReasonKeys: Record<string, TranslationKey> = {
   journal_replay_unknown: "audit.reason.journalReplayUnknown",
   journal_unknown: "audit.reason.journalUnknown",
   journal_recovered: "audit.reason.journalRecovered",
+  sandbox_outside_remember_requested: "audit.reason.directRunSaveRequested",
+  sandbox_outside_remembered: "audit.reason.directRunSaved",
+  sandbox_outside_remember_not_saved: "audit.reason.directRunNotSaved",
 };
 export function auditReason(detail: AuditDetail, t: AuditT, kind?: string) {
   const code = detail.reasonCode ?? detail.reason ?? "";
@@ -216,6 +219,8 @@ export function auditReason(detail: AuditDetail, t: AuditT, kind?: string) {
     ? auditReasonKeys[code]
     : policyReasonKey(code);
   if (known) return t(known);
+  if (kind === "approval.resolved" && (detail.status === "allowed" || detail.decision === "allow"))
+    return t("audit.reason.unrecorded");
   // Records written before the code was structured carry no reason at all. Saying the
   // safety policy blocked them was wrong for a person's own refusal, so name what happened.
   if (kind && isRefusalKind(kind))
@@ -267,7 +272,9 @@ const imageReasonKeys: Record<string, TranslationKey> = {
   aborted: "audit.reason.stopped",
   // Audit records the cap as reason "timeout"; the message itself carries image_timeout.
   timeout: "errors.image_timeout",
-  permission_denied: "errors.permission_denied",
+  permission_denied: "media.error.permission_denied",
+  image_approval_declined: "media.error.approvalDeclined",
+  image_replacement_approval_declined: "media.error.replacementApprovalDeclined",
   image_input_required: "errors.image_input_required",
   image_mode_mismatch: "errors.image_mode_mismatch",
   image_unsupported: "errors.image_unsupported",
@@ -382,6 +389,11 @@ export function auditFactRows(entry: AuditEntry, t: AuditT, fallbackName?: strin
   if ((detail.reason || detail.reasonCode) && entry.kind !== "skill.changed") {
     if (entry.kind === "git.install") add("audit.detail.note", gitInstallReason(detail, t));
     else if (isRoutineAuditKind(entry.kind)) add("activity.rule", routineAuditReason(entry, t));
+    else if (
+      entry.kind === "approval.resolved" &&
+      detail.reasonCode === "sandbox_outside_remember_requested"
+    )
+      add("audit.detail.note", auditReason(detail, t, entry.kind));
     else if (isRefusalKind(entry.kind)) add("activity.rule", auditReason(detail, t, entry.kind));
     else {
       const code = detail.reasonCode ?? detail.reason ?? "";

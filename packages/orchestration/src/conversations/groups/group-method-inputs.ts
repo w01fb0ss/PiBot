@@ -3,10 +3,12 @@ import {
   abortable,
   checkWorkflowInputs,
   localWorkspaceFiles,
+  omitUnavailableWorkflowInput,
   skillContract,
   type WorkflowSkill,
   type WorkspaceFileAccess,
 } from "@pibot/brain/orchestration-kit";
+import type { Logger } from "@pibot/observability";
 import {
   DeliverablePathSchema,
   type GroupExecutionPlan,
@@ -15,6 +17,7 @@ import {
   GroupPlanInputError,
   RpcError,
   type SkillContract,
+  type WorkflowInput,
 } from "@pibot/protocol-base";
 
 import { ATTACHMENT_INPUT } from "./group-plan-inputs.ts";
@@ -26,11 +29,15 @@ async function inputAccess<T>(operation: Promise<T>, signal: AbortSignal): Promi
     return await abortable(operation, signal);
   } catch (error) {
     signal.throwIfAborted();
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code && ["EACCES", "EPERM", "ENOENT", "ENOTDIR", "ELOOP"].includes(code))
-      throw new RpcError(-32602, "group_plan_method_input_unavailable");
+    if (isUnavailable(error)) throw new RpcError(-32602, "group_plan_method_input_unavailable");
     throw error;
   }
+}
+
+function isUnavailable(error: unknown) {
+  return (
+    omitUnavailableWorkflowInput(error) || (error as NodeJS.ErrnoException | null)?.code === "ELOOP"
+  );
 }
 
 /** Folder labels are data, never paths that can select another working root. */
@@ -58,13 +65,19 @@ function hasAttachmentInputs(
 function failure(
   plan: GroupExecutionPlan,
   root: string,
-  name: string,
+  declaration: WorkflowInput,
   reason: string,
   files?: WorkspaceFileAccess,
 ) {
+  const { name, required } = declaration;
+  const expected =
+    declaration.kind === "folder"
+      ? inputPath(root, name, files)
+      : (plan.inputs.find((item) => item.name === name && item.kind === "file")?.value ?? "");
   return new GroupPlanInputError(reason, {
     name: name.slice(0, 200),
-    expected: inputPath(root, name, files).slice(0, 4096),
+    required,
+    expected: expected.slice(0, 4096),
     found: plan.inputs
       .filter((item) => item.name !== name && (item.kind === "file" || item.kind === "folder"))
       .slice(0, 6)
@@ -72,46 +85,51 @@ function failure(
   });
 }
 
-async function folderFailure(
+async function methodInputCheck(
   plan: GroupExecutionPlan,
   root: string,
-  name: string,
+  input: WorkflowInput,
   value: string,
   signal: AbortSignal,
-  files?: WorkspaceFileAccess,
+  access: WorkspaceFileAccess,
+  logger?: Pick<Logger, "warn">,
 ) {
-  const access = files ?? localWorkspaceFiles;
-  const { isAbsolute, relative, resolve, sep } = access.paths;
-  if (!isAbsolute(value)) return "group_plan_method_inputs_invalid";
-  const rel = relative(root, value);
-  if (!rel || isAbsolute(rel) || rel === ".." || rel.startsWith(`..${sep}`))
-    return "group_plan_method_inputs_invalid";
-  const info = await inputAccess(access.inspect(value, signal), signal).catch((error: unknown) => {
+  try {
+    if (input.kind === "folder") {
+      const { isAbsolute, relative, resolve, sep } = access.paths;
+      if (!isAbsolute(value)) return "group_plan_method_inputs_invalid";
+      const rel = relative(root, value);
+      if (!rel || isAbsolute(rel) || rel === ".." || rel.startsWith(`..${sep}`))
+        return "group_plan_method_inputs_invalid";
+      const info = await abortable(access.inspect(value, signal), signal);
+      if (!info) return input.required ? "group_plan_method_input_unavailable" : "omitted";
+      if (
+        info.kind !== "directory" ||
+        (await abortable(access.canonical(value, signal), signal)) !== resolve(value)
+      )
+        return "group_plan_method_inputs_invalid";
+    }
+    const { name } = input;
+    const checked = await checkWorkflowInputs(
+      {
+        inputs: [input],
+        prechecks: plan.contract.prechecks.filter((i) => typeof i !== "string" && i.input === name),
+      },
+      { [name]: value },
+      signal,
+      access,
+      logger,
+    );
+    const reason = checked.failures[0]?.reason;
+    if (reason === "empty") return "group_plan_method_input_empty";
+    if (reason) return "group_plan_method_input_unavailable";
+    if (!checked.inputs.length) return "omitted";
+  } catch (error) {
     signal.throwIfAborted();
-    if (error instanceof RpcError && error.message === "group_plan_method_input_unavailable")
-      return null;
+    if (!input.required && omitUnavailableWorkflowInput(error, logger)) return "omitted";
+    if (isUnavailable(error)) return "group_plan_method_input_unavailable";
     throw error;
-  });
-  if (!info) return "group_plan_method_input_unavailable";
-  if (
-    info.kind !== "directory" ||
-    (await inputAccess(access.canonical(value, signal), signal)) !== resolve(value)
-  )
-    return "group_plan_method_inputs_invalid";
-  const checked = await checkWorkflowInputs(
-    {
-      inputs: plan.contract.inputs.filter((i) => i.name === name),
-      prechecks: plan.contract.prechecks.filter((i) => typeof i !== "string" && i.input === name),
-    },
-    { [name]: value },
-    signal,
-    access,
-  );
-  return checked.failures.length
-    ? checked.failures.some((i) => i.reason === "empty")
-      ? "group_plan_method_input_empty"
-      : "group_plan_method_input_unavailable"
-    : undefined;
+  }
 }
 
 /**
@@ -119,32 +137,51 @@ async function folderFailure(
  * copied inputs, or any folder inside the workplace the user named in the message. The
  * plan records which path it bound; containment and readability are checked here, never trusted.
  */
-export async function checkMethodFolderInputs(
+export async function checkMethodInputs(
   plan: GroupExecutionPlan,
   root: string,
   signal: AbortSignal,
   inputFolder?: string,
   files: WorkspaceFileAccess = localWorkspaceFiles,
+  logger?: Pick<Logger, "warn">,
 ) {
-  const folders = plan.contract.inputs.filter((item) => item.kind === "folder");
-  if (!folders.length) return;
-  if ((await inputAccess(files.canonical(root, signal), signal)) !== files.paths.resolve(root))
-    throw invalid();
   const values = new Map(plan.inputs.map((item) => [item.name, item]));
+  if (
+    plan.contract.inputs.some((item) => item.kind === "folder" && values.has(item.name)) &&
+    (await inputAccess(files.canonical(root, signal), signal)) !== files.paths.resolve(root)
+  )
+    throw invalid();
+  const omitted = new Set<string>();
   let attachmentsChecked = false;
-  for (const folder of folders) {
+  for (const declaration of plan.contract.inputs) {
+    if (declaration.kind !== "folder" && declaration.kind !== "file") continue;
     signal.throwIfAborted();
-    const input = values.get(folder.name);
-    if (input?.kind !== "folder")
-      throw failure(plan, root, folder.name, "group_plan_method_inputs_invalid", files);
+    const input = values.get(declaration.name);
+    if (!input && !declaration.required) continue;
+    if (!input || input.kind !== declaration.kind)
+      throw failure(plan, root, declaration, "group_plan_method_inputs_invalid", files);
+    const reason = await methodInputCheck(
+      plan,
+      root,
+      declaration,
+      input.value,
+      signal,
+      files,
+      logger,
+    );
+    if (reason === "omitted") {
+      omitted.add(input.name);
+      continue;
+    }
+    if (reason) throw failure(plan, root, declaration, reason, files);
     // The request's copied inputs are the only folder this run wrote itself, so they get the
-    // stricter file checks; any other folder is validated by folderFailure below.
-    if (input.value === inputFolder && !attachmentsChecked) {
+    // stricter file checks.
+    if (input.kind === "folder" && input.value === inputFolder && !attachmentsChecked) {
       for (const item of plan.inputs.filter(
         (item) =>
           item.kind === "file" &&
           item.name.startsWith(ATTACHMENT_INPUT) &&
-          (files?.paths.dirname ?? dirname)(item.value) === inputFolder,
+          files.paths.dirname(item.value) === inputFolder,
       )) {
         try {
           const info = await inputAccess(files.inspect(item.value, signal), signal);
@@ -154,22 +191,21 @@ export async function checkMethodFolderInputs(
             (await inputAccess(files.canonical(item.value, signal), signal)) !==
               files.paths.resolve(item.value)
           )
-            throw failure(plan, root, folder.name, "group_plan_method_inputs_invalid", files);
+            throw invalid();
         } catch (error) {
           signal.throwIfAborted();
           if (!(error instanceof RpcError)) throw error;
-          throw failure(plan, root, folder.name, error.message, files);
+          throw failure(plan, root, declaration, error.message, files);
         }
       }
       attachmentsChecked = true;
     }
-    const reason = await folderFailure(plan, root, folder.name, input.value, signal, files);
-    if (reason) throw failure(plan, root, folder.name, reason, files);
   }
+  return omitted.size ? plan.inputs.filter((item) => !omitted.has(item.name)) : plan.inputs;
 }
 
-/** Admission freezes method folder declarations and bindings in the existing plan snapshot. */
-export async function bindMethodFolderInputs(
+/** Admission freezes method input declarations and bindings in the existing plan snapshot. */
+export async function bindMethodInputs(
   plan: GroupExecutionPlan,
   card: GroupPlanCard,
   root: string,
@@ -177,7 +213,8 @@ export async function bindMethodFolderInputs(
   lookup: (botId: string, method: string) => Promise<WorkflowSkill | undefined>,
   signal: AbortSignal,
   inputFolder?: string,
-  files?: WorkspaceFileAccess,
+  files: WorkspaceFileAccess = localWorkspaceFiles,
+  logger?: Pick<Logger, "warn">,
 ): Promise<GroupExecutionPlan> {
   const declarations = new Map(plan.contract.inputs.map((item) => [item.name, item]));
   const inputs = new Map(plan.inputs.map((item) => [item.name, item]));
@@ -194,22 +231,23 @@ export async function bindMethodFolderInputs(
     const contract = skill ? skillContract(skill.document).contract : undefined;
     if (!contract || contract.steps?.length)
       throw new RpcError(-32602, "group_plan_method_unavailable");
-    const folders = contract.inputs.filter((item) => item.kind === "folder");
-    const names = new Set(folders.map((item) => item.name));
-    for (const folder of folders) {
-      let value = inputPath(root, folder.name, files);
-      const existing = inputs.get(folder.name);
-      const declared = declarations.get(folder.name);
-      // An explicit binding may name any folder inside the workplace; checkMethodFolderInputs
+    const names = new Set<string>();
+    for (const input of contract.inputs) {
+      const { name, kind } = input;
+      const existing = inputs.get(name);
+      // Unlike folders, files have no default path in the workplace.
+      if (kind !== "folder" && !(kind === "file" && existing)) continue;
+      const declared = declarations.get(name);
+      // An explicit binding may name any folder inside the workplace; checkMethodInputs
       // validates containment and readability once the whole plan is assembled.
-      if ((existing && existing.kind !== "folder") || (declared && declared.kind !== "folder"))
-        throw failure(plan, root, folder.name, "group_plan_method_inputs_invalid", files);
-      if (existing) value = existing.value;
-      declarations.set(folder.name, {
-        ...folder,
-        required: folder.required || !!declared?.required,
-      });
-      inputs.set(folder.name, { name: folder.name, kind: "folder", value });
+      if ((existing && existing.kind !== kind) || (declared && declared.kind !== kind))
+        throw failure(plan, root, input, "group_plan_method_inputs_invalid", files);
+      names.add(name);
+      declarations.set(name, { ...input, required: input.required || !!declared?.required });
+      if (kind === "folder") {
+        const path = inputPath(root, name, files);
+        if (!existing) inputs.set(name, { name, kind, value: path });
+      }
     }
     for (const rule of contract.prechecks) {
       if (typeof rule === "string" || !names.has(rule.input)) continue;
@@ -233,18 +271,16 @@ export async function bindMethodFolderInputs(
       const input = inputs.get(folder.name);
       // An explicit binding is never silently replaced; absent inferred folders may use copies.
       if (!input || plan.inputs.some((item) => item.name === folder.name)) continue;
-      if (await folderFailure(candidate, root, folder.name, input.value, signal, files))
+      if (await methodInputCheck(candidate, root, folder, input.value, signal, files))
         missing.push(input);
     }
     // One unlabelled attachment bundle cannot identify multiple distinct input periods/folders.
     if (missing.length === 1 && missing[0]) missing[0].value = inputFolder as string;
   }
   const parsed = GroupExecutionPlanSchema.safeParse({
-    ...plan,
-    contract: { ...plan.contract, inputs: [...declarations.values()], prechecks },
-    inputs: [...inputs.values()],
+    ...candidate,
+    inputs: await checkMethodInputs(candidate, root, signal, inputFolder, files, logger),
   });
   if (!parsed.success) throw invalid();
-  await checkMethodFolderInputs(parsed.data, root, signal, inputFolder, files);
   return parsed.data;
 }

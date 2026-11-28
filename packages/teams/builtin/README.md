@@ -8,10 +8,10 @@
 
 ```
 builtin/
-├── roles/<roleId>.pibot/        一个角色 = 只有 1 个 Bot、0 个群的团队文件（随应用打包 15 个，见 `tools/dev/builtin-minimal.ts`）
+├── roles/<roleId>.pibot/        一个角色 = 只有 1 个 Bot、0 个群的团队文件（随应用打包 17 个，见 `tools/dev/builtin-minimal.ts`）
 │   ├── team.json
 │   └── skills/<roleId>/<skillId>/{zh,en}/SKILL.md（可带 scripts/、references/）
-├── groups/<groupId>.pibot/      一个群聊模板 = 群 + 成员 Bot + 成员的技能（随应用打包 3 个）
+├── groups/<groupId>.pibot/      一个群聊模板 = 群 + 成员 Bot + 成员的技能（随应用打包 4 个）
 │   ├── team.json
 │   └── skills/<roleId>/<skillId>/{zh,en}/…
 ├── professions.json             欢迎向导的 13 个职业 → 推荐的群聊和角色（只是索引）
@@ -53,6 +53,6 @@ builtin/
 
 ## 来源与许可
 
-- 这里的全部文字和脚本由 Pi Bot 项目原创编写（Claude，2026-10-15），随本仓库的许可发布。
+- Pi Bot 原创的角色、群模板、技能和脚本随本仓库的许可发布。
 - 写作时参考过 WorkBuddy「专家」市场里对应职业的专家定义，**只用来了解一个好的角色定义应该覆盖哪些方面**；没有复制其中的任何句子、结构、名字、头像或文件。
-- 没有改编任何第三方开源内容，因此没有附带的第三方许可声明。以后如果改编开源内容（如 MIT 的 agency-agents、Apache-2.0 的 anthropics/skills），必须从原始仓库取，并在这里逐项写明：文件 → 原始仓库与路径 → 许可证 → 改动说明，同时把许可证全文放进 `builtin/licenses/`。
+- `roles/content-writer.pibot/skills/content-writer/` 的三项 Media Desk 技能改编自 woniuniuniu 的 dsh-media-desk（MIT）。`media-desk-produce` 将 `src/produce.js`、`src/ai.js`、`src/images.js` 和 `src/intents.js` 的成稿、画面规划和改稿流程改为 Pi Bot 的群聊协作。`media-desk-style` 用 `src/style.js` 和 `src/style-presets.js` 提炼样稿风格。`media-desk-review` 根据 `src/learn.js` 整理复盘规则。群模板由同步命令复制这些技能。许可证随各技能打包，并存于 [licenses/media-desk-MIT.txt](./licenses/media-desk-MIT.txt)。[原始仓库](https://github.com/woniuniuniu/dsh-media-desk/tree/d51464345705489b942bdcec242375ee3930c2b6/src)

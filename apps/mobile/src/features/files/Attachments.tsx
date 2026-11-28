@@ -57,7 +57,7 @@ function useCachedUri(messageId: string, attachmentId: string) {
   }, [runtime, selectedId, messageId, attachmentId, known]);
   return uri;
 }
-function ImageThumb({ messageId, item }: { messageId: string; item: Attachment }) {
+export function ImageThumb({ messageId, item }: { messageId: string; item: Attachment }) {
   const colors = useColors(),
     t = useText(),
     router = useRouter();

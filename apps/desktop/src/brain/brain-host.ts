@@ -31,7 +31,7 @@ export interface DesktopBrainHost extends BrainHost {
     signal?: AbortSignal,
     options?: HostParams["host.pickFile"],
   ): Promise<HostResults["host.pickFile"]>;
-  skills: { pickFile(signal: AbortSignal): Promise<HostResults["host.skills.pickFile"]> };
+  skills: NonNullable<BrainHost["skills"]>;
   notify(
     params: HostParams["host.notify"],
     signal?: AbortSignal,
@@ -276,6 +276,8 @@ export function createBrainHost(
     // Read-only scan of this computer; the host bounds its own work, so the timeout only
     // needs to be generous enough for slow disks.
     knowledge: {
+      trashNote: (params, signal) =>
+        peer.call("host.knowledge.trashNote", params, { signal, timeoutMs: 25_000 }),
       detect: (signal) =>
         cancellable(
           () => peer.call("host.knowledge.detect", undefined, { timeoutMs: 25_000 }),
@@ -301,6 +303,7 @@ export function createBrainHost(
       },
     },
     skills: {
+      takeDrop: (dropId, signal) => peer.call("host.skills.takeDrop", { dropId }, { signal }),
       pickFile: (signal) =>
         cancellable(
           () => peer.call("host.skills.pickFile", undefined, { timeoutMs: 630_000 }),

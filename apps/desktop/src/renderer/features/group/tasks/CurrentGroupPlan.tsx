@@ -2,6 +2,7 @@ import type { Bot, Group, MethodResults } from "@pibot/protocol";
 import { useRpc, useT } from "@pibot/renderer-kit";
 import { Button } from "@pibot/ui";
 import { useEffect, useState } from "react";
+import { groupDraftKey, useDraftFill } from "../../chat/composer/composer-drafts.tsx";
 import { GroupPlanCard } from "./GroupPlanCard.tsx";
 
 /** The task panel reads the same durable card as chat, rather than the coordinator's separate TODO. */
@@ -17,6 +18,7 @@ export function CurrentGroupPlan({
   const { peer } = useRpc(),
     t = useT();
   const [entry, setEntry] = useState<MethodResults["groups.plan.current"]>();
+  const fill = useDraftFill();
   const [error, setError] = useState(false),
     [revision, refresh] = useState(0);
   useEffect(() => {
@@ -65,6 +67,10 @@ export function CurrentGroupPlan({
           key={entry.messageId}
           message={{ id: entry.messageId, usage: { groupPlan: entry.card } }}
           bots={bots}
+          // The group's input sits beside this panel; 「新开计划」 leaves the old goal there.
+          fillComposer={(text) =>
+            peer && fill(peer, groupDraftKey(group.id, group.conversationId), text)
+          }
         />
       )}
     </section>

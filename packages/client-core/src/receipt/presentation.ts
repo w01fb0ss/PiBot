@@ -197,7 +197,8 @@ export function receiptChips(r: RunReceipt, t: T): ReceiptChip[] {
       tone: r.outcome === "failed" ? "danger" : "warn",
     });
   const add = (id: string, count: number, key: TranslationKey, tone: ReceiptTone = "muted") => {
-    if (count > 0) chips.push({ id, text: t(key, { count: grouped(count) }), tone });
+    if (count > 0)
+      chips.push({ id, text: t(key, { count: count < 1000 ? count : grouped(count) }), tone });
   };
   // The delivery verdict goes first, it is what a workflow run is judged by.
   if (r.delivery) {
@@ -356,11 +357,13 @@ export function receiptSections(
     },
   ];
   if (r.groupExecution) outcome.push({ label: "", value: groupExecutionText(r.groupExecution, t) });
-  if (r.reasonCode) {
-    const known = failureReasonKey(r.reasonCode);
+  if (r.reasonCode || r.outcome === "failed") {
     outcome.push({
       label: t("receipt.outcome.reason"),
-      value: known ? t(known) : r.reasonCode,
+      value: t(
+        (r.reasonCode !== "permission_denied" && r.reasonCode && failureReasonKey(r.reasonCode)) ||
+          "receipt.failureUnknown",
+      ),
     });
   }
   const inputs = [

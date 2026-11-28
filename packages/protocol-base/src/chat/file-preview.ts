@@ -1,7 +1,7 @@
 // Define the file formats and read limits shared by the preview clients and brain.
 import { z } from "zod";
 import { IdSchema } from "../core/ids.ts";
-import type { Attachment } from "./attachments.ts";
+import { type Attachment, mediaMime } from "./attachments.ts";
 
 export const PREVIEW_TEXT_BYTES = 2_097_152;
 
@@ -24,10 +24,14 @@ export const PreviewKindSchema = z.enum([
   "code",
   "image",
   "svg",
+  "video",
+  "audio",
 ]);
 export type PreviewKind = z.infer<typeof PreviewKindSchema>;
 /** A closed format registry; HTML and arbitrary binary files never become executable previews. */
 export function previewKind(name: string): PreviewKind | undefined {
+  const media = mediaMime(name);
+  if (media) return media.startsWith("video/") ? "video" : "audio";
   const extension = name.toLowerCase().split(".").pop();
   if (
     extension === "docx" ||

@@ -65,20 +65,30 @@ export function parseSkillMarkdown(text: string): SkillMarkdownResult {
       issues.add("params_invalid");
     }
   }
-  if (!parsed.body.trim()) issues.add("body_missing");
-  const result = SkillDocumentBaseSchema.safeParse({
-    name: unfilled(flat(storedName(parsed) ?? "")),
-    description: unfilled(flat(parsed.fields.description ?? "")),
-    body: parsed.body,
-    params,
-  });
+  return validateSkillFields(
+    {
+      name: unfilled(flat(storedName(parsed) ?? "")),
+      description: unfilled(flat(parsed.fields.description ?? "")),
+      body: parsed.body,
+      params,
+    },
+    issues,
+  );
+}
+
+export function validateSkillFields(
+  fields: { name: string; description: string; body: string; params: unknown },
+  issues = new Set<SkillMarkdownIssue>(),
+): SkillMarkdownResult {
+  if (!fields.body.trim()) issues.add("body_missing");
+  const result = SkillDocumentBaseSchema.safeParse(fields);
   if (!result.success) {
     for (const issue of result.error.issues) {
       const field = issue.path[0];
       if (field === "params") issues.add("params_invalid");
       else if (field === "body") {
-        if (!parsed.body.trim()) issues.add("body_missing");
-        else if (new TextEncoder().encode(parsed.body).byteLength > SKILL_BODY_MAX_BYTES)
+        if (!fields.body.trim()) issues.add("body_missing");
+        else if (new TextEncoder().encode(fields.body).byteLength > SKILL_BODY_MAX_BYTES)
           issues.add("body_too_large");
         else issues.add("body_invalid");
       } else if (field === "name" || field === "description") {

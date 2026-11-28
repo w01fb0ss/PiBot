@@ -6,6 +6,7 @@ import {
   type ImportInput,
   ImportMessageSchema,
   ImportTopicSchema,
+  previewMessage,
 } from "./adapter.ts";
 
 const fixture = z.object({
@@ -60,8 +61,14 @@ export const fixtureAdapter: ImportAdapter = {
   async *preview(input, signal) {
     for await (const record of records(input, signal)) {
       if (record.kind === "topic")
-        yield { kind: "topic", createdAt: record.createdAt, updatedAt: record.updatedAt };
-      else yield { kind: "message", createdAt: record.createdAt };
+        yield {
+          kind: "topic",
+          createdAt: record.createdAt,
+          updatedAt: record.updatedAt,
+          ...(record.project ? { project: record.project } : {}),
+          ...(record.memoryExcluded ? { memoryExcluded: true } : {}),
+        };
+      else yield previewMessage(record);
     }
   },
   read: records,

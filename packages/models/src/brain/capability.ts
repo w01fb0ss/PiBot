@@ -6,12 +6,14 @@ import { AuditRepo, BotsRepo, SettingsRepo } from "@pibot/storage";
 import { moveChatGPTPlanOffOpenAI } from "../store/index.ts";
 import { ProviderAuth } from "./auth/provider-auth.ts";
 import { registerProviderAuthRpc } from "./auth/provider-auth-rpc.ts";
+import type { TestVideoBaseUrls } from "./catalog/builtin-videos.ts";
+import { dispatchModels } from "./catalog/dispatch-models.ts";
 import { ProviderStore, providerScope } from "./catalog/providers.ts";
 import { registerModelProviderRpc } from "./catalog/rpc.ts";
 import { ModelSettings } from "./settings/model-settings.ts";
 import { registerProviderImport } from "./settings/provider-import.ts";
 
-export function providersCapability(): BrainCapability {
+export function providersCapability(testVideoBases?: TestVideoBaseUrls): BrainCapability {
   return {
     id: "providers",
     async register(ctx) {
@@ -21,7 +23,14 @@ export function providersCapability(): BrainCapability {
       const moved = moveChatGPTPlanOffOpenAI(db, chatGPTPlanModels());
       if (moved)
         logger.info(JSON.stringify({ module: "providers", event: "chatgpt_plan_moved", ...moved }));
-      const providers = new ProviderStore(db, ctx.host.secrets, redactor, ctx.secrets);
+      const providers = new ProviderStore(
+        db,
+        ctx.host.secrets,
+        redactor,
+        ctx.secrets,
+        testVideoBases,
+        ctx.fetch,
+      );
       await providers.initialize();
       const audit = new AuditRepo(db, redactor);
       const changed = () => peer.emit("providers.changed", {});
@@ -84,6 +93,15 @@ export function providersCapability(): BrainCapability {
       });
       const port: ModelProvidersPort = {
         changed,
+        videoProviders: providers.videoProviders,
+        videoModelsToEnable: providers.videoModelsToEnable,
+        dispatchDestination(id) {
+          const config = providers.configs().find((item) => item.id === id);
+          return (
+            config && createHash("sha256").update(new URL(config.baseUrl).origin).digest("hex")
+          );
+        },
+        dispatchModels: (signal) => dispatchModels(ctx, providers, auth, signal),
         hasApiKey: (id) => providers.secrets.has(providerScope(id), "apiKey"),
         getApiKey: (id) => providers.secrets.get(providerScope(id), "apiKey"),
         customProviders: providers.configs,
@@ -130,7 +148,13 @@ export function providersCapability(): BrainCapability {
       registerModelProviderRpc(ctx, providers, auth, modelSettings);
       // Agent consumers still need authentication while other capabilities and runs drain.
       // The kernel owns final port.stop(), after those consumers have actually stopped.
-      return { start: () => auth.start() };
+      return {
+        start: () => auth.start(),
+        async afterReady(signal) {
+          await providers.refreshVideoCatalogs(AbortSignal.any([signal, ctx.models.signal()]));
+          changed();
+        },
+      };
     },
   };
 }

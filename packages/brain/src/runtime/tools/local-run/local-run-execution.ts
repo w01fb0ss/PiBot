@@ -13,6 +13,7 @@ import { officeRenderOutputPath } from "@pibot/protocol-base";
 import { SettingsRepo } from "@pibot/storage";
 import { auditAutoAllow, isAutoAllowed } from "../../../core/auto-allow.ts";
 import type { PreparedTool } from "../../../core/local-types.ts";
+import { runPermissionScope } from "../../../core/run-permissions.ts";
 import { allowedByYolo, runYolo } from "../../../core/yolo.ts";
 import { taskCompleted } from "../../continuation/task-completion.ts";
 import { gitEntriesCurrent } from "../git-entry-prepare.ts";
@@ -71,7 +72,8 @@ export async function executeStep(
     state.fingerprint !== fingerprint(state.prepared) ||
     state.finished ||
     state.prepared.call.tool !== call.tool ||
-    JSON.stringify(state.prepared.call.input) !== JSON.stringify(call.input)
+    (state.modelCallInput ?? JSON.stringify(state.prepared.call.input)) !==
+      JSON.stringify(call.input)
   )
     throw new ToolAuthorizationError("Tool authorization missing");
   signal.throwIfAborted();
@@ -102,7 +104,7 @@ export async function executeStep(
   };
   let checked: PreparedTool;
   try {
-    checked = await this.prepare(call, signal, state.prepared.searchRecipient);
+    checked = await this.prepare(state.prepared.call, signal, state.prepared.searchRecipient);
   } catch (error) {
     return checkRefused(error);
   }
@@ -115,7 +117,9 @@ export async function executeStep(
       policySteps: explanation.map((step) => step.code),
     };
     const text =
-      blockedReason(reason, category) + policyWebsiteGuidance(this.local, this.context, checked);
+      checked.refusalText ??
+      blockedReason(reason, category) +
+        policyWebsiteGuidance(this.local, this.context, checked).help;
     this.blocked(call, text);
     return { text, isError: true };
   }
@@ -212,7 +216,7 @@ export async function executeStep(
     // synthetic step (the automatic check) re-verifies by design each round and is not journalled.
     const journalled = state.synthetic
       ? { result: await dispatch(), executed: true }
-      : await this.local.toolJournal.run(this.context, prepared, signal, dispatch);
+      : await this.local.toolJournal.run(this.context, prepared, signal, dispatch, call.input);
     state.result = journalled.result;
     // An answer cached before a write describes files that no longer look like that.
     if (journalled.executed && stepChangesFiles(prepared)) {
@@ -317,7 +321,8 @@ export async function executeStep(
 /** Folders a tool may change: file tools lock the root holding the file, commands all. */
 export function writeLockRootsStep(this: LocalRunOperations, prepared: PreparedTool) {
   const tool = prepared.call.tool;
-  if (isCommandCall(tool)) return this.writeRoots(prepared);
+  if (isCommandCall(tool))
+    return prepared.result.windowsReadProven && !prepared.docker ? [] : this.writeRoots(prepared);
   if (tool === "apply_patch") {
     // Same as a single file: outside the workplace each patched path locks only itself.
     const opened = new Set(prepared.result.outsideWriteRoots);
@@ -405,6 +410,21 @@ export function assertDispatchStep(this: LocalRunOperations, prepared: PreparedT
   if (!gitEntriesCurrent(prepared))
     throw new ToolAuthorizationError("Git hooks or configuration changed");
   this.local.userSecrets.assertUses(prepared.secretUses ?? [], this.context.botId);
+  if (prepared.skillSecretUses?.length) {
+    this.local.userSecrets.assertUses(prepared.skillSecretUses, this.context.botId);
+    const skill = prepared.commandSkill?.secretBindings;
+    if (
+      !prepared.confirmedNow ||
+      !skill ||
+      !this.local.skills?.commandSecretsCurrent?.(
+        this.context.botId,
+        runPermissionScope(this.local, this.context),
+        skill.skillId,
+        prepared.skillSecretUses,
+      )
+    )
+      throw new ToolAuthorizationError("Skill token approval changed");
+  }
   this.local.tasks.guardSync(this.context);
   this.local.unattendedAuthorization.record(this.context);
   if (

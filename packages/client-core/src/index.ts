@@ -1,5 +1,18 @@
 export { approvalExplanation, policyStepText } from "./approvals/explanation.ts";
-export { approvalCountdown, approvalFactText, isolationReasonText } from "./approvals/facts.ts";
+export {
+  approvalCountdown,
+  approvalDeadline,
+  approvalFactText,
+  approvalPausesAtDeadline,
+  isDirectRunApproval,
+  isolationReasonText,
+  isWindowsDirectRunApproval,
+  runErrorText,
+  sandboxRuleText,
+  sandboxTargetText,
+  systemServiceLabel,
+} from "./approvals/facts.ts";
+export { groupTimeline, readGroupApprovals } from "./approvals/group-timeline.ts";
 export { approvalText } from "./approvals/text.ts";
 export { topicGrantLabel } from "./approvals/topic-grant-label.ts";
 export { collapseRepeats, type RepeatGroup } from "./audit/collapse.ts";
@@ -30,7 +43,14 @@ export { replyCitationText } from "./chat/reply-citations.ts";
 export { appendReplyDelta, preserveLiveReply } from "./chat/reply-delta.ts";
 export { type ReplyReceiptPosition, replyReceiptPositions } from "./chat/reply-receipts.ts";
 export { messageShownText, routineTriggerText } from "./chat/routine-trigger-text.ts";
-export { activeRun, currentImageModel, retryText } from "./chat/selectors.ts";
+export {
+  activeRun,
+  chatPermissionFailureText,
+  currentImageModel,
+  retryText,
+  sameYoloScope,
+  yoloScopeUnavailable,
+} from "./chat/selectors.ts";
 export { silentWake } from "./chat/silent-wake.ts";
 export { displayTopicTitle } from "./chat/topic-title.ts";
 export type {
@@ -82,6 +102,7 @@ export type {
 } from "./tools/activity-types.ts";
 export { computerToolKey } from "./tools/computer-names.ts";
 export {
+  activeToolLabel,
   connectorToolLabel,
   displayToolTarget,
   isPlanReadOnly,
@@ -92,6 +113,7 @@ export {
   toolDisplayName,
   toolGroupSummary,
   toolNameKey,
+  toolStatusKey,
   toolSummaryLabel,
   toolTarget,
 } from "./tools/presentation.ts";

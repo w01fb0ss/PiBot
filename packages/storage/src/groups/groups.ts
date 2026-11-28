@@ -33,6 +33,7 @@ export class GroupsRepo {
       workplace: JSON.parse(String(row.workplace)),
       conversationId: conversation.id,
       topicTitle: conversation.title,
+      topicModelOverride: conversation.modelOverride,
       topicArchivedAt: conversation.archivedAt,
       folders: new GroupFoldersRepo(this.db).list(id),
       primaryFolderId: new GroupFoldersRepo(this.db).identity(id).primaryFolderId,
@@ -141,10 +142,14 @@ export class GroupsRepo {
           this.db.prepare("SELECT 1 FROM bots WHERE id=? AND is_main=1").get(id),
         ) ??
         p.botIds.find((id) =>
-          this.db.prepare("SELECT 1 FROM bots WHERE id=? AND category='chat'").get(id),
+          this.db
+            .prepare("SELECT 1 FROM bots WHERE id=? AND category='chat' AND kind IS NULL")
+            .get(id),
         );
       if (!coordinator || !p.botIds.includes(coordinator))
         throw new TypeError("Coordinator must be a member");
+      if (this.db.prepare("SELECT 1 FROM bots WHERE id=? AND kind='agent'").get(coordinator))
+        throw new TypeError("agent_coordinator_unsupported");
       if (this.db.prepare("SELECT 1 FROM bots WHERE id=? AND category='image'").get(coordinator))
         throw new TypeError("image_coordinator_unsupported");
       const id = randomUUID(),
@@ -158,7 +163,7 @@ export class GroupsRepo {
           p.name,
           coordinator,
           p.announcement ?? "",
-          p.autoRoundLimit ?? 4,
+          p.autoRoundLimit,
           Number(p.externalAgentStepContext ?? true),
           JSON.stringify(p.workplace ?? { kind: "coordinator" }),
           now,
@@ -203,6 +208,13 @@ export class GroupsRepo {
       if (!value.members.some((m) => m.botId === value.coordinatorBotId))
         throw new TypeError("Coordinator must be a member");
       this.activeBot(value.coordinatorBotId);
+      if (
+        value.coordinatorBotId !== current.coordinatorBotId &&
+        this.db
+          .prepare("SELECT 1 FROM bots WHERE id=? AND kind='agent'")
+          .get(value.coordinatorBotId)
+      )
+        throw new TypeError("agent_coordinator_unsupported");
       if (
         this.db
           .prepare("SELECT 1 FROM bots WHERE id=? AND category='image'")

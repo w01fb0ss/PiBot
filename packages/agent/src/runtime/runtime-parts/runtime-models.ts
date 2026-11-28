@@ -60,7 +60,7 @@ export function createModelsOperations({
         const models = opts?.availableOnly ? await runtime.getAvailable() : runtime.getModels();
         const added = deps.addedModels?.() ?? {};
         return models
-          .filter((model) => !isRetiredModel(model.provider, model.id))
+          .filter((model) => opts?.includeRetired || !isRetiredModel(model.provider, model.id))
           .map((model) =>
             added[model.provider]?.includes(model.id)
               ? { ...modelInfo(model), addedByUser: true as const }

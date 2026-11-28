@@ -1,5 +1,5 @@
-import { failureReasonKey } from "@pibot/i18n";
-import type { InboxItem } from "@pibot/protocol";
+import { runErrorText } from "@pibot/i18n";
+import { type InboxItem, memoryFailureNeedsSettings, memoryFailureReason } from "@pibot/protocol";
 import { useNavigation, useRpc, useSettings } from "@pibot/renderer-kit";
 import { useRoutineNavigation } from "@pibot/routines/ui";
 import { Button } from "@pibot/ui";
@@ -16,12 +16,14 @@ export function BackgroundTaskInboxCard({ item }: { item: BackgroundTaskInboxIte
   const { t, language } = useSettings();
   const { peer } = useRpc();
   const [busy, setBusy] = useState(false);
-  const { openSettings } = useNavigation();
+  const { openAudit, openSettings } = useNavigation();
   const { openRoutines } = useRoutineNavigation();
   const { task, subject, subjectName, reasonCode, streak, firstFailedAt } = item.health;
   const title = t("workspace.backgroundTask");
   const model = task === "memory_extraction" || task === "memory_organization";
-  const reason = failureReasonKey(reasonCode);
+  const memoryReason = model ? memoryFailureReason(reasonCode) : undefined;
+  const checkModels = memoryReason && memoryFailureNeedsSettings(memoryReason);
+  const retry = memoryReason === "busy" || memoryReason === "network";
   return (
     <article className={styles.card} aria-label={title}>
       <header className={styles.cardHeader}>
@@ -40,11 +42,18 @@ export function BackgroundTaskInboxCard({ item }: { item: BackgroundTaskInboxIte
         </p>
         <p>
           {t("workspace.backgroundTask.reason", {
-            // Known failure codes read as a sentence; an unknown one stays a code for the log.
-            code: reason ? t(reason) : reasonCode,
+            code: memoryReason
+              ? t(`memorySettings.maintenance.${memoryReason}`)
+              : (runErrorText(reasonCode, t) ?? t("errors.genericFailure")),
           })}
         </p>
-        <p>{t(`workspace.backgroundTask.action.${task}`)}</p>
+        {retry && <p>{t("workspace.backgroundTask.memoryRetry")}</p>}
+        {checkModels && memoryReason !== "local_only_no_model" && (
+          <p>{t("workspace.backgroundTask.memoryCheck")}</p>
+        )}
+        {task !== "memory_extraction" && task !== "memory_organization" && (
+          <p>{t(`workspace.backgroundTask.action.${task}`)}</p>
+        )}
         <p>{t("workspace.backgroundTask.note")}</p>
       </div>
       <div className={styles.links}>
@@ -62,7 +71,7 @@ export function BackgroundTaskInboxCard({ item }: { item: BackgroundTaskInboxIte
         >
           {t("workspace.backgroundTaskDismiss")}
         </Button>
-        {model ? (
+        {checkModels ? (
           <Button onClick={() => openSettings("models")}>
             {t("workspace.backgroundTaskModels")}
           </Button>
@@ -70,7 +79,11 @@ export function BackgroundTaskInboxCard({ item }: { item: BackgroundTaskInboxIte
           <Button onClick={() => openRoutines(subjectName ? subject : undefined)}>
             {t("workspace.backgroundTaskRoutines")}
           </Button>
-        ) : null}
+        ) : (
+          <Button variant="secondary" onClick={() => openAudit()}>
+            {t("media.multi.actionLogs")}
+          </Button>
+        )}
       </div>
     </article>
   );

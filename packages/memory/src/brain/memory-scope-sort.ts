@@ -1,5 +1,10 @@
 // Classifies shared memories for an owner-initiated, proposal-only sort.
-import { type KernelMethodResults, MemorySchema } from "@pibot/protocol-base";
+import {
+  type KernelMethodResults,
+  type MemoryModelFallback,
+  MemorySchema,
+  memoryFailureReason,
+} from "@pibot/protocol-base";
 import {
   AuditRepo,
   MemoryManagementRepo,
@@ -8,9 +13,9 @@ import {
   SettingsRepo,
 } from "@pibot/storage";
 import { z } from "zod";
-import { logMemoryAttempt } from "./memory-maintenance-log.ts";
+import { logMemoryAttempt, logMemoryFallback } from "./memory-maintenance-log.ts";
 import { organizationErrorDetails } from "./memory-organization-errors.ts";
-import { organizationModel } from "./memory-organization-model.ts";
+import { memoryModelRoute } from "./memory-organization-model.ts";
 import type { OrganizationDeps } from "./memory-organization-queue.ts";
 import { movableUserNotes, proposeScopeMove } from "./memory-scope-moves.ts";
 
@@ -68,7 +73,7 @@ export async function sortUserMemories(
   signal.throwIfAborted();
   const id = repo.beginOwner(botId, runId);
   const started = performance.now();
-  const model = organizationModel(db, botId);
+  let fallback: MemoryModelFallback | undefined;
   const total = memory.status(botId, "user", "user").activeCount;
   let processed = 0;
   let moves = 0;
@@ -78,8 +83,6 @@ export async function sortUserMemories(
   let status: KernelMethodResults["memory.sortIntoPlace"]["status"] = "done";
   let error: string | undefined;
   try {
-    if (total > 0 && (!model || !deps.draftMemories))
-      throw Object.assign(new Error("no_model"), { code: "no_model" });
     progress({ processed, total, moves });
     let before: string | undefined;
     while (processed < Math.min(total, MAX_NOTES)) {
@@ -105,9 +108,12 @@ export async function sortUserMemories(
       const used = memoryMaintenanceUsage(db, dayStart());
       const baseTokens = tokens;
       const baseCost = costUsd;
-      if (!model || !deps.draftMemories) throw new Error("model_unavailable");
+      const route = memoryModelRoute(db, botId, fallback);
+      if (!route || !deps.draftMemories)
+        throw Object.assign(new Error("no_model"), { code: "no_model" });
       const result = await deps.draftMemories({
-        model,
+        ...route,
+        onFallback: logMemoryFallback(deps, botId),
         text: deps.redactor.redact(text),
         instruction: scopeSortInstruction(),
         signal,
@@ -128,8 +134,7 @@ export async function sortUserMemories(
           ),
         },
         onUsage(usage) {
-          // The callback reports reservation then settlement for ONE request. Accumulate batches,
-          // replacing that request's reservation instead of double-counting it or losing it on error.
+          // The runtime reports aggregate usage for this batch, including incomplete output.
           tokens = baseTokens + usage.tokens;
           costUsd = baseCost + (usage.costUsd ?? 0);
           repo.recordUsage(id, { ...usage, tokens, costUsd });
@@ -166,6 +171,7 @@ export async function sortUserMemories(
         proposals += created;
         if (created) moves++;
       }
+      fallback ??= result.fallback;
       processed += notes.length;
       before = notes.at(-1)?.id;
       progress({ processed, total, moves });
@@ -186,6 +192,7 @@ export async function sortUserMemories(
       error: status === "done" ? null : status === "failed" ? error : status,
       proposals,
       memoryCount: processed,
+      fallback,
     });
     new AuditRepo(db, deps.redactor).append({
       botId,
@@ -201,5 +208,12 @@ export async function sortUserMemories(
     });
     logMemoryAttempt(deps, "organization", { id, botId }, started);
   }
-  return { status, moves, processed, total };
+  return {
+    status,
+    moves,
+    processed,
+    total,
+    ...(status === "failed" && { failureReason: memoryFailureReason(error) }),
+    ...(fallback && { fallback }),
+  };
 }

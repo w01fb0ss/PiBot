@@ -5,16 +5,14 @@ import { withLanDiscovery } from "./plugins/with-lan-discovery.ts";
 import { nativePermissions } from "./src/i18n/messages.ts";
 
 // The phone app carries the desktop's version so both ends of a release read the same number.
-// Store build numbers must only grow: 1.2.3 → 10203 (each part < 100).
+// Reserve two digits per component so build numbers follow release order: 1.2.3 → 10203.
 const version = desktop.version;
-const [major, minor, patch, ...rest] = version.split(".").map(Number);
-if (
-  rest.length ||
-  [major, minor, patch].some((n) => n === undefined || !Number.isInteger(n) || n < 0 || n > 99)
-)
-  throw new Error(`invalid_version ${version}`);
-const buildNumber = (major as number) * 10000 + (minor as number) * 100 + (patch as number);
+const parts = /^(0|[1-9]\d?)\.(0|[1-9]\d?)\.(0|[1-9]\d?)$/u.exec(version);
+if (!parts) throw new Error(`invalid_version ${version}`);
+const [, major, minor, patch] = parts;
+const buildNumber = Number(major) * 10000 + Number(minor) * 100 + Number(patch);
 // The public version restarted at 0.0.1 after Android build 2 had shipped.
+// Keep that offset: 0.0.3 shipped as 5, and 0.1.0 and 0.2.0 map to 102 and 202.
 const androidBuildNumber = buildNumber + 2;
 
 // The Expo account and project name where push tokens belong. They come from the builder's

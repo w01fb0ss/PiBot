@@ -13,6 +13,7 @@ const OfficeViewer = lazy(() => import("@pibot/office/ui/viewer"));
 const PdfViewer = lazy(() => import("./PdfViewer.tsx"));
 const TextViewer = lazy(() => import("./TextViewer.tsx"));
 const CodeViewer = lazy(() => import("./CodeViewer.tsx"));
+const MediaViewer = lazy(() => import("./MediaViewer.tsx"));
 const ImageViewer = lazy(() => import("./ImageViewer.tsx"));
 export function FilePreviewPane({
   file,
@@ -93,7 +94,9 @@ export function FilePreviewPane({
         ? TextViewer
         : kind === "code"
           ? CodeViewer
-          : ImageViewer;
+          : kind === "video" || kind === "audio"
+            ? MediaViewer
+            : ImageViewer;
   const failed = error || engineFailed;
   return (
     <div className={styles.reader}>

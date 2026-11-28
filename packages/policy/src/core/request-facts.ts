@@ -13,13 +13,16 @@ import {
 } from "@pibot/protocol-base";
 import { dangerousReasons } from "../commands/dangerous.ts";
 import { curlFollowsRedirects } from "../commands/options/curl-options.ts";
-import type { ScriptInputs, ScriptSource } from "../commands/scripts.ts";
+import { type ScriptInputs, type ScriptSource, skillTokenScript } from "../commands/scripts.ts";
+import { windowsUserReadCommand } from "../commands/windows-approval-shape.ts";
 import { isAiConfigPath } from "../paths/ai-config-paths.ts";
 import { canonicalPath, containsPath, expandHome, pathApi, resolvePath } from "../paths/paths.ts";
+import { protectedPaths } from "../paths/protected-paths.ts";
 import { privateNetworkOrigin } from "../targets/private-network.ts";
 import { website } from "../targets/web.ts";
 import { commandPathScope, isWritableCommandPath } from "./command-path-risk.ts";
 import {
+  WINDOWS_FILE_READ_CONFIRMATION,
   WINDOWS_ORDINARY_COMMAND,
   WINDOWS_READ_ONLY,
   WINDOWS_REQUIRES_APPROVAL,
@@ -162,7 +165,7 @@ export async function prepareRequestFacts(
     result.facts.push({ kind: "read", value: request.target });
     return { result, incomplete: false };
   }
-  if (request.category === "image_generation")
+  if (request.category === "image_generation" || request.category === "video_generation")
     return imageRecipientFacts(request.recipient, input.settings, result, trace);
   if (request.category === "web") {
     const local = localServiceTarget(request.url);
@@ -192,6 +195,7 @@ export async function prepareRequestFacts(
   }
   if (request.category === "run_command" && context.platform === "win32") {
     context.signal.throwIfAborted();
+    const local = (input.boundary?.location?.target ?? "local") === "local";
     const runner = input.boundary?.location?.target.startsWith("runner:") === true;
     let extra: readonly string[] | undefined;
     if (runner) {
@@ -221,7 +225,15 @@ export async function prepareRequestFacts(
       scope.writeRoots.some((root) => containsPath(root, input.workplace.home, "win32"))
         ? await ownWorkRoots(input.workplace.home, context)
         : [];
-    const scan = await prepareWindowsCommandScan(request.command, {
+    const boundRead =
+      !request.background && !request.stdin && !request.outsideSandbox && context.windowsUserPaths
+        ? windowsUserReadCommand(
+            request.command,
+            context.protectionHome ?? "",
+            context.windowsUserPaths,
+          )
+        : undefined;
+    const scan = await prepareWindowsCommandScan(boundRead ?? request.command, {
       protectedRoots,
       ownRoots,
       scope,
@@ -247,34 +259,79 @@ export async function prepareRequestFacts(
         result: deny(result, "runner_command_protection_unavailable", trace),
         incomplete: true,
       };
-    const readOnly = scan.fragments.length
-      ? undefined
-      : await proveWindowsReadOnly(
-          { ...input, request },
-          context,
-          cwd,
-          { roots: protectedRoots, own: ownRoots },
-          async (file) => {
-            const fileTrace = createPolicyTrace();
-            const fileInput = { ...input, request: file };
-            const facts = await prepareRequestFacts(fileInput, { ...context }, analyze, fileTrace);
-            finish(
-              fileInput,
-              { platform: "win32", userHome: context.protectionHome ?? context.home },
-              facts,
-              fileTrace,
-            );
-            return facts;
-          },
-        );
+    const readOnly =
+      scan.fragments.length || scan.mappedDrive
+        ? undefined
+        : await proveWindowsReadOnly(
+            { ...input, request },
+            context,
+            cwd,
+            { roots: protectedRoots, own: ownRoots },
+            scan.readShape,
+            async (file) => {
+              const fileTrace = createPolicyTrace();
+              const fileInput = { ...input, request: file };
+              const facts = await prepareRequestFacts(
+                fileInput,
+                { ...context, home: input.workplace.home },
+                analyze,
+                fileTrace,
+              );
+              finish(
+                fileInput,
+                { platform: "win32", userHome: context.protectionHome ?? context.home },
+                facts,
+                fileTrace,
+              );
+              return facts;
+            },
+          );
     if (readOnly) {
+      const denied = readOnly.outside.find((access) => access.result.decision === "deny");
+      if (denied) return { result: deny(result, denied.result.reason, trace), incomplete: true };
+      result.windowsReadProven = true;
       result.reason = WINDOWS_READ_ONLY;
-      result.facts.push(...readOnly);
+      if (scan.readShape?.guard) result.windowsReadOnly = true;
+      result.command = readOnly.command ?? boundRead ?? request.command;
+      const outside = readOnly.outside[0];
+      if (outside) {
+        result.category = readOnly.outside.every((access) => access.category === "list_dir")
+          ? "list_dir"
+          : "read_file";
+        trace.step("category", result.category, "info");
+        trace.step("boundary", "outside_workplace", "info");
+        const scope = outside.result.grantScope;
+        if (
+          scope?.kind === "folder" &&
+          readOnly.outside.every(
+            ({ category, result: read }) =>
+              category === outside.category &&
+              read.canRemember &&
+              read.grantScope?.kind === "folder" &&
+              read.grantScope.path === scope.path,
+          )
+        ) {
+          result.grantScope = scope;
+          result.canRemember = true;
+        }
+        if (readOnly.facts.every((fact) => fact.value === outside.result.path?.path))
+          result.path = outside.result.path;
+        if (readOnly.outside.some((access) => access.result.decision === "ask"))
+          result.reason = WINDOWS_FILE_READ_CONFIRMATION;
+        result.facts = readOnly.facts;
+      } else {
+        if (boundRead)
+          result.facts = result.facts.filter((fact) => !fact.value.startsWith("command_home:"));
+        result.facts.push(...readOnly.facts);
+      }
       return { result, incomplete: false };
     }
     const ordinary =
       !scan.needsConfirmation &&
+      !scan.mappedDrive &&
       !scan.fragments.length &&
+      !/\$|(?:^|[\s"'])~(?=[\\/\s"']|$)/.test(request.command) &&
+      (!local || !scan.readShape || scan.readShape.git.length > 0) &&
       !request.stdin &&
       !request.outsideSandbox &&
       !input.boundary?.location?.target.startsWith("acp:");
@@ -285,20 +342,32 @@ export async function prepareRequestFacts(
   if (!("path" in request) && request.category !== "run_command")
     return { result: deny(result, "category_unavailable", trace, "category"), incomplete: false };
   const workplace = input.workplace;
-  context.roots = await Promise.all(
-    [workplace.home, ...workplace.folders.map((folder) => folder.path)].map(
-      async (root) => (await canonicalPath(root, context)).path,
-    ),
-  );
-  if (input.boundary) context.roots = input.boundary.readRoots;
+  // Reuse proof for exact workspace roots only. Targets, allow exceptions and deny aliases are live.
+  const verified = request.category === "run_command" ? undefined : input.verifiedWorkspacePaths;
+  const canonicalWorkspacePath = async (path: string) =>
+    verified?.get(path) ?? (await canonicalPath(path, context)).path;
+  const readRoots = input.boundary?.readRoots;
+  // The verified snapshot supplies the read roots. Walking the registry here would also resolve
+  // the Bot's home even when it is outside the selected workplace and the result is discarded.
+  if (!verified || !readRoots?.length || !readRoots.every((root) => verified.get(root) === root))
+    context.roots = await Promise.all(
+      [workplace.home, ...workplace.folders.map((folder) => folder.path)].map(
+        canonicalWorkspacePath,
+      ),
+    );
+  if (readRoots) context.roots = readRoots;
   trace.step("boundary", input.boundary ? "workspace_snapshot" : "workplace_roots", "info");
   const current =
     workplace.currentId === "home"
       ? workplace.home
       : workplace.folders.find((folder) => folder.id === workplace.currentId)?.path;
   if (!current) return { result: deny(result, "invalid_workplace", trace), incomplete: false };
-  context.cwd = (await canonicalPath(current, context)).path;
-  if (input.cwd) context.cwd = (await canonicalPath(input.cwd, context)).path;
+  const verifiedCwd = input.cwd && verified?.get(input.cwd);
+  if (verifiedCwd) context.cwd = verifiedCwd;
+  else {
+    context.cwd = await canonicalWorkspacePath(current);
+    if (input.cwd) context.cwd = await canonicalWorkspacePath(input.cwd);
+  }
   if (request.category === "write_file" && selectedGitConfiguration(input))
     return prepareGitKnownFileFacts(input, context, result, trace);
   if (request.category === "run_command") {
@@ -406,7 +475,24 @@ export async function prepareRequestFacts(
         return { result, incomplete: false, skill: true };
     }
   }
-  if (request.category === "write_file" && !path.root) {
+  const knowledgeRoot = request.category === "write_file" ? request.knowledgeRoot : undefined;
+  if (knowledgeRoot) {
+    const canonical = await canonicalPath(knowledgeRoot, context);
+    if (
+      !canonical.exists ||
+      !containsPath(canonical.path, path.path, context.platform) ||
+      input.boundary?.location?.target.startsWith("runner:") ||
+      !input.protectedWriteRoots
+    )
+      return { result: deny(result, "outside_workplace_write_denied", trace), incomplete: false };
+    const protection = await protectedPaths(
+      context,
+      await input.protectedWriteRoots(context.signal),
+    );
+    if (protection.covers(canonical.path) || protection.covers(path.path))
+      return { result: deny(result, "protected_path", trace), incomplete: false };
+  }
+  if (request.category === "write_file" && !path.root && !knowledgeRoot) {
     const refused = await judgeOutsideWrites([path], "file", input, context, result);
     if (refused) deny(result, refused, trace);
   }
@@ -420,10 +506,11 @@ export async function prepareRequestFacts(
   )
     deny(result, "readonly_workplace", trace);
   // An outside write is allowed once and never becomes a reusable folder grant.
-  if (request.category === "write_file" && !path.root)
+  if (request.category === "write_file" && !path.root && !knowledgeRoot)
     return { result, incomplete: false, outside: true };
-  const scope: GrantScope =
-    request.category === "write_file" && path.root
+  const scope: GrantScope = knowledgeRoot
+    ? { kind: "folder", path: knowledgeRoot }
+    : request.category === "write_file" && path.root
       ? {
           kind: "workplace",
           root: path.root,
@@ -436,7 +523,7 @@ export async function prepareRequestFacts(
               ? path.path
               : pathApi(context.platform).dirname(path.path),
         };
-  return { result, scope, incomplete: false, outside: !path.root };
+  return { result, scope, incomplete: false, outside: !path.root && !knowledgeRoot };
 }
 function imageRecipientFacts(
   recipient: string,
@@ -521,6 +608,7 @@ async function commandFacts(
     if (files.size || cwdNames)
       analysis = analyze(command, { files, ...(cwdNames ? { cwdNames } : {}) });
   }
+  if (input.boundSkillScript) await pinBoundSkillScript(analysis, input.boundSkillScript, context);
   // Writes the analysis cannot see (a package manager's cache) are declared by the
   // model and judged exactly like analysed ones; declaring one means the command is not read-only.
   if (request.writePaths?.length) {
@@ -668,6 +756,49 @@ async function commandFacts(
       : undefined;
   return { result, scope, incomplete, ...(scriptScope ? { scriptScope } : {}) };
 }
+
+async function pinBoundSkillScript(
+  analysis: CommandAnalysis,
+  skill: NonNullable<EvaluationInput["boundSkillScript"]>,
+  context: PathContext,
+) {
+  const invocation = analysis.literalCommand;
+  const script = skillTokenScript(invocation);
+  if (!script || !invocation || !context.fs.readScript || context.platform === "win32") return;
+  const api = pathApi(context.platform);
+  if (script.split(api.sep).includes("..")) return;
+  const path = api.resolve(context.cwd, script);
+  const within = (root: string, child: string) =>
+    root !== child && containsPath(root, child, context.platform);
+  if (!within(skill.folder, path)) return;
+  const real = (path: string) => context.fs.realpath(path, context.signal).catch(() => undefined);
+  const [data, folder, file] = await Promise.all([
+    real(skill.dataDir),
+    real(skill.folder),
+    real(path),
+  ]);
+  context.signal.throwIfAborted();
+  if (!data || !folder || !file || !within(data, folder) || !within(folder, file)) return;
+  if (
+    folder !== api.join(data, api.relative(skill.dataDir, skill.folder)) ||
+    file !== api.join(folder, api.relative(skill.folder, path))
+  )
+    return;
+  // Pin the installed bytes for consent and dispatch. Do not use them to upgrade the
+  // command's policy verdict or make it eligible for reusable script consent.
+  const text = await context.fs.readScript(file, context.signal);
+  if (text === undefined) return;
+  const sha256 = createHash("sha256").update(text, "utf8").digest("hex");
+  analysis.scriptPins = [
+    ...(analysis.scriptPins ?? []).filter((pin) => pin.path !== path),
+    { path, sha256, canonicalPath: file },
+  ];
+  analysis.boundSkillScriptPath = path;
+  analysis.scriptInterpreters = [
+    ...new Set([...(analysis.scriptInterpreters ?? []), invocation.program]),
+  ];
+}
+
 async function readScripts(paths: readonly string[], context: PathContext) {
   const scripts = new Map<string, ScriptSource>();
   if (!context.fs.readScript) return scripts;

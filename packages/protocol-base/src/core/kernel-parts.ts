@@ -46,6 +46,7 @@ export * from "../connectors/apps.ts";
 export * from "../connectors/availability.ts";
 export * from "../connectors/connectors.ts";
 export * from "../connectors/drafts.ts";
+export * from "../connectors/health-port.ts";
 export * from "../connectors/knowledge-detect.ts";
 export * from "../connectors/knowledge-open.ts";
 export * from "../connectors/operations.ts";

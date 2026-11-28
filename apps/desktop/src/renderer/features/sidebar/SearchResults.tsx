@@ -208,7 +208,10 @@ export function SearchResults({
             open={() => openMessage(message)}
           >
             <span className={styles.snippet}>
-              <Highlight text={searchSnippet(searchText(message.content), query)} query={query} />
+              <Highlight
+                text={message.snippet ?? searchSnippet(searchText(message.content), query)}
+                query={query}
+              />
             </span>
           </SearchRow>
         );

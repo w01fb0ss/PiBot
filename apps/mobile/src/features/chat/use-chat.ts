@@ -1,11 +1,13 @@
 import { appendReplyDelta, type LiveRunActivity, preserveLiveReply } from "@pibot/client-core";
-import type { EventPayloads, Message } from "@pibot/protocol";
+import type { ChatDependencyNotice, EventPayloads, Message } from "@pibot/protocol";
 import { useEffect, useRef, useState } from "react";
 import { AppState } from "react-native";
 import { useLinkState, useMobileSelector, useRuntime } from "../../runtime/context.tsx";
 import { useAction } from "../../runtime/use-action.ts";
 import type { ChatTarget } from "../../transport/link-port.ts";
 import { HISTORY_PAGE, readHistoryDelta } from "./history-sync.ts";
+
+const DEPENDENCY_NOTICE_LIMIT = 30;
 
 export interface RunStatus {
   runId: string | null;
@@ -17,6 +19,11 @@ export function useChat(target: ChatTarget | undefined) {
   const runtime = useRuntime(),
     mobile = useLinkState();
   const key = JSON.stringify(target ?? null);
+  const dependencyKey = JSON.stringify([mobile.selectedId, target?.topicId]);
+  const [dependencies, setDependencies] = useState<{
+    key: string;
+    notices: ChatDependencyNotice[];
+  }>();
   // Proposal 10: a topic this process already read opens with its copy in the first frame.
   const [messages, setMessages] = useState<Message[]>(() =>
     mobile.selectedId ? (runtime.storage.store.peekHistory(mobile.selectedId, key) ?? []) : [],
@@ -32,14 +39,14 @@ export function useChat(target: ChatTarget | undefined) {
       messages.length ? `${mobile.selectedId}:${key}` : undefined,
     );
   messagesRef.current = messages;
-  const load = (more = false) =>
+  const load = (more = false, replace = false, checkImported = false) =>
     action.read(async (signal) => {
       const id = mobile.selectedId;
       if (!id || !target) return;
       const version = ++historyVersion.current;
       // Opening a chat shows what this phone already has at once; the computer's answer is then
       // applied in place instead of after a blank screen.
-      if (!more && !messagesRef.current.length && mobile.status === "online") {
+      if (!replace && !more && !messagesRef.current.length && mobile.status === "online") {
         const cached = await runtime.storage.history(id, key).catch(() => []);
         signal.throwIfAborted();
         if (version === historyVersion.current && !messagesRef.current.length && cached.length) {
@@ -72,7 +79,9 @@ export function useChat(target: ChatTarget | undefined) {
         const delta = await readHistoryDelta(
           runtime,
           target,
-          messagesRef.current.filter((m) => m.status !== "streaming"),
+          replace || (checkImported && messagesRef.current.some((m) => m.imported))
+            ? []
+            : messagesRef.current.filter((m) => m.status !== "streaming"),
           signal,
         );
         page = delta.messages;
@@ -120,16 +129,22 @@ export function useChat(target: ChatTarget | undefined) {
     }
     setStatus({ runId: null, state: "idle" });
     setActivities({});
-    void load();
+    void load(false, false, true);
     const peer = mobile.peer;
     if (!peer || !target) return;
     const matches = (e: { conversationId?: string; groupId?: string; botId?: string }) =>
       e.conversationId === target.topicId &&
       (target.groupId ? e.groupId === target.groupId : !e.groupId && e.botId === target.botId);
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const refresh = () => {
+    let replaceHistory = false;
+    const refresh = (replace = false) => {
+      replaceHistory ||= replace;
       clearTimeout(timer);
-      timer = setTimeout(() => void load(), 150);
+      timer = setTimeout(() => {
+        const replace = replaceHistory;
+        replaceHistory = false;
+        void load(false, replace);
+      }, 150);
     };
     // Reading here clears the unread mark on the computer and every other client too; a reply
     // that lands while this chat is on screen counts as read.
@@ -201,7 +216,7 @@ export function useChat(target: ChatTarget | undefined) {
       // the phone's offline chat was uploaded a second after this screen had read the topic on
       // reconnect, and the turns stayed missing until the topic was opened again.
       peer.on("sidebar.changed", (e) => {
-        if (e.conversationKey === conversationKey) refresh();
+        if (e.conversationKey === conversationKey) refresh(e.resetHistory);
       }),
       peer.on("chat.message", (e) => {
         if (matches(e)) refresh();
@@ -276,6 +291,47 @@ export function useChat(target: ChatTarget | undefined) {
       for (const fn of off) fn();
     };
   }, [mobile.selectedId, mobile.peer, key, mobile.refreshVersion]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a resumed link may have missed notices.
+  useEffect(() => {
+    const peer = mobile.peer;
+    const conversationId = target?.topicId;
+    if (!peer || !conversationId) return;
+    const abort = new AbortController();
+    const merge = (incoming: ChatDependencyNotice[]) => {
+      if (abort.signal.aborted) return;
+      setDependencies((current) => {
+        const rows = new Map(
+          (current?.key === dependencyKey ? current.notices : []).map((notice) => [
+            notice.id,
+            notice,
+          ]),
+        );
+        for (const notice of incoming) rows.set(notice.id, notice);
+        return {
+          key: dependencyKey,
+          notices: [...rows.values()]
+            .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
+            .slice(0, DEPENDENCY_NOTICE_LIMIT),
+        };
+      });
+    };
+    const off = peer.on("chat.dependencyNotice", (notice) => {
+      if (notice.conversationId === conversationId) merge([notice]);
+    });
+    void runtime
+      .call(
+        "chat.dependencyNotices",
+        { conversationId, limit: DEPENDENCY_NOTICE_LIMIT },
+        abort.signal,
+      )
+      .then(merge, () => {
+        // A reconnect retries history. Older desktop versions do not serve dependency notices.
+      });
+    return () => {
+      abort.abort();
+      off();
+    };
+  }, [runtime, mobile.peer, mobile.refreshVersion, target?.topicId, dependencyKey]);
   // Proposal 5: a send the computer accepted is stored with its receipt; when no event brought
   // it here (they can be lost with a path switch), the thread reads it so 已送达 hands over to it.
   // Its own selector: only a change in the delivered list re-renders, not every link patch.
@@ -303,6 +359,7 @@ export function useChat(target: ChatTarget | undefined) {
   const runId = status.state !== "idle" && status.runId ? status.runId : streaming?.runId;
   return {
     messages,
+    dependencyNotices: dependencies?.key === dependencyKey ? dependencies.notices : [],
     hasMore,
     load,
     action,

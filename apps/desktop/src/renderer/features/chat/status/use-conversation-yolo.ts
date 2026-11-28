@@ -13,17 +13,21 @@ export function useConversationYolo(peer: ChatPeer | null | undefined, conversat
   useEffect(() => {
     setState(null);
     if (!peer || !conversationId) return;
-    let active = true;
-    const load = () =>
-      peer.call("conversations.yolo.get", { conversationId }).then(
+    let request: AbortController | undefined;
+    const load = () => {
+      request?.abort();
+      request = new AbortController();
+      const { signal } = request;
+      return peer.call("conversations.yolo.get", { conversationId }, { signal }).then(
         (value) => {
-          if (active) setState(value);
+          if (!signal.aborted) setState(value);
         },
         () => {
           // Unavailable here (routine topic, archived, older brain): show no switch.
-          if (active) setState(null);
+          if (!signal.aborted) setState(null);
         },
       );
+    };
     const offs = [
       peer.on("conversations.yolo.changed", (event) => {
         if (event.conversationId !== conversationId) return;
@@ -33,10 +37,14 @@ export function useConversationYolo(peer: ChatPeer | null | undefined, conversat
       peer.on("brain.status", (event) => {
         if (event.state === "ready") void load();
       }),
+      peer.on("changes.changed", (event) => {
+        if (event.reason === "folder" && event.topicId === conversationId) void load();
+      }),
+      peer.on("devices.changed", () => void load()),
     ];
     void load();
     return () => {
-      active = false;
+      request?.abort();
       for (const off of offs) off();
     };
   }, [peer, conversationId]);
@@ -44,10 +52,10 @@ export function useConversationYolo(peer: ChatPeer | null | undefined, conversat
     async (enabled: boolean, signal: AbortSignal, acknowledged = false) => {
       if (!peer || !conversationId) return undefined;
       const value =
-        enabled && window.pibot.platform === "win32"
+        enabled && acknowledged
           ? await peer.call(
               "conversations.yolo.enableOnWindows",
-              { conversationId, ...(acknowledged ? { acknowledged: true } : {}) },
+              { conversationId, acknowledged: true },
               { signal },
             )
           : await peer.call("conversations.yolo.set", { conversationId, enabled }, { signal });

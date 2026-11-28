@@ -64,7 +64,7 @@
       "en": "Ideas, writing and content"
     },
     "icon": "pen",
-    "groups": ["content-studio"],
+    "groups": ["content-desk", "content-studio"],
     "roles": ["translator", "video-scriptwriter"],
     "quickStart": {
       "zh": "下周发什么？给我 5 个选题",

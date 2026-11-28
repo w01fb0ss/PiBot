@@ -103,6 +103,8 @@ export const GrantListItemSchema = GrantSchema.safeExtend({
       available: z.boolean(),
     })
     .optional(),
+  /** A paid image grant names its provider by id; this is the provider's current display name. */
+  providerName: z.string().max(200).optional(),
 });
 export type GrantListItem = z.infer<typeof GrantListItemSchema>;
 export const GrantPageSchema = BotPageSchema.extend({

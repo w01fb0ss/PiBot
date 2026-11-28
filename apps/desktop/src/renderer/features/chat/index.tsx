@@ -47,7 +47,12 @@ export function ChatScreen() {
           secrets={(controls) => <SecretsPage {...controls} />}
           skillWriter={(controls) => <SkillWriter {...controls} />}
           skillEditor={(controls) => <SkillCopyEditor {...controls} />}
-          skillExtras={(controls) => <SkillDetailExtras {...controls} />}
+          skillExtras={(controls) => (
+            <SkillDetailExtras
+              key={`${controls.skillId}:${controls.runtime ?? ""}`}
+              {...controls}
+            />
+          )}
         />
       ) : view.name === "routines" ? (
         <RoutinesPage />

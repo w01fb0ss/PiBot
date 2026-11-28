@@ -331,7 +331,9 @@ export class TaskContinuations {
       }
       if (!combined) combined = authority;
       else {
-        if (JSON.stringify(combined.workplace) !== JSON.stringify(authority.workplace))
+        const { displayFolders: _combinedDisplay, ...combinedWorkplace } = combined.workplace;
+        const { displayFolders: _display, ...workplace } = authority.workplace;
+        if (JSON.stringify(combinedWorkplace) !== JSON.stringify(workplace))
           throw new RpcError(-32602, "task_workplace_changed");
         combined = {
           ...combined,

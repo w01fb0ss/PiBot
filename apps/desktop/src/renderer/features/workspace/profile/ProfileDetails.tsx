@@ -19,6 +19,8 @@ import { useImageCatalog } from "./image-catalog.ts";
 import { ProfileReview } from "./ProfileReview.tsx";
 import type { BotUpdate } from "./use-bot-editor.ts";
 import { useModelLocation } from "./use-model-location.ts";
+import { VideoModelFields } from "./VideoModelFields.tsx";
+import { useVideoCatalog } from "./video-catalog.ts";
 
 /** Bot panel「资料」: model, role, persona & norms (collapsed), used folders. */
 export function ProfileDetails({
@@ -45,6 +47,16 @@ export function ProfileDetails({
     undefined,
     bot.category === "image",
     bot.modelProvider && bot.modelId ? { provider: bot.modelProvider, id: bot.modelId } : undefined,
+  );
+  const videos = useVideoCatalog();
+  const videoField = (
+    <VideoModelFields
+      catalog={videos}
+      value={bot.defaultVideoModel}
+      disabled={busy}
+      change={(defaultVideoModel) => void save({ defaultVideoModel })}
+      row
+    />
   );
   // biome-ignore lint/correctness/useExhaustiveDependencies: Confirmed model or Bot identity replaces tentative picker state.
   useEffect(() => {
@@ -143,7 +155,9 @@ export function ProfileDetails({
             change={(value) => {
               void saveImageSelection(value);
             }}
-          />
+          >
+            {videoField}
+          </ImageModelFields>
           {settingsLink}
           {imageError && (
             <p role="alert" className={styles.error}>
@@ -206,6 +220,7 @@ export function ProfileDetails({
               }}
             />
           </div>
+          {videoField}
           <div className={styles.row}>
             <IconTile icon="bolt" tone="amber" size="lg" />
             <span className={styles.rowLabel}>{t("workspace.thinking")}</span>

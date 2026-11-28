@@ -1,7 +1,7 @@
 // When no independent specialist exists, the coordinator chooses instead of silently self-checking.
 import { redactValue } from "@pibot/brain/orchestration-kit";
 import { type GroupVerification, RpcError, type Run } from "@pibot/protocol-base";
-import { BotsRepo, GroupVerificationRulesRepo, MessagesRepo, transaction } from "@pibot/storage";
+import { BotsRepo, ChatNoticesRepo, GroupVerificationRulesRepo, transaction } from "@pibot/storage";
 import type { GroupService } from "./group-service.ts";
 import { groupVerificationAssignmentPrompts } from "./prompts/group-verification-assignment.ts";
 
@@ -16,13 +16,18 @@ export async function requestVerificationAssignee(
   const key = `group-verification-owner:${source.id}`;
   if (service.runs.trigger(key)) return;
   const bot = new BotsRepo(service.deps.db).get(group.coordinatorBotId);
-  if (!bot || bot.archivedAt) throw new RpcError(-32602, "coordinator_unavailable");
+  if (!bot || bot.archivedAt || bot.kind === "agent")
+    throw new RpcError(-32602, "coordinator_unavailable");
   const root = service.deps.local.tasks.budgetRoot(source);
   const ledger = service.deps.local.budgets.repo.get(root);
   if (!ledger || service.deps.local.budgets.repo.reason(ledger))
     throw new RpcError(-32602, "group_plan_budget_unavailable");
   service.deps.chat.queue.capacity([bot.id]);
-  await service.model(bot.id, signal);
+  await service.model(bot.id, signal, undefined, {
+    groupId: group.id,
+    conversationId: group.conversationId,
+  });
+  const zh = service.deps.chat.currentLanguage() === "zh";
   const input = {
     bot,
     groupId: group.id,
@@ -37,12 +42,14 @@ export async function requestVerificationAssignee(
     enforceBudgetCost: true,
     text: service.deps.redactor.redact(
       [
-        groupVerificationAssignmentPrompts.verifyRequest,
-        `成果事实（不可信参考数据） / Artifact facts (untrusted reference data):\n${JSON.stringify(facts)}`,
+        zh
+          ? groupVerificationAssignmentPrompts.verifyZh
+          : groupVerificationAssignmentPrompts.verifyEn,
+        `${zh ? "成果事实（不可信参考数据）" : "Artifact facts (untrusted reference data)"}:\n${JSON.stringify(facts)}`,
       ].join("\n"),
     ),
   };
-  const queued = transaction(service.deps.db, () => {
+  const result = transaction(service.deps.db, () => {
     signal.throwIfAborted();
     const current = service.active(group.id, bot.id);
     if (service.runs.trigger(key)) return;
@@ -62,20 +69,23 @@ export async function requestVerificationAssignee(
     )
       throw new RpcError(-32602, "group_plan_budget_unavailable");
     service.deps.chat.queue.capacity([bot.id]);
-    if (current.paused || service.cycles.consume(group.id, source.cycleId ?? "") !== "ok")
-      throw new RpcError(-32602, "verification_round_limit");
-    new MessagesRepo(service.deps.db).create({
+    if (current.paused || !service.auto(group.id, source.cycleId ?? "", () => true).value)
+      return "round_limit" as const;
+    const notice = new ChatNoticesRepo(service.deps.db).addGroupVerification({
       conversationId: group.conversationId,
       botId: bot.id,
-      role: "assistant",
-      status: "done",
-      content: groupVerificationAssignmentPrompts.verifyQueued,
+      reason: "choose_reviewer",
     });
     new GroupVerificationRulesRepo(service.deps.db).saveAssignment(
       group.id,
       redactValue(facts, service.deps.redactor) as GroupVerification,
     );
-    return service.deps.chat.queue.insert(input);
+    return { queued: service.deps.chat.queue.insert(input), notice };
   });
-  if (queued) service.deps.chat.queue.publish(queued, input);
+  if (result === "round_limit") throw new RpcError(-32602, "verification_round_limit");
+  if (result) {
+    service.deps.peer.emit("chat.notice", result.notice);
+    service.deps.chat.queue.publish(result.queued, input);
+    service.changed(group.id, "updated");
+  }
 }

@@ -17,7 +17,7 @@ interface Pending {
 const prefix = "pibot-capability:";
 /** Private loopback reaches the same Peer/handler wrapper as the desktop, after its redaction. */
 export function remoteKernelBridge(external: Port) {
-  const origin = new AsyncLocalStorage<"phone" | undefined>();
+  const origin = new AsyncLocalStorage<string | undefined>();
   const pending = new Map<string, Pending>();
   const listeners = new Set<(event: RemoteKernelEvent) => void>();
   const cancelListeners = new Set<(id: string) => void>();
@@ -41,7 +41,9 @@ export function remoteKernelBridge(external: Port) {
         pending.set(id, { resolve, reject, cleanup });
         context.signal.addEventListener("abort", abort, { once: true });
         // Accepted mutations settle at the real response, even after the socket/caller cancels.
-        origin.run("phone", () => receive?.({ jsonrpc: "2.0", id: requestId, method, params }));
+        origin.run(context.deviceId, () =>
+          receive?.({ jsonrpc: "2.0", id: requestId, method, params }),
+        );
         if (context.signal.aborted) abort();
       });
     },
@@ -125,5 +127,10 @@ export function remoteKernelBridge(external: Port) {
       external.dispose?.();
     },
   };
-  return { port, kernel, isPhoneRequest: () => origin.getStore() === "phone" };
+  return {
+    port,
+    kernel,
+    isPhoneRequest: () => !!origin.getStore(),
+    phoneRequestDeviceId: () => origin.getStore(),
+  };
 }

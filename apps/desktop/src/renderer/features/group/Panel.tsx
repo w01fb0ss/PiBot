@@ -23,6 +23,8 @@ export function GroupPanel({
   places,
   refresh,
   selectTopic,
+  conversationId,
+  selectedTopic,
   draft = false,
 }: {
   peer: ChatPeer;
@@ -33,6 +35,8 @@ export function GroupPanel({
   places?: Map<string, Workplaces>;
   refresh(): Promise<void>;
   selectTopic(topic?: GroupTopic): void;
+  conversationId?: string;
+  selectedTopic?: GroupTopic;
   draft?: boolean;
 }) {
   const t = useT(),
@@ -98,6 +102,8 @@ export function GroupPanel({
         <GroupTopics
           peer={peer}
           group={group}
+          selected={selectedTopic}
+          conversationId={conversationId}
           inline
           draft={draft}
           select={selectTopic}

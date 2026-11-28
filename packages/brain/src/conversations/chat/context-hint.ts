@@ -3,6 +3,7 @@ import { type AgentRuntime, contextBudget } from "@pibot/agent";
 import { type KernelMethodParams, RpcError, RpcErrorCodes } from "@pibot/protocol-base";
 import { BotSessionsRepo, BotsRepo, ConversationsRepo } from "@pibot/storage";
 import type { KernelRegisterRpc } from "../../core/business-rpc.ts";
+import { topicModel } from "../../runtime/models/run-model.ts";
 
 type ModelRef = { provider: string; id: string };
 
@@ -45,9 +46,10 @@ export class ContextHintService {
     )
       throw new RpcError(RpcErrorCodes.invalidParams, "context_hint_unavailable");
     const key = `${bot.id}:${topic.id}`;
+    const effective = topicModel(bot, topic);
     const current: ModelRef | undefined =
-      bot.modelProvider && bot.modelId
-        ? { provider: bot.modelProvider, id: bot.modelId }
+      effective.modelProvider && effective.modelId
+        ? { provider: effective.modelProvider, id: effective.modelId }
         : undefined;
     // An unset model is not a switch to a smaller window; the composer already asks for one.
     if (!current) return { show: false };

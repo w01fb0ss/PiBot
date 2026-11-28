@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type { LocalToolCall } from "@pibot/agent";
 import { connectorCallRequest, type PolicyRequest } from "@pibot/policy";
 import type { ConnectorCallInput, PreparedConnector } from "@pibot/protocol-base";
 import {
   ConnectorCallError,
+  ConnectorNetworkBlockedError,
   ConnectorToolRefSchema,
   connectorResultCount,
   IdSchema,
@@ -19,7 +21,9 @@ import { snapshotCalendarName } from "./calendar-name.ts";
 import { connectorCapabilitySelected, filterConnectorCapabilities } from "./capability-filter.ts";
 import { adaptedCapabilityTool } from "./capability-tools.ts";
 import { unavailableConnectionSummary } from "./connection-summary.ts";
+import { translateConnectorInput } from "./input-translation.ts";
 import { localAppEmptyHint, localAppFailure } from "./local-app-result.ts";
+import { connectorNetworkApproval } from "./network-approval.ts";
 
 export const connectorSchemas = {
   connection_needed: z.strictObject({
@@ -29,7 +33,13 @@ export const connectorSchemas = {
   connector_discover: z.strictObject({
     connectorId: IdSchema.optional(),
     query: z.string().trim().min(1).max(200).optional(),
-    cursor: z.string().min(1).max(2048).optional(),
+    cursor: z
+      .union([z.string().max(2048), z.number(), z.null()])
+      .transform((value) => (typeof value === "string" ? value.trim() : undefined))
+      .optional()
+      .describe(
+        "Omit cursor for the first page; never pass placeholders. For later pages, copy nextCursor exactly.",
+      ),
     limit: z.number().int().min(1).max(50).default(20),
   }),
   connector_call: ConnectorToolRefSchema.extend({
@@ -58,6 +68,8 @@ export class ConnectorToolError extends Error {
     readonly code: string,
     /** Already redacted; for the model's tool result only, never logs or audit. */
     readonly serviceMessage?: string,
+    readonly retryAfter?: number,
+    readonly blockedNetworkMessage?: string,
   ) {
     super(code);
   }
@@ -91,10 +103,15 @@ const errors: Record<string, string> = {
     "参数包含已登记的秘密，已拒绝 / Arguments contain a registered secret; refused",
   connector_call_failed:
     "连接调用失败或已取消；未自动重试 / Connector call failed or cancelled; not retried",
+  connector_network_blocked: "连接的网络访问被拦下 / The connection’s network access was blocked",
   capability_served_elsewhere:
     "这个能力由内置工具提供、已关闭或由另一个连接提供 / This capability is provided by built-in tools, turned off, or served by another connector",
 };
-export function connectorError(code: string, serviceMessage?: string) {
+export function connectorError(
+  code: string,
+  serviceMessage?: string,
+  blockedNetworkMessage?: string,
+) {
   const calendarTimeReasons: Record<string, string> = {
     calendar_time_invalid:
       "日程时间格式无效；请用 ISO 8601，例如 2026-11-01T15:00:00+08:00 / Invalid calendar time; use ISO 8601, e.g. 2026-11-01T15:00:00+08:00.",
@@ -112,6 +129,7 @@ export function connectorError(code: string, serviceMessage?: string) {
       JSON.stringify({
         code,
         message:
+          blockedNetworkMessage ??
           calendarTimeReasons[code] ??
           (/^(contacts|calendar)_/.test(code)
             ? localAppFailure(
@@ -197,12 +215,11 @@ export async function executeConnector(
   const approvedConnector = prepared.connector;
   connectorContext(run.local, run.context, approvedConnector);
   if (!approvedConnector.tool.readOnly) {
-    await snapshotCalendarName(run, input.args, approvedConnector, signal);
-    const result = await run.local.drafts.execute(
-      run.context,
-      prepared.call,
-      input.args,
+    const result = await dispatchConnectorDraft(
+      run,
       prepared,
+      input.args,
+      approvedConnector,
       signal,
     );
     const { reply, serviceMessage, ...receipt } = result as typeof result & {
@@ -223,7 +240,12 @@ export async function executeConnector(
     };
   }
   const value = await dispatchReadConnector(
-    { local: run.local, context: run.context, assertDispatch: () => run.assertDispatch(prepared) },
+    {
+      local: run.local,
+      context: run.context,
+      assertDispatch: () => run.assertDispatch(prepared),
+      recordInputTranslation: (text) => run.recordInputTranslation(prepared.call.id, text),
+    },
     { call: prepared.call, explanation: prepared.result.explanation },
     input.args,
     approvedConnector,
@@ -237,6 +259,54 @@ export async function executeConnector(
   };
 }
 
+export async function dispatchConnectorDraft(
+  run: LocalRun,
+  prepared: PreparedTool,
+  input: ConnectorCallInput,
+  approved: PreparedConnector,
+  signal: AbortSignal,
+) {
+  const translation = await translatedConnectorCall(run, input, approved, signal);
+  run.assertDispatch(prepared);
+  if (translation) {
+    run.local.drafts.assertReplay(run.context, translation.input);
+    run.recordInputTranslation(prepared.call.id, translation.text);
+  }
+  const args = translation?.input ?? input;
+  await snapshotCalendarName(run, args, approved, signal);
+  return run.local.drafts.execute(run.context, prepared.call, args, prepared, signal);
+}
+
+async function translatedConnectorCall(
+  run: Pick<ConnectorReadHost, "local" | "context">,
+  input: ConnectorCallInput,
+  approved: PreparedConnector,
+  signal: AbortSignal,
+  fixedFields?: readonly string[],
+) {
+  const translation = await translateConnectorInput(run, input, approved, signal, fixedFields);
+  if (!translation) return;
+  const translated = { ...input, args: translation.args };
+  if (
+    !connectorSchemas.connector_call.safeParse(translated).success ||
+    run.local.deps.redactor.redact(JSON.stringify(translated.args)) !==
+      JSON.stringify(translated.args)
+  )
+    return;
+  try {
+    const current = run.local.connectors?.resolveTool(
+      run.context.botId,
+      translated,
+      approved.groupId,
+    );
+    // The translation may change the argument digest. The authorized target and catalog must match.
+    if (current && isDeepStrictEqual(current, { ...approved, argsDigest: current.argsDigest }))
+      return { input: translated, target: current, text: translation.text };
+  } catch {
+    // A translation can violate a schema constraint. The original goes through normal validation.
+  }
+}
+
 /**
  * What a caller must supply to dispatch a read: the kernel run reaches it through `LocalRun`,
  * while a capability executor (capability adapters, the knowledge tools) has the same three facts
@@ -247,6 +317,9 @@ export interface ConnectorReadHost {
   local: LocalService;
   context: ToolRunContext;
   assertDispatch(): void;
+  recordInputTranslation?(text: string): void;
+  /** Path and URL arguments validated by the caller are part of the approved target. */
+  fixedFields?: readonly string[];
 }
 
 /** Shared dispatch for raw reads, capability read adapters and the knowledge tools. */
@@ -295,30 +368,44 @@ export async function dispatchReadConnector(
         reasonCode: reasonCode ?? `connector_call_${phase}`,
       },
     });
+  const authorize = () => {
+    run.assertDispatch();
+    if (!connectorCapabilitySelected(run.local, run.context, approvedConnector.tool))
+      throw new ConnectorToolError("capability_served_elsewhere");
+    if (
+      capabilityId &&
+      (approvedConnector.tool.capabilityId !== capabilityId ||
+        !adaptedCapabilityTool(approvedConnector.tool))
+    )
+      throw new ConnectorToolError("capability_served_elsewhere");
+    connectorContext(run.local, run.context, approvedConnector);
+    if (
+      redactedConnectorJson(input.args, run.local.deps.redactor, "connector_args_invalid") !==
+      JSON.stringify(input.args)
+    )
+      throw new ConnectorToolError("connector_secret_denied");
+  };
   audit("running");
   try {
-    const value = await (capabilityId ? service.dispatchCapability : service.dispatch)(
-      run.context.botId,
+    authorize();
+    const translation = await translatedConnectorCall(
+      run,
       input,
       approvedConnector,
+      signal,
+      run.fixedFields,
+    );
+    if (translation) {
+      authorize();
+      run.recordInputTranslation?.(translation.text);
+    }
+    const value = await (capabilityId ? service.dispatchCapability : service.dispatch)(
+      run.context.botId,
+      translation?.input ?? input,
+      translation?.target ?? approvedConnector,
       AbortSignal.any([signal, run.context.signal, AbortSignal.timeout(30_000)]),
-      () => {
-        run.assertDispatch();
-        if (!connectorCapabilitySelected(run.local, run.context, approvedConnector.tool))
-          throw new ConnectorToolError("capability_served_elsewhere");
-        if (
-          capabilityId &&
-          (approvedConnector.tool.capabilityId !== capabilityId ||
-            !adaptedCapabilityTool(approvedConnector.tool))
-        )
-          throw new ConnectorToolError("capability_served_elsewhere");
-        connectorContext(run.local, run.context, approvedConnector);
-        if (
-          redactedConnectorJson(input.args, run.local.deps.redactor, "connector_args_invalid") !==
-          JSON.stringify(input.args)
-        )
-          throw new ConnectorToolError("connector_secret_denied");
-      },
+      authorize,
+      connectorNetworkApproval(run.local, run.context, prepared.call, authorize),
     );
     signal.throwIfAborted();
     audit("done");
@@ -326,15 +413,18 @@ export async function dispatchReadConnector(
     return value;
   } catch (error) {
     const app = approvedConnector.tool.capabilityId;
-    const reason = signal.aborted
-      ? "cancelled"
-      : error instanceof ConnectorToolError
-        ? error.code
-        : error instanceof ConnectorCallError && error.reason
-          ? error.reason
-          : "connector_call_failed";
+    const networkBlocked = error instanceof ConnectorNetworkBlockedError;
+    const reason = networkBlocked
+      ? "connector_network_blocked"
+      : signal.aborted
+        ? "cancelled"
+        : error instanceof ConnectorToolError
+          ? error.code
+          : error instanceof ConnectorCallError && error.reason
+            ? error.reason
+            : "connector_call_failed";
     const code =
-      reason === "contacts_unavailable"
+      networkBlocked || reason === "contacts_unavailable"
         ? reason
         : app === "contacts" || app === "calendar"
           ? `${app}_${reason}`
@@ -344,7 +434,12 @@ export async function dispatchReadConnector(
         `Connector call failed bot=${run.context.botId} run=${run.context.runId} tool=${prepared.call.tool} outcome=${error.outcome} reason=${error.reason ?? "none"}`,
       );
     audit("error", code);
-    throw new ConnectorToolError(code, connectorServiceMessage(error, run.local.deps.redactor));
+    throw new ConnectorToolError(
+      code,
+      connectorServiceMessage(error, run.local.deps.redactor),
+      error instanceof ConnectorCallError ? error.retryAfter : undefined,
+      networkBlocked ? run.local.deps.redactor.redact(error.displayMessage) : undefined,
+    );
   }
 }
 

@@ -44,15 +44,18 @@ export function registerHealthRpc(ctx: StartupContext) {
   // UI pulls it on (re)connect like the drain health above, and live changes arrive as events.
   const commandPause = (): CommandPause => ({
     paused: ctx.capabilities.target.commandPause?.() ?? null,
+    ...(ctx.capabilities.target.windowsCommandCleanupPending?.()
+      ? { cleanupUnconfirmed: true as const }
+      : {}),
   });
   ctx.handle("runtime.commands.get", async () => commandPause());
   ctx.handle("runtime.commands.recheck", async (): Promise<CommandPause> => {
     const recheck = ctx.capabilities.target.recheckCommandPause;
     if (!recheck) return commandPause();
-    const paused = await recheck();
+    await recheck();
     // A recovery is announced by the drain event; a refused check changes nothing to announce,
     // and the result alone tells the person it is still paused.
-    return { paused };
+    return commandPause();
   });
   /**
    * The client-wide failure has its own state in this factory, so reopening it is

@@ -2,6 +2,7 @@
 import { z } from "zod";
 import { IdSchema } from "../core/ids.ts";
 import { PageSchema } from "../core/page.ts";
+import { DefaultModelSchema } from "../providers/providers.ts";
 
 /** Shared with the phone's offline snapshot; whole notes must fit this bound. */
 export const USER_MEMORY_MAX_CHARS = 12_000;
@@ -165,15 +166,89 @@ const memoryStatus = z.strictObject({
   unusedCount: z.number().int().nonnegative(),
   needsOrganization: z.boolean(),
 });
+const memoryModelRef = DefaultModelSchema.pick({ provider: true, id: true });
+export const MemoryModelFallbackSchema = z.strictObject({
+  from: memoryModelRef,
+  to: memoryModelRef,
+});
+export type MemoryModelFallback = z.infer<typeof MemoryModelFallbackSchema>;
+
+export const MemoryFailureReasonSchema = z.enum([
+  "busy",
+  "network",
+  "no_model",
+  "local_only_no_model",
+  "auth_failed",
+  "configuration",
+  "budget_exhausted",
+  "draft_invalid",
+  "failed",
+]);
+export type MemoryFailureReason = z.infer<typeof MemoryFailureReasonSchema>;
+
+/** Old receipts may contain the worker's original reason code. Never display it directly. */
+export function memoryFailureReason(reason: unknown, localOnly = false): MemoryFailureReason {
+  if (
+    localOnly &&
+    ["no_model", "network", "network_error", "timeout", "proxy_unavailable"].includes(
+      String(reason),
+    )
+  ) {
+    return "local_only_no_model";
+  }
+  switch (reason) {
+    case "provider_overloaded":
+    case "rate_limited":
+      return "busy";
+    case "network_error":
+    case "timeout":
+    case "proxy_unavailable":
+      return "network";
+    case "chatgpt_reconnect_required":
+    case "proxy_auth_failed":
+    case "proxy_credentials_unavailable":
+      return "auth_failed";
+    case "openai_approval_required":
+    case "chatgpt_plan_denied":
+    case "chatgpt_plan_not_eligible":
+    case "subscription_unsupported":
+    case "claude_subscription_unsupported":
+    case "proxy_unsupported":
+    case "provider_rejected":
+    case "context_too_large":
+    case "context_overflow":
+    case "billing":
+    case "quota_exhausted":
+      return "configuration";
+    case "candidates_invalid":
+      return "draft_invalid";
+    default:
+      return MemoryFailureReasonSchema.safeParse(reason).data ?? "failed";
+  }
+}
+
+export function memoryFailureNeedsSettings(reason: MemoryFailureReason) {
+  return (
+    reason === "no_model" ||
+    reason === "local_only_no_model" ||
+    reason === "auth_failed" ||
+    reason === "configuration"
+  );
+}
+
 export const MemoryMaintenanceIssueSchema = z.strictObject({
-  reason: z.enum(["no_model", "auth_failed", "budget_exhausted", "draft_invalid", "failed"]),
+  reason: MemoryFailureReasonSchema,
   count: z.number().int().positive(),
   task: z.enum(["extraction", "organization"]),
 });
 export const MemoryMaintenanceStatusSchema = z.strictObject({
   lastExtractionAt: time.nullable(),
   lastSavedAt: time.nullable(),
+  dailyUsage: z
+    .strictObject({ costUsd: z.number().nonnegative(), tokens: z.number().int().nonnegative() })
+    .optional(),
   issue: MemoryMaintenanceIssueSchema.optional(),
+  fallback: MemoryModelFallbackSchema.optional(),
 });
 export type MemoryMaintenanceStatus = z.infer<typeof MemoryMaintenanceStatusSchema>;
 
@@ -188,6 +263,9 @@ export const MemoryDreamSummarySchema = z.strictObject({
   tokens: z.number().int().nonnegative(),
   costUsd: z.number().nonnegative(),
   undoable: z.boolean(),
+  budgetUpdated: z.literal(true).optional(),
+  failureReason: MemoryFailureReasonSchema.optional(),
+  fallback: MemoryModelFallbackSchema.optional(),
 });
 export type MemoryDreamSummary = z.infer<typeof MemoryDreamSummarySchema>;
 
@@ -219,6 +297,8 @@ export const MemoryMethods = {
       moves: z.number().int().nonnegative(),
       processed: z.number().int().nonnegative(),
       total: z.number().int().nonnegative(),
+      failureReason: MemoryFailureReasonSchema.optional(),
+      fallback: MemoryModelFallbackSchema.optional(),
     }),
   },
   "memory.cancelSortIntoPlace": {

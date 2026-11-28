@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { base64Schema } from "../chat/attachments.ts";
+import { optionalPageOffset } from "../tools/pagination.ts";
 import { OfficeContentSchema, OfficeFormatSchema } from "./content.ts";
 import { OfficeOperationsSchema } from "./ooxml.ts";
 import { OfficeStructureQuerySchema } from "./structure.ts";
@@ -84,11 +85,16 @@ export const OfficeRenderedPagesSchema = z
 export type OfficeRenderCheck = z.infer<typeof OfficeRenderCheckSchema>;
 export type OfficeRenderIssue = z.infer<typeof OfficeRenderIssueSchema>;
 
+const toolOffset = optionalPageOffset.describe(
+  "Omit offset for the first page; never pass placeholders.",
+);
+
 export const officeToolSchemas = {
   office_inspect: z.strictObject({
     path,
     expectedRevision: revision.optional(),
     ...OfficeStructureQuerySchema.shape,
+    offset: toolOffset,
   }),
   office_read: z.strictObject({
     path,
@@ -98,7 +104,7 @@ export const officeToolSchemas = {
     collection: OfficeStructureQuerySchema.shape.collection,
     slide: OfficeStructureQuerySchema.shape.slide,
     sheet: page.optional(),
-    offset: page.optional(),
+    offset: toolOffset,
     limit: z.number().int().min(1).max(200).optional(),
   }),
   office_create: z.strictObject({
@@ -117,7 +123,7 @@ export const officeToolSchemas = {
     path,
     expectedRevision: revision.optional(),
     sheet: page.optional(),
-    offset: page.optional(),
+    offset: toolOffset,
     limit: z.number().int().min(1).max(200).optional(),
   }),
   office_validate: z.strictObject({ path, expectedRevision: revision.optional() }),

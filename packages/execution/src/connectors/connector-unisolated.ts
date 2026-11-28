@@ -2,15 +2,18 @@
 // Windows, which has no command sandbox, and a macOS / Linux MCP the person
 // moved outside the sandbox with its own switch. Never a fallback for a sandboxed
 // start that failed: without `outsideSandbox` a POSIX caller is refused.
-import { spawn } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, resolve, win32 } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { userTerminalEnvironment } from "../command/environment.ts";
 import { checkedRoot, within } from "../core/paths.ts";
 import type { ExecRedactor } from "../core/types.ts";
 import { ExecError } from "../core/types.ts";
 import { windowsSystemRoot } from "../core/windows-environment.ts";
+import { createSandboxNetwork } from "../sandbox/network-proxy.ts";
+import type { NetworkProxy } from "../web/network-proxy.ts";
 import {
   type ConnectorServerDiagnosis,
   ConnectorStartError,
@@ -18,7 +21,9 @@ import {
   settleWithin,
 } from "./connector-diagnosis.ts";
 import {
-  connectorProxyEnvironment,
+  assertConnectorProxyBridge,
+  connectorNoProxy,
+  connectorProxyUrls,
   withoutConnectorProxyEnvironment,
 } from "./connector-proxy-env.ts";
 import type { ConnectorServerStream } from "./connector-server.ts";
@@ -51,8 +56,11 @@ export interface UnisolatedServerOptions {
   windowsRoot?: string;
   /** The person's extra command folders (Settings → Permissions), as agent commands get them. */
   pathEntries?: readonly string[];
+  proxy?: NetworkProxy;
+  proxyEnv?: Readonly<NodeJS.ProcessEnv>;
   signal: AbortSignal;
   redactor?: ExecRedactor;
+  registerProxySecret?(value: string): void;
 }
 
 function connectorWindowsRoot(options: UnisolatedServerOptions) {
@@ -64,7 +72,9 @@ function serverEnvironment(options: UnisolatedServerOptions): NodeJS.ProcessEnv 
   if (options.platform === "win32") {
     const env: NodeJS.ProcessEnv = {
       ...Object.fromEntries(
-        Object.entries(options.env).filter(([key]) => key.toLowerCase() !== "systemroot"),
+        Object.entries(withoutConnectorProxyEnvironment(options.env)).filter(
+          ([key]) => key.toLowerCase() !== "systemroot",
+        ),
       ),
       SystemRoot: connectorWindowsRoot(options),
     };
@@ -87,11 +97,41 @@ function serverEnvironment(options: UnisolatedServerOptions): NodeJS.ProcessEnv 
   );
   // Declared variables win over the terminal defaults, but HOME stays the person's own.
   return {
-    ...terminal,
+    ...withoutConnectorProxyEnvironment(terminal),
     ...withoutConnectorProxyEnvironment(options.env),
-    ...connectorProxyEnvironment({ ...outside.userEnv, ...options.env }),
     HOME: outside.userHome,
   };
+}
+
+/** Run the stock npm launcher with node.exe so cmd.exe never interprets the user's argv. */
+async function windowsNpx(
+  command: string,
+  args: readonly string[],
+  env: NodeJS.ProcessEnv,
+  signal: AbortSignal,
+) {
+  if (!/^npx(?:\.cmd)?$/i.test(win32.basename(command))) return { command, args };
+  const explicit = win32.basename(command) !== command;
+  if (explicit && (!win32.isAbsolute(command) || !/\.cmd$/i.test(command)))
+    return { command, args };
+  const path = Object.entries(env).find(([name]) => name.toUpperCase() === "PATH")?.[1];
+  const locations = explicit ? [win32.dirname(command)] : (path ?? "").split(";");
+  const file = async (path: string) => (await stat(path).catch(() => undefined))?.isFile() === true;
+  for (const location of locations) {
+    signal.throwIfAborted();
+    const folder = location.replace(/^"|"$/g, "");
+    if (!win32.isAbsolute(folder)) continue;
+    const executable = win32.join(folder, "npx.exe");
+    if (!explicit && !/\.cmd$/i.test(command) && (await file(executable)))
+      return { command: executable, args };
+    if (!(await file(win32.join(folder, "npx.cmd")))) continue;
+    const node = win32.join(folder, "node.exe");
+    const launcher = win32.join(folder, "node_modules", "npm", "bin", "npx-cli.js");
+    if ((await file(node)) && (await file(launcher)))
+      return { command: node, args: [launcher, ...args] };
+    break;
+  }
+  throw new ExecError("command_not_found");
 }
 
 export async function startUnisolatedConnectorServer(
@@ -106,15 +146,89 @@ export async function startUnisolatedConnectorServer(
     const roots = await Promise.all(grantedRoots.map((root) => checkedRoot(resolve(root))));
     if (!roots.some((root) => within(root, cwd))) throw new ExecError("outside_workplace");
   }
-  const child = spawn(options.command, [...options.args], {
-    cwd: options.cwd,
-    env: serverEnvironment(options),
-    windowsHide: true,
-    shell: false,
-    // POSIX: its own process group, so stop reaches whatever the server started (tunnels).
-    detached: !windows,
-    stdio: ["pipe", "pipe", "pipe"],
-  });
+  const env = serverEnvironment(options);
+  const launch = windows
+    ? await windowsNpx(options.command, options.args, env, options.signal)
+    : options;
+  const trustedProxyEnv = options.outsideSandbox?.userEnv ?? options.proxyEnv ?? {};
+  const proxy = options.proxy;
+  const launchProxyUrls = connectorProxyUrls(trustedProxyEnv);
+  const hasTrustedRoute = !!proxy || launchProxyUrls.size > 0;
+  const bypass =
+    connectorNoProxy(trustedProxyEnv) ??
+    (hasTrustedRoute ? undefined : connectorNoProxy(options.env));
+  if (bypass) {
+    env.NO_PROXY = bypass;
+    if (!windows) env.no_proxy = bypass;
+  }
+  // A connector's proxy variables are only used when there is no user-selected or launch proxy.
+  const proxyUrls = proxy
+    ? new Map(["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"].map((name) => [name, new URL(proxy.url)]))
+    : hasTrustedRoute
+      ? launchProxyUrls
+      : connectorProxyUrls(options.env);
+  const bridges = new Map<string, Awaited<ReturnType<typeof createSandboxNetwork>>>();
+  let bridgeClose: Promise<void> | undefined;
+  const closeBridge = () =>
+    (bridgeClose ??= Promise.all([...bridges.values()].map((bridge) => bridge.close())).then(
+      () => {},
+    ));
+  try {
+    for (const [name, upstream] of proxyUrls) {
+      let url = upstream.href;
+      if (upstream.username || upstream.password) {
+        assertConnectorProxyBridge(upstream);
+        let bridge = bridges.get(url);
+        if (!bridge) {
+          // The child receives a per-process capability. Upstream credentials stay in the host.
+          bridge = await createSandboxNetwork({
+            network: {
+              allowedDomains: [],
+              deniedDomains: [],
+              parentProxy: { http: url, https: url, noProxy: bypass ?? "" },
+            },
+            filesystem: { denyRead: [], allowWrite: [], denyWrite: [] },
+          });
+          bridges.set(url, bridge);
+          options.registerProxySecret?.(bridge.parentProxy.http);
+          options.registerProxySecret?.(new URL(bridge.parentProxy.http).password);
+        }
+        url = bridge.parentProxy.http;
+      }
+      env[name] = url;
+      if (!windows) env[name.toLowerCase()] = url;
+    }
+  } catch (error) {
+    await closeBridge();
+    throw error;
+  }
+  let child: ChildProcessWithoutNullStreams;
+  try {
+    options.signal.throwIfAborted();
+    child = spawn(launch.command, [...launch.args], {
+      cwd: options.cwd,
+      env,
+      windowsHide: true,
+      shell: false,
+      // POSIX: its own process group, so stop reaches whatever the server started (tunnels).
+      detached: !windows,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  } catch (error) {
+    await closeBridge();
+    // Windows can reject .cmd/.bat at spawn time, before the child can emit an error.
+    if (!(error instanceof Error) || !("errno" in error)) throw error;
+    throw new ConnectorStartError("process_spawn_failed", {
+      exited: false,
+      exitCode: null,
+      signal: null,
+      hostFailed: false,
+      spawnFailed: true,
+      outsideSandbox: !windows,
+      stderrTail: "",
+      denials: [],
+    });
+  }
   const messages = new Set<(message: string) => void>();
   const closes = new Set<() => void>();
   const queued: string[] = [];
@@ -139,6 +253,7 @@ export async function startUnisolatedConnectorServer(
     child.once("close", (code, signal) => {
       closed = true;
       exit ??= { code, signal, own: !stopRequested };
+      void closeBridge();
       for (const listener of closes) listener();
       resolve();
     }),
@@ -243,10 +358,12 @@ export async function startUnisolatedConnectorServer(
   const close = () => {
     // A server whose process already ended stopped by itself; the recorded exit is its own.
     if (!closed && !exit) stopRequested = true;
-    shutdown ??= killTree().catch((error) => {
-      shutdown = undefined;
-      throw error;
-    });
+    shutdown ??= killTree()
+      .finally(closeBridge)
+      .catch((error) => {
+        shutdown = undefined;
+        throw error;
+      });
     return shutdown;
   };
   const diagnose = async (): Promise<ConnectorServerDiagnosis> => {

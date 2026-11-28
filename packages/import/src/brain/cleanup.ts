@@ -1,6 +1,7 @@
 // Resume private batch reclamation without making it part of the latency of a desktop RPC.
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import type { ImportStatus } from "@pibot/import-contract";
+import type { CleanupWork } from "../store/cleanup-work.ts";
 import type { ImportStore } from "../store/index.ts";
 
 export class ImportCleanup {
@@ -12,9 +13,9 @@ export class ImportCleanup {
   constructor(
     private readonly store: ImportStore,
     private readonly signal: AbortSignal,
-    private readonly publish: (status: ImportStatus) => void,
+    private readonly publish: (status: ImportStatus, resetBots?: string[]) => void,
     private readonly failed: () => void,
-    private readonly restore: (id: string, signal: AbortSignal) => Promise<void>,
+    private readonly restore: (id: string, work: CleanupWork, signal: AbortSignal) => Promise<void>,
   ) {}
 
   idle() {
@@ -57,16 +58,31 @@ export class ImportCleanup {
       this.requested = false;
       for (const id of this.retries) this.blocked.delete(id);
       this.retries.clear();
-      await this.drain();
+      const work = this.store.cleanupWork();
+      try {
+        await this.drain(work);
+        while (!this.signal.aborted && this.store.searchRebuilding()) {
+          await yieldToLoop();
+          if (this.signal.aborted) break;
+          await work.run({ kind: "search" }, this.signal);
+        }
+      } catch (error) {
+        if (!this.signal.aborted) throw error;
+        // The worker either committed its current page or left it to be retried.
+      } finally {
+        await work.close();
+      }
     }
   }
 
-  private async drain() {
+  private async drain(work: CleanupWork) {
     let last = -Infinity;
     let progressed: boolean;
     do {
       progressed = false;
       let cursor = 0;
+      let readyId: string | undefined;
+      let resetBots: string[] = [];
       while (!this.signal.aborted) {
         await yieldToLoop();
         if (this.signal.aborted) return;
@@ -77,11 +93,17 @@ export class ImportCleanup {
           cursor = next.cursor;
           continue;
         }
-        let page: ReturnType<ImportStore["cleanupPage"]>;
+        let finished: ImportStatus | undefined;
         try {
-          await this.restore(id, this.signal);
+          if (readyId !== id) {
+            await this.restore(id, work, this.signal);
+            if (this.signal.aborted) return;
+            resetBots = this.store.topicBots(id);
+            readyId = id;
+          }
+          const { finish } = await work.run({ kind: "import", id }, this.signal);
           if (this.signal.aborted) return;
-          page = this.store.cleanupPage(id);
+          if (finish) finished = this.store.finishCleanup(id);
         } catch {
           if (this.signal.aborted) return;
           // A fresh explicit retry can ask again; unrelated imports never repeat a refused card.
@@ -92,12 +114,12 @@ export class ImportCleanup {
           cursor = next.cursor;
           continue;
         }
-        const { status, done } = page;
         progressed = true;
-        if (done) cursor = next.cursor;
-        if (done || performance.now() - last >= 200) {
-          this.publish(status);
-          last = done ? -Infinity : performance.now();
+        if (finished) cursor = next.cursor;
+        if (finished || performance.now() - last >= 200) {
+          const status = finished ?? this.store.get(id);
+          if (status) this.publish(status, finished?.state === "undone" ? resetBots : undefined);
+          last = finished ? -Infinity : performance.now();
         }
       }
       // Restoring a later batch may have made an earlier dependent eligible in this pass.

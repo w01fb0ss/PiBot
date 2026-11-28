@@ -13,8 +13,8 @@ export function ApprovalExplanation({
   /** A pending card folds the whole explanation under this question, so the request leads. */
   collapsedTitle?: string;
 }) {
-  if (!steps.length) return null;
-  const list = (
+  if (!summary && !steps.length) return null;
+  const list = steps.length > 0 && (
     <ol>
       {steps.map((text, index) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: Ordered immutable trace entries can repeat the same translated text.
@@ -27,18 +27,20 @@ export function ApprovalExplanation({
       <div className={styles.explanation}>
         <details>
           <summary>{collapsedTitle}</summary>
-          <p>{summary}</p>
+          {summary && <p>{summary}</p>}
           {list}
         </details>
       </div>
     );
   return (
     <div className={styles.explanation}>
-      <p>{summary}</p>
-      <details>
-        <summary>{label}</summary>
-        {list}
-      </details>
+      {summary && <p>{summary}</p>}
+      {list && (
+        <details>
+          <summary>{label}</summary>
+          {list}
+        </details>
+      )}
     </div>
   );
 }

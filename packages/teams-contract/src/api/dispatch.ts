@@ -1,4 +1,4 @@
-import { IdSchema } from "@pibot/protocol-base";
+import { DispatchModelSwitchSchema, IdSchema, OpenTopicActionSchema } from "@pibot/protocol-base";
 import { z } from "zod";
 
 /**
@@ -18,8 +18,13 @@ export const PiDispatchSchema = z.strictObject({
   /** The receiver's new topic ("open topic"); a group's is its group topic. */
   targetConversationId: IdSchema.nullable(),
   title: z.string().min(1).max(80),
+  open_topic: OpenTopicActionSchema.optional(),
   status: PiDispatchStatusSchema,
   summary: z.string().max(600),
+  modelSwitches: z
+    .array(DispatchModelSwitchSchema.extend({ id: IdSchema }))
+    .max(20)
+    .optional(),
   outputs: z.array(z.string().min(1).max(255)).max(10),
   createdAt: z.iso.datetime(),
   finishedAt: z.iso.datetime().nullable(),

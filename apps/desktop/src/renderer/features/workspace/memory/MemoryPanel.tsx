@@ -4,6 +4,7 @@ import { botPanelStyles as styles, useSettings } from "@pibot/renderer-kit";
 import { IconTile, SegmentedControl, Switch } from "@pibot/ui";
 import { useState } from "react";
 import type { BotUpdate } from "../profile/use-bot-editor.ts";
+import { MemoryFallbackNotice } from "./MemoryFallbackNotice.tsx";
 import { MemoryMaintenanceNotice } from "./MemoryMaintenanceNotice.tsx";
 import { MemorySummary } from "./MemorySummary.tsx";
 
@@ -65,6 +66,7 @@ export function MemoryPanel({
         </p>
       )}
       {maintenance?.issue && <MemoryMaintenanceNotice issue={maintenance.issue} />}
+      {maintenance?.fallback && <MemoryFallbackNotice fallback={maintenance.fallback} />}
       <MemorySummary key={bot.id} owner={{ scope: "bot", ownerId: bot.id }} />
     </section>
   );

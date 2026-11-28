@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { win32 } from "node:path";
+import { gitHardening } from "../git/git-program.ts";
 
 /*
  * Fixed, Pi Bot-authored setup that runs before every Windows agent command (the command text
@@ -121,7 +122,64 @@ function prelude(path: string | undefined) {
  * The capture occupies a new line after the original source, so user stack line numbers stay
  * unchanged, including trailing comments. Named end blocks need it before their closing brace.
  */
-const SCRIPT = (encoded: string) =>
+const psQuote = (value: string) => `'${value.replaceAll("'", "''")}'`;
+
+// The policy accepts only literal cmd queries. Bind the system executable and disable AutoRun.
+const READ_ONLY_CMD = [
+  "$__pibotCmdQueries=$__pibotAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -match '^cmd(?:\\.exe)?$' }, $true)",
+  "foreach ($__pibotQuery in ($__pibotCmdQueries | Sort-Object { $_.Extent.StartOffset } -Descending)) {",
+  "  $head=$__pibotQuery.CommandElements[0].Extent",
+  "  $replacement='& $env:ComSpec'",
+  "  if ($__pibotQuery.CommandElements[1].Extent.Text -ieq '/c') { $replacement+=' /d' }",
+  "  $__pibotCmd=$__pibotCmd.Remove($head.StartOffset,$head.EndOffset-$head.StartOffset).Insert($head.StartOffset,$replacement)",
+  "}",
+  "if ($__pibotCmdQueries.Count -gt 0) {",
+  "  $__pibotAst=[System.Management.Automation.Language.Parser]::ParseInput($__pibotCmd,[ref]$null,[ref]$null)",
+  "}",
+];
+
+function readOnlyGit(program: string | undefined) {
+  // Bind the executable before any shell lookup. Insert flags before the command and its
+  // operands so an approved query cannot select a pager, diff driver or optional index write.
+  const prefix = program
+    ? [
+        "&",
+        psQuote(program),
+        ...gitHardening("win32", program).map(psQuote),
+        "--no-pager",
+        "--no-optional-locks",
+        "--no-replace-objects",
+      ].join(" ")
+    : "& '__pibotMissingGit'";
+  return [
+    "function __pibotMissingGit { throw 'git_unavailable' }",
+    "$__pibotGitCommands=$__pibotAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -match '^git(?:\\.exe)?$' }, $true)",
+    "foreach ($__pibotGit in ($__pibotGitCommands | Sort-Object { $_.Extent.StartOffset } -Descending)) {",
+    "  $__pibotElements=$__pibotGit.CommandElements",
+    "  for ($i=1; $i -lt $__pibotElements.Count; $i++) {",
+    "    $element=$__pibotElements[$i]",
+    "    if ($element.Extent.Text -ceq '-C') { $i++; continue }",
+    "    if ($element.Extent.Text.StartsWith('-')) { continue }",
+    "    if ($element -isnot [System.Management.Automation.Language.StringConstantExpressionAst]) { continue }",
+    "    $flags=switch -CaseSensitive ($element.Value) {",
+    "      'status' { ' --ignore-submodules=all' }",
+    "      'diff' { ' --no-ext-diff --no-textconv --ignore-submodules=all' }",
+    "      { $_ -ceq 'log' -or $_ -ceq 'show' } { ' --no-ext-diff --no-textconv --no-show-signature --ignore-submodules=all' }",
+    "      default { '' }",
+    "    }",
+    "    $__pibotCmd=$__pibotCmd.Insert($element.Extent.EndOffset,[string]$flags)",
+    "    break",
+    "  }",
+    "  $head=$__pibotElements[0].Extent",
+    `  $__pibotCmd=$__pibotCmd.Remove($head.StartOffset,$head.EndOffset-$head.StartOffset).Insert($head.StartOffset,${psQuote(prefix)})`,
+    "}",
+    "if ($__pibotGitCommands.Count -gt 0) {",
+    "  $__pibotAst=[System.Management.Automation.Language.Parser]::ParseInput($__pibotCmd,[ref]$null,[ref]$null)",
+    "}",
+  ];
+}
+
+const SCRIPT = (encoded: string, readOnly?: { git?: string }) =>
   [
     `$__pibotCmd=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}'))`,
     "$__pibotLines=$__pibotCmd.Split([char]10)",
@@ -135,6 +193,7 @@ const SCRIPT = (encoded: string) =>
     "  }",
     "  exit 1",
     "}",
+    ...(readOnly ? [...READ_ONLY_CMD, ...readOnlyGit(readOnly.git)] : []),
     FORMAT_ERROR,
     "$__pibotCapture=[Environment]::NewLine + '$global:__pibotOk=$?; $global:__pibotExit=$LASTEXITCODE' + [Environment]::NewLine",
     // PS5.1 resets $? after a function/block call even when it wrote errors. The pipeline
@@ -182,17 +241,24 @@ const SCRIPT = (encoded: string) =>
     EXIT_STATUS,
   ].join("\n");
 
-export function windowsPowerShellArgs(command: string, path?: string): string[] {
+export function windowsPowerShellArgs(
+  command: string,
+  path?: string,
+  readOnly?: { git?: string },
+): string[] {
   // Base64 keeps the command out of PowerShell's parse of the -Command text and survives any
   // quoting, newline or non-ASCII character the model wrote. The cost is that a command near the
   // Windows command-line limit (32,767 characters) no longer fits; such a command could not run
   // here before either.
   const encoded = Buffer.from(command, "utf8").toString("base64");
+  const lookup = readOnly
+    ? "\n$PSDefaultParameterValues['Get-Command:ListImported']=$true\n$env:NoDefaultCurrentDirectoryInExePath='1'"
+    : "";
   return [
     "-NoLogo",
     "-NoProfile",
     "-NonInteractive",
     "-Command",
-    `${prelude(path)}\n${SCRIPT(encoded)}`,
+    `${prelude(path)}${lookup}\n${SCRIPT(encoded, readOnly)}`,
   ];
 }

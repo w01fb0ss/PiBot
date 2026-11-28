@@ -69,7 +69,7 @@ function DispatchReceipt({ item }: { item: PiDispatch }) {
             : t("dispatch.seconds", { count: seconds }),
       })
     : status;
-  const conversationId = item.targetConversationId;
+  const action = item.open_topic;
   return (
     <section
       className={`${styles.approval} ${lively.card}`}
@@ -87,6 +87,22 @@ function DispatchReceipt({ item }: { item: PiDispatch }) {
           <dt>{t("dispatch.row.result")}</dt>
           <dd>{result}</dd>
         </div>
+        {!!item.modelSwitches?.length && (
+          <div>
+            <dt>{t("dispatch.row.models")}</dt>
+            <dd>
+              {item.modelSwitches.map(({ id, from, to, reason }) => (
+                <p key={id}>
+                  {t("dispatch.modelSwitch", {
+                    from,
+                    to,
+                    reason: t(`dispatch.modelReason.${reason}`),
+                  })}
+                </p>
+              ))}
+            </dd>
+          </div>
+        )}
         {item.summary && (
           <div>
             <dt>{t("dispatch.row.summary")}</dt>
@@ -100,20 +116,31 @@ function DispatchReceipt({ item }: { item: PiDispatch }) {
           </div>
         )}
       </dl>
-      {conversationId && (
+      {action && (
         <footer className={own.choices}>
           <div className={styles.actions}>
             <Button
               variant="secondary"
               onClick={() =>
                 navigate(
-                  item.targetKind === "bot"
-                    ? { name: "chat", botId: item.targetId, topicId: conversationId }
-                    : { name: "chat", groupId: item.targetId, topicId: conversationId },
+                  action.kind === "bot"
+                    ? { name: "chat", botId: action.id, topicId: action.conversationId }
+                    : {
+                        name: "chat",
+                        groupId: action.id,
+                        topicId: action.conversationId,
+                        topicTitle: action.title,
+                      },
                 )
               }
             >
-              {t("dispatch.open", { target: item.targetName })}
+              {action.folderName
+                ? t("dispatch.openFolder", {
+                    target: action.name,
+                    title: action.title,
+                    folder: action.folderName,
+                  })
+                : t("dispatch.open", { target: action.name, title: action.title })}
             </Button>
           </div>
         </footer>

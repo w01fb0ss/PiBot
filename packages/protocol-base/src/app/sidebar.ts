@@ -63,5 +63,12 @@ export const SidebarMethods = {
   "sidebar.groups.remove": { params: z.strictObject({ id: IdSchema }), result: ok },
 } as const;
 export const SidebarEvents = {
-  "sidebar.changed": z.strictObject({ conversationKey: SidebarKeySchema.optional() }),
+  "sidebar.changed": z.strictObject({
+    conversationKey: SidebarKeySchema.optional(),
+    resetHistory: z.literal(true).optional(),
+  }),
+  // Topic edits can affect rows beyond the first page without changing the sidebar entry.
+  "sidebar.topicsChanged": z.strictObject({
+    conversationKey: SidebarKeySchema,
+  }),
 } as const;

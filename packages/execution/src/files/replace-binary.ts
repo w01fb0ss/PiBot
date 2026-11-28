@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { type BigIntStats, constants, lstatSync, realpathSync, renameSync } from "node:fs";
+import { type BigIntStats, constants, lstatSync, renameSync } from "node:fs";
 import { lstat, open, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { matchesFileIdentity, sameFile } from "../core/file-identity.ts";
-import { missing, writablePath } from "../core/paths.ts";
+import { canonicalExistingPathSync, missing, writablePath } from "../core/paths.ts";
 import { ExecError, type FileContext } from "../core/types.ts";
 import { hashCheckpointFile } from "../managed/checkpoint-image.ts";
 import { verifyWorkspace } from "../sandbox/workspace.ts";
@@ -90,13 +90,13 @@ export async function replaceBinaryFile(
       const root = lstatSync(identity.canonicalPath, { bigint: true });
       if (
         !root.isDirectory() ||
-        realpathSync(identity.canonicalPath) !== identity.canonicalPath ||
+        canonicalExistingPathSync(identity.canonicalPath) !== identity.canonicalPath ||
         !matchesFileIdentity(root, identity)
       )
         throw new ExecError("outside_workplace");
     }
     const currentParent = lstatSync(parent, { bigint: true });
-    if (!sameFile(directory, currentParent) || realpathSync(parent) !== parent)
+    if (!sameFile(directory, currentParent) || canonicalExistingPathSync(parent) !== parent)
       throw new ExecError("outside_workplace");
     const destination = lstatSync(target, { bigint: true });
     const prepared = lstatSync(temp, { bigint: true });

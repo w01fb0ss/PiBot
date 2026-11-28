@@ -24,6 +24,51 @@ export function findBot(db: DatabaseSync, ref: string | undefined): Bot | undefi
   return active.length === 1 ? active[0] : named.length === 1 ? named[0] : undefined;
 }
 
+/** Resolve the same roster for the approval card and for the group it authorizes. */
+export function groupCreation(db: DatabaseSync, refs: readonly string[] = [], requested?: string) {
+  const bots = new Map<string, Bot>();
+  const unknown: string[] = [];
+  for (const ref of refs) {
+    const bot = findBot(db, ref);
+    if (!bot || bot.archivedAt) unknown.push(ref);
+    else bots.set(bot.id, bot);
+  }
+  const members = [...bots.values()];
+  const chosen = requested ? findBot(db, requested) : members[0];
+  const eligible = (bot: Bot | undefined): bot is Bot =>
+    !!bot && bot.kind !== "agent" && bot.category !== "image" && !bot.archivedAt;
+  let coordinator = chosen && bots.has(chosen.id) ? chosen : undefined;
+  if (
+    members.length >= 2 &&
+    coordinator &&
+    members.some((bot) => bot.kind === "agent") &&
+    !eligible(coordinator)
+  ) {
+    coordinator = members.find(eligible);
+    if (!coordinator && members.length < 6) {
+      const pi = new BotsRepo(db).getMain();
+      if (eligible(pi)) {
+        coordinator = pi;
+        members.push(pi);
+      }
+    }
+  }
+  return {
+    members,
+    unknown,
+    coordinator,
+    coordinatorNotMember: !!requested && (!chosen || !bots.has(chosen.id)),
+  };
+}
+
+export function groupCoordinatorRequired(language: Language) {
+  return say(
+    language,
+    "请选一位能统筹的 Pi Bot 成员。群组最多六位成员。",
+    "Choose a Pi Bot member to coordinate. The group can have up to six members.",
+  );
+}
+
 export function allGroups(db: DatabaseSync, includeArchived: boolean): Group[] {
   const repo = new GroupsRepo(db);
   return [
@@ -59,4 +104,29 @@ export function parseModel(
 export function oneLine(value: string, limit = 160): string {
   const line = value.replace(/\s+/gu, " ").trim();
   return line.length > limit ? `${line.slice(0, limit - 1)}…` : line;
+}
+
+export function shortDispatchTitle(value: string): string {
+  return (
+    oneLine(value.replace(/[\p{Cc}\p{Cf}]/gu, " "), 40).replace(/[\uD800-\uDBFF](?=…$)/u, "") || "—"
+  );
+}
+
+export function firstLine(value: string, limit: number): string {
+  return oneLine(value.trim().split(/\r\n?|\n|\u2028|\u2029/u, 1)[0] ?? "", limit);
+}
+
+/** Whether a role change rewrites the persona; the card states it, the edit applies it. */
+export function personaFollowsRole(
+  bot: Bot,
+  role: string | undefined,
+  persona: string | undefined,
+) {
+  return (
+    role !== undefined &&
+    persona === undefined &&
+    role !== (bot.description ?? "") &&
+    bot.kind !== "agent" &&
+    bot.category !== "image"
+  );
 }

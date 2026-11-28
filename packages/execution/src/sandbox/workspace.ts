@@ -1,6 +1,7 @@
 import { lstat, opendir, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileIdentity, matchesFileIdentity } from "../core/file-identity.ts";
+import { samePathSpelling } from "../core/paths.ts";
 import { type AliasFileSystem, ExecError, type RunCommandOptions } from "../core/types.ts";
 import { scanCommandAliases } from "./alias-scan.ts";
 
@@ -29,7 +30,7 @@ export async function verifyWorkspace(
     if (
       !info.isDirectory() ||
       info.isSymbolicLink() ||
-      canonical !== resolve(identity.canonicalPath) ||
+      !samePathSpelling(canonical, resolve(identity.canonicalPath)) ||
       !matchesFileIdentity(info, identity)
     )
       throw new ExecError("outside_workplace", "workspace_identity_changed");

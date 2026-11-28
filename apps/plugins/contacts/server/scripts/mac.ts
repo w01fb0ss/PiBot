@@ -35,7 +35,8 @@ function contacts(req) {
     var digits = /^[+0-9 .()-]+$/.test(query) ? query.replace(/[^0-9]/g, '') : '';
     function matches(value) { return listOnly || [value.givenName + ' ' + value.familyName, value.familyName + value.givenName, value.organization].concat(value.emails).some(function(part) { return part.toLocaleLowerCase().indexOf(query) >= 0; }) || (digits.length > 0 && value.phones.some(function(phone) { return phone.replace(/[^0-9]/g, '').indexOf(digits) >= 0; })); }
     fetch.sortOrder = 1;
-    var offset = number(args.cursor, 0, 100000), limit = number(args.limit, 50, 100), index = 0, scanned = 0, items = [], more = false, scanLimit = false, err = Ref();
+    var cursor = String(args.cursor).trim(), offset = /^[0-9]+$/.test(cursor) && Number(cursor) <= 100000 ? Number(cursor) : 0;
+    var limit = number(args.limit, 50, 100), index = 0, scanned = 0, items = [], more = false, scanLimit = false, err = Ref();
     if (limit < 1) throw Error('invalid_arguments');
     var ok = store.enumerateContactsWithFetchRequestErrorUsingBlock(fetch, err, function(contact, stop) { if (++scanned > 10000) { scanLimit = true; stop[0] = true; return; } if (countOnly) return; var value = view(contact); if (!matches(value)) return; if (index++ < offset) return; if (items.length >= limit) { more = true; stop[0] = true; return; } items.push(value); });
     if (!ok) throw Error('read_failed');

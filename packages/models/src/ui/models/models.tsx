@@ -2,6 +2,7 @@
 import { readMainBot } from "@pibot/client-core";
 import {
   type Bot,
+  BuiltinVideoProviderIdSchema,
   MAGPIE_PROVIDER,
   type ModelInfo,
   type Provider,
@@ -20,6 +21,7 @@ import { useCallback, useId, useLayoutEffect, useRef, useState } from "react";
 import { providerIdentity, requirePeer } from "../setup/operations.ts";
 import modelStyles from "./models.module.css";
 import { AddedModels } from "./providers/AddedModels.tsx";
+import { BuiltinVideoModels } from "./providers/BuiltinVideoModels.tsx";
 import { MagpieDiscovery } from "./providers/magpie.tsx";
 import { useMagpieDetection } from "./providers/magpie-detection.ts";
 import { useNewModels } from "./providers/new-models.ts";
@@ -30,6 +32,7 @@ import { namedProviders, providerCatalog } from "./providers/provider-catalog.ts
 import detailStyles from "./providers/provider-detail.module.css";
 import { ProviderForm } from "./providers/provider-form.tsx";
 import { AuxiliaryModelSettings } from "./selection/auxiliary-model.tsx";
+import { VideoModelsSection } from "./selection/custom-video-models.tsx";
 import { DefaultModelSettings } from "./selection/default-model.tsx";
 import { ModelCatalogRefresh } from "./selection/ModelCatalogRefresh.tsx";
 import { ModelHealthNotice, useModelHealth } from "./selection/model-health.tsx";
@@ -135,6 +138,7 @@ export function ModelsSettings({
     ),
     t("setup.customLabel"),
     t("models.payAsYouGo"),
+    t,
   );
   const magpie = catalog.find((provider) => provider.id === MAGPIE_PROVIDER.id);
   const magpieDetected = magpieDetection.result?.running === true;
@@ -149,6 +153,17 @@ export function ModelsSettings({
   }
 
   const chosenIdentity = chosen && providerIdentity(chosen);
+  const videoProviders = catalog.flatMap((provider) => {
+    const parsed = BuiltinVideoProviderIdSchema.safeParse(provider.id);
+    return parsed.success &&
+      provider.auth === "apiKey" &&
+      provider.available &&
+      provider.configured &&
+      (provider.selectedAuth ?? "apiKey") === "apiKey"
+      ? [{ id: parsed.data, name: provider.name }]
+      : [];
+  });
+  const chosenVideo = videoProviders.find(({ id }) => id === chosen?.id);
   // A saved model that has left the catalog cannot be tested; fall back to the provider default for
   // both the request and the label so they always name the same model.
   const savedTestModel =
@@ -227,6 +242,13 @@ export function ModelsSettings({
             newModels={newModels}
             onAddModels={(provider, ids, button) => selectProvider(provider, button, ids)}
           />
+          {active && !chosen && videoProviders.length > 0 && (
+            <VideoModelsSection>
+              {videoProviders.map(({ id, name }) => (
+                <BuiltinVideoModels providerId={id} name={name} task={task} key={id} />
+              ))}
+            </VideoModelsSection>
+          )}
           {searchSettings}
         </div>
       </div>
@@ -267,6 +289,11 @@ export function ModelsSettings({
             models={allModels}
             testModelId={testModelId}
           />
+          {active && chosenVideo && (
+            <VideoModelsSection>
+              <BuiltinVideoModels providerId={chosenVideo.id} task={task} key={chosenVideo.id} />
+            </VideoModelsSection>
+          )}
           {chosen.auth === "apiKey" && chosen.available && chosen.configured && (
             <AddedModels
               key={`added-${providerIdentity(chosen)}`}

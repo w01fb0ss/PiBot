@@ -7,7 +7,7 @@ import { type RoutineBot, useRoutineBots } from "../editor/use-routine-bot.ts";
 import { usePages } from "../page/paging.ts";
 import { type RoutineRowState, useRoutineRows } from "../page/rows.ts";
 import { useRoutineNavigation } from "../shell/navigation.ts";
-import { useRemote, useRoutineAction, useRoutineRefresh } from "../shell/remote.ts";
+import { useRoutineAction, useRoutineRefresh } from "../shell/remote.ts";
 import styles from "../shell/routines.module.css";
 import { runFailureKey } from "../timeline/RunHistory.tsx";
 import { appTriggerText, hasRetiredTrigger, watchesEvents } from "../triggers/app-trigger-text.ts";
@@ -222,21 +222,4 @@ function RoutineRow({
   );
 }
 
-export function RoutineTopicLabel({ id, botId }: { id: string; botId: string }) {
-  const { t } = useSettings();
-  const load = useCallback(
-    async (peer: Peer) => {
-      const routine = await peer.call("routines.get", { id });
-      if (routine.botId !== botId || routine.id !== id) throw new Error("Routine owner mismatch");
-      return routine;
-    },
-    [id, botId],
-  );
-  const remote = useRemote(load);
-  useRoutineRefresh(remote.refresh, botId, { routineId: id });
-  return (
-    <span className={styles.tag}>
-      {remote.value?.deletedAt ? t("routines.deleted") : t("routines.title")}
-    </span>
-  );
-}
+export { RoutineTopicLabel, RoutineTopicLabelProvider } from "./routine-topic-labels.tsx";

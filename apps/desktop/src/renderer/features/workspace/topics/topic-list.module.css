@@ -1,0 +1,26 @@
+.listRoot,
+.groups {
+  overflow-anchor: none;
+}
+
+.cardInner {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-anchor: none;
+}
+
+/* Keeps an active rename/focused row mounted at its true offset even when scrolled out of window. */
+.pinnedRow {
+  position: absolute;
+  left: 0;
+  right: 0;
+}
+
+/* Preserves the 30px footer slot when a terminal "More topics" read appends zero rows, preventing
+   browser max-scroll clamping from shifting visible rows downward. */
+.footerSpacer {
+  height: 30px;
+  flex: none;
+}

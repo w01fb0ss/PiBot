@@ -1,9 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { type BigIntStats, constants } from "node:fs";
-import { type FileHandle, open } from "node:fs/promises";
+import { type FileHandle, open, realpath } from "node:fs/promises";
+import { win32 } from "node:path";
 import type { Writable } from "node:stream";
 import { sameFile } from "../core/file-identity.ts";
-import { ExecError, type IsolationStatus, type RunCommandOptions } from "../core/types.ts";
+import {
+  type CommandResult,
+  ExecError,
+  type IsolationStatus,
+  type RunCommandOptions,
+} from "../core/types.ts";
 import { verifyDockerConnection } from "../docker/docker.ts";
 import { BinaryPublicationError } from "../files/binary-files.ts";
 import { prepareGitHookExecution } from "../git/git-hook-execution.ts";
@@ -11,6 +17,7 @@ import { prepareGitInitialization } from "../git/git-init.ts";
 import { type GitInitialization, gitInitArguments } from "../git/git-init-args.ts";
 import { runGitInitialization } from "../git/git-init-run.ts";
 import { stageGitOutput, validGitOutputPlan } from "../git/git-output.ts";
+import { findGit } from "../git/git-process.ts";
 import { credentialToolItems } from "../sandbox/credential-tools.ts";
 import {
   clientPortHints,
@@ -49,9 +56,10 @@ import { windowsPowerShellArgs } from "./windows-shell.ts";
 type Input = RunCommandOptions & {
   gitInitialization?: GitInitialization;
   onProcess?(control: import("./process.ts").ProcessControl, logPath: string): void;
+  onExit?(code: number | null): void;
 };
 type Git = Awaited<ReturnType<typeof prepareGitInitialization>>;
-type Phase = "directories" | "initialize";
+type Phase = "directories" | "initialize" | "reinitialize";
 interface Execution {
   deps: CommandDependencies;
   input: Input;
@@ -75,6 +83,7 @@ async function dispatchReady(e: Execution, phase?: Phase) {
   await e.output?.check();
   if (git) {
     await git.check();
+    if (phase === "initialize") await git.checkFreshConfig();
     if (phase === "directories") git.dispatchSetup();
     else git.dispatch();
   }
@@ -93,7 +102,14 @@ async function dispatchReady(e: Execution, phase?: Phase) {
   await verifyScriptPins(input.scriptPins, signal);
   await verifyScriptInterpreters(
     input.scriptInterpreters,
-    { ...e.resources, writeRoots: input.writeRoots, rootIdentities: input.rootIdentities },
+    {
+      ...e.resources,
+      writeRoots: [
+        ...input.writeRoots,
+        ...(e.resources.commandHome ? [e.resources.commandHome] : []),
+      ],
+      rootIdentities: input.rootIdentities,
+    },
     signal,
   );
   signal.throwIfAborted();
@@ -111,7 +127,10 @@ async function phaseConfig(e: Execution, roots: string[], phase?: Phase) {
   ];
   e.state.stage = "alias_scan";
   const aliases = await verifyCommandAliases(
-    [...roots, ...(phase ? [] : [resources.temp])],
+    [
+      ...roots,
+      ...(phase ? [] : [resources.temp, ...(resources.commandHome ? [resources.commandHome] : [])]),
+    ],
     denied,
     signal,
     deps.options.aliasFileSystem,
@@ -125,16 +144,20 @@ async function phaseConfig(e: Execution, roots: string[], phase?: Phase) {
     {
       dataDir: input.dataDir,
       botHome: input.botHome,
+      commandHome: resources.commandHome !== undefined,
       skillGroupId: input.skillGroupId,
       skillPackageIds: input.skillPackageIds,
       skillEnvIds: input.skillEnv ? [input.skillEnv.id] : undefined,
       managedSkillPython: Boolean(input.skillEnv?.python),
       skillPythonPreparation: input.skillPythonPreparation,
+      skillNodePreparation: input.skillNodePreparation?.envId,
     },
     {
       tempDir: resources.temp,
       ...(snapshot ? { hookSnapshot: snapshot } : {}),
-      ...(phase && e.git ? { git: { phase, gitDirectory: e.git.gitDir } } : {}),
+      ...(phase && phase !== "reinitialize" && e.git
+        ? { git: { phase, gitDirectory: e.git.gitDir } }
+        : {}),
       ...(input.docker?.socket ? { dockerSocket: input.docker.socket } : {}),
       ...(input.systemServices ? { systemServices: input.systemServices } : {}),
       ...(input.localServices ? { localServices: input.localServices } : {}),
@@ -159,7 +182,8 @@ async function executePhase(
   command: string,
   phase?: Phase,
   roots = e.input.writeRoots,
-) {
+  cwd = e.resources.cwd,
+): Promise<Pick<CommandResult, "exitCode" | "truncatedOutput" | "sandboxBlock" | "pinnedFilters">> {
   const { input, resources: r, signal, deps } = e;
   let file: FileHandle | undefined;
   let log: Writable | undefined;
@@ -212,6 +236,9 @@ async function executePhase(
     }
     if (e.isolation.available && !directDocker && !outside) {
       const config = await phaseConfig(e, roots, phase);
+      // SRT pins the ancestors of the host cwd's literal .git/hooks deny.
+      // Anchor the fixed Git phases in scratch so that rule permits the setup mkdir.
+      const hostCwd = phase && deps.options.platform === "darwin" ? r.temp : cwd;
       e.state.stage = "dispatch";
       const commandId = randomUUID();
       // Started alongside the host's own startup, so a ready stream costs the command nothing.
@@ -241,12 +268,18 @@ async function executePhase(
               },
             }
           : {}),
-        cwd: r.cwd,
+        cwd: hostCwd,
         env: r.env,
         signal,
         log,
         onOutput: input.onOutput,
         onProcess: capture,
+        onExit:
+          phase === "directories" || (phase && e.git?.remainder)
+            ? (code) => {
+                if (code !== 0) input.onExit?.(code);
+              }
+            : input.onExit,
         prepared: async () => {
           // Bounded inside the tracker: an unavailable monitor never holds the command back.
           await tracker?.ready;
@@ -277,7 +310,7 @@ async function executePhase(
           ? await credentialToolItems({
               program: input.credentialProgram.program,
               userHome: deps.options.systemHome,
-              botHome: r.home,
+              botHome: r.commandHome ?? r.home,
             })
           : [];
       const listening =
@@ -314,10 +347,11 @@ async function executePhase(
               violations,
               ...(listening ? { listening } : {}),
               credentials,
-              homes: [deps.options.systemHome, r.home],
+              homes: [deps.options.systemHome, r.commandHome ?? r.home],
               succeeded: result.exitCode === 0,
               command: input.command,
-              cwd: r.cwd,
+              cwd,
+              profileCwd: hostCwd,
               config,
               platform: deps.options.platform,
             })
@@ -330,6 +364,19 @@ async function executePhase(
       return { ...result, truncatedOutput, sandboxBlock };
     }
     if (input.hostSsh) throw new ExecError("isolation_unavailable");
+    const readOnly =
+      input.windowsReadOnly && deps.options.platform === "win32" && !directDocker
+        ? { git: /\bgit(?:\.exe)?\b/i.test(command) ? await findGit(deps.options) : undefined }
+        : undefined;
+    if (readOnly) await restrictWindowsReadEnvironment(r, input, signal);
+    if (readOnly?.git) {
+      // A partial clone or replacement refs must never turn an approved read into a fetch.
+      r.env.GIT_NO_LAZY_FETCH = "1";
+      r.env.GIT_CONFIG_NOSYSTEM = "1";
+      // The entry check binds the Bot workspace's Git config. The shell's separate
+      // command-home config can be edited by ordinary commands and is not in that plan.
+      r.env.GIT_CONFIG_GLOBAL = win32.join(r.home, ".gitconfig");
+    }
     e.state.stage = "dispatch";
     await dispatchReady(e, phase);
     // Outside the sandbox there is nothing to attribute a denial or a missing login to.
@@ -343,7 +390,7 @@ async function executePhase(
       args: directDocker
         ? directDocker.args
         : deps.options.platform === "win32"
-          ? windowsPowerShellArgs(command, r.env.PATH ?? r.env.Path)
+          ? windowsPowerShellArgs(command, r.env.PATH ?? r.env.Path, readOnly)
           : ["--noprofile", "--norc", "-c", executed],
       cwd: r.cwd,
       env: r.env,
@@ -354,6 +401,7 @@ async function executePhase(
       redactor: deps.options.redactor,
       onOutput: input.onOutput,
       onProcess: capture,
+      onExit: input.onExit,
       beforeSpawn() {
         input.assertDockerAuthorized?.();
         input.assertAuthorized?.();
@@ -372,7 +420,43 @@ async function executePhase(
     await file?.close();
   }
 }
+
+async function restrictWindowsReadEnvironment(
+  resources: CommandResources,
+  input: RunCommandOptions,
+  signal: AbortSignal,
+) {
+  const { env, cwd, commandHome, home } = resources;
+  const roots = [cwd, ...input.writeRoots, ...(input.denyWriteRoots ?? [])];
+  const entries = await Promise.all(
+    (env.PATH ?? "").split(";").map(async (entry) => {
+      if (!/^[a-z]:[\\/]/i.test(entry)) return;
+      signal.throwIfAborted();
+      try {
+        const path = await realpath(entry);
+        if (!/^[a-z]:[\\/]/i.test(path) || path.includes(";")) return;
+        if (
+          roots.some((root) => {
+            const relative = win32.relative(root, path);
+            return !win32.isAbsolute(relative) && relative !== ".." && !relative.startsWith("..\\");
+          })
+        )
+          return;
+        return path;
+      } catch {
+        signal.throwIfAborted();
+        // A PATH entry whose backing directory is unknown cannot name a no-card executable.
+      }
+    }),
+  );
+  env.PATH = entries.filter(Boolean).join(";");
+  // The Windows npm shim resolves its global CLI before it forwards --version.
+  env.npm_config_prefix = commandHome ?? home;
+  env.npm_config_global = "true";
+  env.npm_config_ignore_scripts = "true";
+}
 async function closeLoggedCommand(
+  runId: string,
   e: Execution | undefined,
   file: FileHandle | undefined,
   publication: { path: string; bytes: number; revision: string } | undefined,
@@ -387,7 +471,7 @@ async function closeLoggedCommand(
       failed = true;
     }
   };
-  if (e && !e.deps.drainFailed()) {
+  if (e && !e.deps.drainFailed(runId)) {
     await close(() => e.git?.close());
     await close(() => e.hook?.close());
     await close(() => e.output?.close());
@@ -471,11 +555,30 @@ async function loggedCommand(
     }
     const execution = e;
     let result: Awaited<ReturnType<typeof executePhase>>;
-    if (e.git)
+    if (e.git) {
       result = await runGitInitialization(e.git, input, signal, {
         execute: (command, phase, roots) => executePhase(execution, command, phase, roots),
       });
-    else {
+      if (e.git.remainder && result.exitCode === 0) {
+        if (signal.aborted) result = { ...result, exitCode: null };
+        else {
+          const next = await executePhase(
+            e,
+            e.git.remainder,
+            undefined,
+            input.writeRoots,
+            e.git.cwd,
+          );
+          result = {
+            ...next,
+            truncatedOutput: [result.truncatedOutput, next.truncatedOutput]
+              .filter(Boolean)
+              .join("\n"),
+            sandboxBlock: next.sandboxBlock ?? result.sandboxBlock,
+          };
+        }
+      }
+    } else {
       signal.throwIfAborted();
       await verifyWorkspace(input.rootIdentities, signal);
       const spawnedAt = Date.now();
@@ -510,7 +613,7 @@ async function loggedCommand(
     if (error instanceof BinaryPublicationError) outputFile = error.publication;
     throw error;
   } finally {
-    await closeLoggedCommand(e, file, outputFile);
+    await closeLoggedCommand(input.runId, e, file, outputFile);
   }
 }
 export function createCommandRunner(deps: CommandDependencies) {
@@ -562,7 +665,7 @@ export function createCommandRunner(deps: CommandDependencies) {
         gitInitArguments(input.gitInitialization.argv, input.cwd, input.gitInitialization.program)
       )
     ) {
-      return runPromotableCommand(deps, input, async (signal, onProcess, onOutput) => {
+      return runPromotableCommand(deps, input, async (signal, onProcess, onOutput, onExit) => {
         const state: CommandStage = { stage: "workspace" };
         await verifyWorkspace(input.rootIdentities, signal);
         const isolation = await commandIsolation(deps, input, signal, state);
@@ -574,7 +677,7 @@ export function createCommandRunner(deps: CommandDependencies) {
         );
         return loggedCommand(
           deps,
-          { ...input, onProcess, onOutput },
+          { ...input, onProcess, onOutput, onExit },
           resources,
           signal,
           state,
@@ -596,14 +699,22 @@ export function createCommandRunner(deps: CommandDependencies) {
       const isolation = await commandIsolation(deps, input, signal, state);
       state.stage = "environment";
       const r = await commandResources(deps, input, await deps.temps.forRun(input.runId), signal);
-      const result = await loggedCommand(deps, input, r, signal, state, isolation);
+      const result = await loggedCommand(
+        deps,
+        { ...input, onExit: clear },
+        r,
+        signal,
+        state,
+        isolation,
+      );
+      const timedOut = timeout.signal.aborted && result.exitCode === null;
       return {
         ...result,
         truncatedOutput:
-          timeout.signal.aborted && !input.signal.aborted && !deps.lifetime.signal.aborted
+          timedOut && !input.signal.aborted && !deps.lifetime.signal.aborted
             ? timeoutOutput(result.truncatedOutput, timeoutSec)
             : result.truncatedOutput,
-        timedOut: timeout.signal.aborted,
+        timedOut,
         stopped: input.signal.aborted || deps.lifetime.signal.aborted,
         durationMs: Math.round(performance.now() - started),
       };

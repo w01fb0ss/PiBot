@@ -107,6 +107,7 @@ Notes:
 Seeing all uncommitted changes, discarding and committing, and running several group steps at the same time all need Git.
 
 - **Windows**: the installer includes Git, unpacked the first time it's needed; nothing else to install.
+  In builds from source without bundled Git, automatic read-only Git commands use the standard Git for Windows installation locations. A portable or custom installation found only on `PATH` can result in `git_unavailable`.
 - **macOS and Linux**: when the computer has no Git, a **Pi Bot needs to install Git** card appears where a feature needs it (the changes panel, parallel group steps), with why, what it does and where it goes. After you click **Install**: on macOS, Apple's Command Line Developer Tools installer opens, where you click **Install**; on Linux, the detected system package manager installs it (the card shows the exact command) and the system asks for an administrator password. Git goes to a system location every program can use. This runs outside the sandbox, only after you click **Install**, and is written to the Log.
 - **Not now** skips it: the changes panel shows only each turn's changes, and parallel group steps take turns.
 - If the install fails, the card says why; click **Try again**, or install it yourself as the card suggests and click **Check again**.

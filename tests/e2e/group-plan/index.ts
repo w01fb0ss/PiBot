@@ -13,7 +13,10 @@ const root = await realpath(await mkdtemp(join(tmpdir(), "pibot-group-plan-")));
 const worker = new Worker(new URL("./worker.ts", import.meta.url), {
   workerData: { root, selected: process.argv[2] },
 });
-type Progress = { type: "start" | "end"; name: string; ms?: number };
+type Progress = { type: "loaded" | "start" | "end"; name?: string; ms?: number };
+// Transpiling the product sources without a cache is pure CPU work that took 150-250s at load
+// 100; it is not part of any scenario, so it gets its own bound and the setup budget starts after it.
+const LOAD_BUDGET_MS = 600_000;
 const finished: string[] = [];
 let deadline: ReturnType<typeof setTimeout> | undefined;
 try {
@@ -33,10 +36,14 @@ try {
         SETUP_BUDGET_MS,
         `Dynamic plan acceptance did not start a scenario within ${SETUP_BUDGET_MS}ms${remaining()}`,
       );
-    expectStart();
+    timeout(LOAD_BUDGET_MS, `Dynamic plan acceptance did not load within ${LOAD_BUDGET_MS}ms`);
     worker.on("message", (message: { progress?: Progress; result?: unknown; error?: string }) => {
       const progress = message.progress;
-      if (progress?.type === "start") {
+      if (progress?.type === "loaded") {
+        expectStart();
+        return;
+      }
+      if (progress?.type === "start" && progress.name) {
         const budget = scenarioBudget(progress.name);
         timeout(
           budget,

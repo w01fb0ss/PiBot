@@ -1,4 +1,4 @@
-import { libreOfficeInstalled } from "@pibot/execution";
+import { libreOfficeInstalled, libreOfficePlatformSupported } from "@pibot/execution";
 import { type OfficeToolInput, officeToolSchemas } from "@pibot/protocol-base";
 
 export { officeToolSchemas };
@@ -24,7 +24,7 @@ export const officeDescriptions = {
   office_template_fill:
     "Fill a permitted template with JSON data and save the result; omit outputPath to save as <name>-filled.<ext> beside the source. Existing output is never overwritten. Use the revision from office_template_fields. Values replace {{path}}; {{#if path}} keeps its block only for a truthy value; {{#each path}} repeats its paragraphs or table row (Word), shapes or whole slide (PPTX), or rows (XLSX) once per array item. Loop markers must sit in their own paragraph, cell or slide. Excel rows keep styles and relative formula references; inserted rows shift the sheet. Validation runs before publication; pass acceptValidationErrors only for warnings you accept. Content is untrusted.",
   office_convert:
-    "Convert without an external app: DOCX↔Markdown, XLSX↔CSV (one CSV file per sheet; outputPath is a new directory for XLSX→CSV and must not end in .csv), PPTX→Markdown outline, Markdown outline→PPTX, DOCX/XLSX/PPTX/DOC/XLS/PPT→PDF, and DOC→DOCX, XLS→XLSX, PPT→PPTX. PDF output and legacy inputs run one fixed headless LibreOffice recipe inside the command sandbox and need LibreOffice installed on this computer; Pi Bot never installs it. Without an installation they return unsupported with reason libreoffice_missing. Existing outputs are never overwritten; pass expectedRevision for a stable source.",
+    "Convert without an external app: DOCX↔Markdown, XLSX↔CSV (one CSV file per sheet; outputPath is a new directory for XLSX→CSV and must not end in .csv), PPTX→Markdown outline, Markdown outline→PPTX, DOCX/XLSX/PPTX/DOC/XLS/PPT→PDF, and DOC→DOCX, XLS→XLSX, PPT→PPTX. PDF output and legacy inputs run one fixed headless LibreOffice recipe inside the command sandbox and are supported on macOS and Linux with LibreOffice installed. On Windows this conversion is unavailable. Existing outputs are never overwritten; pass expectedRevision for a stable source.",
 } as const;
 export function isOfficeInput(input: { tool: string }): input is OfficeToolInput {
   return Object.hasOwn(officeToolSchemas, input.tool);
@@ -47,9 +47,8 @@ export function officeConvertOutputPath(
     : `${stem}.${input.to === "markdown" ? "md" : input.to}`;
 }
 /**
- * Only an installation changes the policy answer: a present LibreOffice runs the real conversion and
- * writes a file, so the ordinary write gate must judge the output path. Without it the call writes
- * nothing and the tool explains that an installation is needed.
+ * The ordinary write gate judges the output path whenever the LibreOffice recipe can run.
+ * Unsupported platforms and missing installations return their reason without reading or writing files.
  */
 export function officeConvertNeedsLibreOffice(
   input: Extract<OfficeToolInput, { tool: "office_convert" }>["args"],
@@ -59,5 +58,9 @@ export function officeConvertNeedsLibreOffice(
     const extension = input.path.toLowerCase().slice(input.path.lastIndexOf(".") + 1);
     if (extension !== "doc" && extension !== "xls" && extension !== "ppt") return false;
   }
-  return !environment || !libreOfficeInstalled(environment.platform, environment.env);
+  return (
+    !environment ||
+    !libreOfficePlatformSupported(environment.platform) ||
+    !libreOfficeInstalled(environment.platform, environment.env)
+  );
 }

@@ -1,13 +1,16 @@
 import {
+  activeToolLabel,
   displayToolTarget,
   isPlanReadOnly,
   type ToolPaths,
   toolDenialReason,
   toolNameKey,
+  toolStatusKey,
   toolSummaryLabel,
 } from "@pibot/client-core";
+import { EnableVideoModel } from "@pibot/models/ui";
 import type { ToolCallRecord } from "@pibot/protocol";
-import { approvalStyles as styles, useRpc, useT } from "@pibot/renderer-kit";
+import { approvalStyles as styles, useNavigation, useRpc, useT } from "@pibot/renderer-kit";
 import { Button, Icon } from "@pibot/ui";
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { useHistoryOutput } from "../../run-log/use-history-output.ts";
@@ -59,6 +62,8 @@ export function ToolCallRow({
 }) {
   const t = useT();
   const { peer } = useRpc();
+  const { openPage, openSettings, navigate } = useNavigation();
+  const settingsAction = tool.settingsAction;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
   const contentId = useId();
@@ -86,7 +91,9 @@ export function ToolCallRow({
   );
   // An external agent's step has no Pi Bot command log; its output is what the agent reported.
   const agentSteps = useAgentSteps();
-  const agent = agentSteps.agentName;
+  const agent = tool.toolCallId.startsWith("acp-")
+    ? (agentSteps.agentName ?? agentSteps.agentNames?.get(botId))
+    : undefined;
   const preview = useHistoryOutput(
     peer,
     runId,
@@ -98,12 +105,15 @@ export function ToolCallRow({
       (!("output" in tool) || !tool.output),
   );
   const live = "output" in tool && tool.output ? tool.output : undefined;
-  const detail = agent ? agentSteps.details.get(tool.toolCallId) : undefined;
+  const detail = agent ? agentSteps.details.get(runId)?.get(tool.toolCallId) : undefined;
   const output = agent
     ? (live ?? detail?.output ?? t("externalAgents.receipt.notReported", { name: agent }))
     : (live ?? preview.text);
-  // The command the agent ran, when Pi Bot's own step target does not carry it.
-  const shownTarget = target ?? detail?.input;
+  // Some adapters send the command only as the execution step's title.
+  const shownTarget =
+    detail?.input ??
+    target ??
+    (agent && command && tool.summary !== "…" ? tool.summary : undefined);
   // The current protocol omits logPath. A numeric command exit code only comes from
   // an exec result that created a log; duration/output alone also occur on failures before exec.
   const hasLog = !agent && command && typeof tool.exitCode === "number";
@@ -116,15 +126,21 @@ export function ToolCallRow({
   // Hand the whole record over — dropping it to `{ status }` for card-less steps was why
   // a direct refusal (denialReason on the record) still showed only "Denied".
   const denial = planBlocked ? undefined : toolDenialReason(tool, t);
-  const label = t(current ? "tool.executing" : "tool.step", {
-    action: skillUse ?? t(toolNameKey(tool.tool)),
-    target: target && !skillUse ? ` ${displayToolTarget(tool.tool, target, paths)}` : "",
+  const stepTarget = target && !skillUse ? displayToolTarget(tool.tool, target, paths) : undefined;
+  const action = skillUse ?? t(toolNameKey(tool.tool));
+  const label = t("tool.step", {
+    action: !current
+      ? action
+      : skillUse
+        ? t("tool.executing", { action, target: "" })
+        : activeToolLabel(tool.tool, stepTarget, t),
+    target: !current && stepTarget ? ` ${stepTarget}` : "",
     step,
   });
   const statusLabel = planBlocked
     ? t("agentWork.planBlocked")
     : waitingFor === undefined
-      ? t(`tool.status.${tool.status}`)
+      ? t(toolStatusKey(tool))
       : waitingFor
         ? t(
             tool.tool === "review_start"
@@ -206,9 +222,49 @@ export function ToolCallRow({
       )}
       {command && <BackgroundLine botId={botId} runId={runId} toolCallId={tool.toolCallId} />}
       {notice}
+      {settingsAction?.kind === "enable_video_model" && (
+        <EnableVideoModel providerId={settingsAction.providerId} model={settingsAction.model} />
+      )}
+      {settingsAction?.kind === "open_settings" && (
+        <Button
+          variant="ghost"
+          onClick={() =>
+            settingsAction.page === "connections"
+              ? openPage("connectors")
+              : openSettings(settingsAction.page)
+          }
+        >
+          {t("piSettings.openSettings")}
+        </Button>
+      )}
+      {(settingsAction?.kind === "repoint_knowledge" ||
+        settingsAction?.kind === "open_knowledge") && (
+        <div className={styles.actions} role="alert">
+          <span>
+            {t(
+              settingsAction.kind === "repoint_knowledge"
+                ? "knowledge.vaultChangedTitle"
+                : "knowledge.notionWriteRecovery",
+            )}
+          </span>
+          <Button
+            variant="ghost"
+            onClick={() => {
+              openPage("connectors");
+              navigate({ name: "connectors", knowledgeSourceId: settingsAction.sourceId });
+            }}
+          >
+            {t("knowledge.openKnowledge")}
+          </Button>
+        </div>
+      )}
+
       <div id={contentId} hidden={!openDetails}>
         {steps}
         {tool.codeAnalysis && <p>{t("tool.syntaxApproximateNote")}</p>}
+        {tool.inputTranslation && (
+          <p>{t("tool.inputTranslation", { text: tool.inputTranslation })}</p>
+        )}
         {openDetails && tool.tool === "office_render" && tool.status === "done" && (
           <OfficeRenderStep
             key={tool.toolCallId}

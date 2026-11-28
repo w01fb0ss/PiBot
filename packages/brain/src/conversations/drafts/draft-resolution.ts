@@ -1,6 +1,7 @@
 import { effectiveLevel } from "@pibot/policy";
 import {
   ConnectorCallError,
+  ConnectorNetworkBlockedError,
   DraftContentSchema,
   type DraftResolve,
   type DraftView,
@@ -19,6 +20,7 @@ import {
   ConnectorToolError,
   type PreparedConnector,
 } from "../../runtime/tools/connectors/connector-tools.ts";
+import { connectorNetworkApproval } from "../../runtime/tools/connectors/network-approval.ts";
 import { automaticDraftAllowed, evaluateDraft } from "./draft-authorization.ts";
 import { contentDigest, fail, snapshot } from "./draft-content.ts";
 import { connectionToolRememberable, rememberConnectionTool } from "./draft-tool-grants.ts";
@@ -33,17 +35,21 @@ interface DraftResolution {
   audit(id: string, phase: string, actor?: "user" | "automatic" | "system"): void;
   /** The service's reply to a send, for the waiting tool call to hand to the Bot. */
   sent?(id: string, reply: unknown): void;
-  /** The service's unredacted reason for a reported failure; only the waiting tool call reads it. */
-  failed?(id: string, serviceMessage: string): void;
+  /** Only the waiting tool call reads the reason. */
+  failed?(id: string, error: ConnectorCallError): void;
 }
 /** Claim once, revalidate current authority at transport dispatch, then persist the real outcome. */
 export async function resolveDraft(
   deps: DraftResolution,
   input: DraftResolve,
   actor: "user" | "automatic",
-  /** Only the automatic send right after this same call's "ask every time" card was answered. */
-  confirmedNow = false,
+  options: {
+    /** Only the automatic send right after this same call's "ask every time" card was answered. */
+    confirmedNow?: boolean;
+    desktopSend?: boolean;
+  } = {},
 ) {
+  const { confirmedNow = false, desktopSend = false } = options;
   await deps.local.userSecrets.ready(deps.local.shutdown.signal);
   const current = deps.repo.get(input.approvalId);
   if (!current) return fail("draftUnavailable", "draft_unavailable");
@@ -186,35 +192,53 @@ export async function resolveDraft(
     deps.audit(view.approvalId, "sending", actor);
   });
   deps.changed(view.approvalId);
+  const authorize = () => {
+    if (deps.repo.get(view.approvalId)?.view.status !== "sending")
+      return fail("draftResolved", "draft_already_resolved");
+    if (Date.parse(view.expiresAt) <= Date.now()) return fail("draftExpired", "draft_expired");
+    const currentContext = deps.context(view, payload);
+    if (
+      payload.capabilityId &&
+      !capabilitySelectionMatches(currentContext, payload.capabilityId, view.draft.connectorId)
+    )
+      return fail("draftChanged", "draft_capability_changed");
+    const permissions = deps.local.tasks.settings(
+      currentContext,
+      runPermissions(deps.local, currentContext),
+    );
+    if (
+      effectiveLevel(permissions.levels.send_out, undefined) === "never" ||
+      effectiveLevel(permissions.levels.connector, undefined) === "never"
+    )
+      return fail("draftDenied", "send_permission_denied");
+    if (
+      actor === "automatic" &&
+      !automaticDraftAllowed(deps.local, currentContext, view.draft, result, confirmedNow)
+    )
+      return fail("draftDenied", "send_permission_changed");
+    if (deps.local.deps.redactor.contains(args).length > 0)
+      return fail("draftContentInvalid", "draft_content_invalid");
+  };
   try {
     const reply = await abortable(
-      service.dispatchDraft(view.approvalId, view.botId, call, prepared, signal, () => {
-        if (deps.repo.get(view.approvalId)?.view.status !== "sending")
-          return fail("draftResolved", "draft_already_resolved");
-        if (Date.parse(view.expiresAt) <= Date.now()) return fail("draftExpired", "draft_expired");
-        const currentContext = deps.context(view, payload);
-        if (
-          payload.capabilityId &&
-          !capabilitySelectionMatches(currentContext, payload.capabilityId, view.draft.connectorId)
-        )
-          return fail("draftChanged", "draft_capability_changed");
-        const permissions = deps.local.tasks.settings(
-          currentContext,
-          runPermissions(deps.local, currentContext),
-        );
-        if (
-          effectiveLevel(permissions.levels.send_out, undefined) === "never" ||
-          effectiveLevel(permissions.levels.connector, undefined) === "never"
-        )
-          return fail("draftDenied", "send_permission_denied");
-        if (
-          actor === "automatic" &&
-          !automaticDraftAllowed(deps.local, currentContext, view.draft, result, confirmedNow)
-        )
-          return fail("draftDenied", "send_permission_changed");
-        if (deps.local.deps.redactor.contains(args).length > 0)
-          return fail("draftContentInvalid", "draft_content_invalid");
-      }),
+      service.dispatchDraft(
+        view.approvalId,
+        view.botId,
+        call,
+        prepared,
+        signal,
+        authorize,
+        connectorNetworkApproval(
+          deps.local,
+          context,
+          {
+            id: deps.local.approvals.repo.get(view.approvalId)?.toolCallId ?? view.approvalId,
+            tool: "connector_call",
+          },
+          authorize,
+          actor === "user" && desktopSend,
+        ),
+      ),
       signal,
     );
     let toolRemembered = false;
@@ -281,6 +305,7 @@ export async function resolveDraft(
     return { ok: true as const, status: "sent" as const };
   } catch (error) {
     // Even an abort after transport dispatch may have reached the remote service.
+    if (error instanceof ConnectorNetworkBlockedError) deps.failed?.(view.approvalId, error);
     if (
       error instanceof RpcError &&
       error.code <= RpcErrorCodes.draftUnavailable &&
@@ -312,7 +337,7 @@ export async function resolveDraft(
         ]);
         deps.audit(view.approvalId, "failed", actor);
       });
-      if (error.serviceMessage) deps.failed?.(view.approvalId, error.serviceMessage);
+      if (error.serviceMessage) deps.failed?.(view.approvalId, error);
       deps.local.deps.peer.emit("approval.resolved", {
         id: view.approvalId,
         status: "denied",

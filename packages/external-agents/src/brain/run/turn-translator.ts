@@ -1,7 +1,8 @@
 // ACP `session/update` → Pi Bot's chat: text streams into replies (words after steps start
 // a new message), tool calls become steps with the icon of the Pi Bot tool they resemble, the
 // agent's plan is kept for the reply's card. Agent text is untrusted: redacted, capped, never HTML.
-import type { SessionUpdate, ToolKind } from "@pibot/acp-schemas";
+import { randomUUID } from "node:crypto";
+import type { RequestPermissionParams, SessionUpdate, ToolKind } from "@pibot/acp-schemas";
 import {
   auditText,
   type ChatReplies,
@@ -28,6 +29,8 @@ const STEP_TOOL: Record<ToolKind, string> = {
   other: "agent_step",
 };
 
+type FinishedStatus = "done" | "error" | "aborted" | "blocked";
+
 interface Step {
   recordId: string;
   toolCallId: string;
@@ -35,7 +38,7 @@ interface Step {
   messageId: string;
   summary: string;
   started: number;
-  finished: boolean;
+  finished: false | FinishedStatus;
   exitCode?: number;
 }
 
@@ -107,6 +110,7 @@ export interface PlanEntry {
 
 export class TurnTranslator {
   private readonly steps = new Map<string, Step>();
+  private permissionRefusalFallback = false;
   private stepsSinceText = false;
   /**
    * The start of the turn's text while it may still be the agent's own startup warning (Codex
@@ -138,6 +142,23 @@ export class TurnTranslator {
    */
   markStep() {
     this.stepsSinceText = true;
+  }
+
+  permissionRefused(call: RequestPermissionParams["toolCall"], reason: string) {
+    const { toolCallId, title, rawInput } = call;
+    const kind = call.kind ?? "other";
+    this.startStep(toolCallId, kind, title ?? "", rawInput);
+    const step = this.steps.get(toolCallId);
+    if (step && !step.finished) {
+      this.finishStep(toolCallId, "blocked", reason);
+      return;
+    }
+    if (step?.finished === "blocked" || this.permissionRefusalFallback) return;
+    // Keep one extra refusal row for calls past the limit or steps that have already ended.
+    this.permissionRefusalFallback = true;
+    const fallbackId = randomUUID();
+    this.startStep(fallbackId, kind, title ?? "", rawInput);
+    this.finishStep(fallbackId, "blocked", reason);
   }
 
   update(update: SessionUpdate) {
@@ -375,6 +396,7 @@ export class TurnTranslator {
       this.lead = undefined;
       this.replies.event({ type: "delta", text: rest });
     }
+    this.replies.event({ type: "replyEnd" });
     for (const [id, step] of this.steps)
       if (!step.finished)
         this.endStep(
@@ -404,7 +426,8 @@ export class TurnTranslator {
   }
 
   private startStep(id: string, kind: ToolKind, title: string, rawInput?: unknown) {
-    if (this.steps.has(id) || this.steps.size >= MAX_STEPS) return;
+    const limit = MAX_STEPS + (this.permissionRefusalFallback ? 1 : 0);
+    if (this.steps.has(id) || this.steps.size >= limit) return;
     const tool = STEP_TOOL[kind];
     // The step belongs to the reply that is current when it starts (the words above it).
     this.replies.event({
@@ -439,19 +462,28 @@ export class TurnTranslator {
   }
 
   private endStep(id: string, outcome: "completed" | "failed", stopped?: "error" | "aborted") {
+    this.finishStep(
+      id,
+      stopped === "aborted" ? "aborted" : outcome === "completed" ? "done" : "error",
+    );
+  }
+
+  private finishStep(id: string, status: FinishedStatus, reason?: string) {
     const step = this.steps.get(id);
     if (!step || step.finished) return;
-    step.finished = true;
-    const status = stopped === "aborted" ? "aborted" : outcome === "completed" ? "done" : "error";
+    step.finished = status;
     const durationMs = Date.now() - step.started;
+    const refusal = reason ? { denialReason: reason } : {};
     this.local.tools.update(step.recordId, {
       status,
       finishedAt: new Date().toISOString(),
       durationMs,
+      ...refusal,
     });
     this.emit(step, "end", {
       status,
       durationMs,
+      ...refusal,
       ...(step.exitCode !== undefined ? { exitCode: step.exitCode } : {}),
     });
     this.replies.event({ type: "activity", activity: { phase: "waiting_model" } });

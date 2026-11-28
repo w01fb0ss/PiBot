@@ -2,6 +2,20 @@ export const officeZh = {
   "office.warning.rowHeight":
     "长文本可能超出电子表格的行高限制，内容已保留，可在编辑栏或 PiBot 预览查看。",
   "office.warning.partial": "内容预览不包含文档的全部格式和元素，完整效果请在办公软件中查看。",
+  "office.convertHelp.title": "无法转换这份文件",
+  "office.convertHelp.libreoffice_missing": "这次转换需要 LibreOffice。安装后请让 Bot 再试一次。",
+  "office.convertHelp.libreoffice_platform_unsupported":
+    "Pi Bot 无法在这台电脑上提供这项转换所需的系统保护。请用原来的办公软件另存或导出文件。",
+  "office.convertHelp.libreoffice_isolation_unavailable":
+    "这次转换所需的系统保护没能启动。请到「设置 › 权限」检查，再让 Bot 重试。",
+  "office.convertHelp.libreoffice_cleanup_unconfirmed":
+    "Pi Bot 正在等待转换程序退出，之后会删除这次转换的私有临时文件。你可以先用原来的办公软件导出文件。",
+  "office.convertHelp.download": "下载 LibreOffice",
+  "office.convertHelp.libreoffice_timeout": "转换用时过长，Pi Bot 已停止这次转换。",
+  "office.convertHelp.libreoffice_failed": "LibreOffice 未能完成这次转换。",
+  "office.convertHelp.recovery": "查看恢复方法",
+  "office.convertHelp.recoverySteps":
+    "请让 Bot 再试一次。如果还是失败，请用原来的办公软件打开源文件，再选「另存为」或「导出」，选取需要的格式。",
   "office.warning.macros": "未运行文档中的宏。",
   "office.warning.externalLinks": "未加载外部链接或远程资源。",
   "office.warning.formulas": "公式显示已保存的缓存结果，未重新计算。",
@@ -77,6 +91,22 @@ export const officeEn: Record<keyof typeof officeZh, string> = {
     "Long text may exceed spreadsheet row-height limits. The content is preserved and can be viewed in the formula bar or PiBot preview.",
   "office.warning.partial":
     "Content preview omits some formatting and elements. Use an office app to view the complete document.",
+  "office.convertHelp.title": "This file couldn’t be converted",
+  "office.convertHelp.libreoffice_missing":
+    "This conversion needs LibreOffice. Install it, then ask your Bot to try again.",
+  "office.convertHelp.libreoffice_platform_unsupported":
+    "Pi Bot can’t provide the system protection needed for this conversion on this computer. Use your original office app to save or export the file in the format you need.",
+  "office.convertHelp.libreoffice_isolation_unavailable":
+    "The system protection needed for this conversion couldn’t start. Check Settings → Permissions, then ask your Bot to try again.",
+  "office.convertHelp.libreoffice_cleanup_unconfirmed":
+    "Pi Bot is waiting for the converter to exit before deleting this conversion’s private temporary files. You can export the file in its original office app in the meantime.",
+  "office.convertHelp.download": "Download LibreOffice",
+  "office.convertHelp.libreoffice_timeout":
+    "Pi Bot stopped the conversion because it took too long.",
+  "office.convertHelp.libreoffice_failed": "LibreOffice couldn’t finish the conversion.",
+  "office.convertHelp.recovery": "See how to recover",
+  "office.convertHelp.recoverySteps":
+    "Ask the Bot to try the conversion again. If it still fails, open the original file in its office app and choose Save As or Export to select the format you need.",
   "office.warning.macros": "Document macros were not executed.",
   "office.warning.externalLinks": "External links and remote resources were not loaded.",
   "office.warning.formulas": "Formulas show saved cached results and have not been recalculated.",

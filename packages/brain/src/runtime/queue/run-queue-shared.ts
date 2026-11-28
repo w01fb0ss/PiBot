@@ -1,4 +1,11 @@
-import type { Bot, ImageContent, ImageOperation, Run, RunStopCause } from "@pibot/protocol-base";
+import type {
+  Bot,
+  ImageContent,
+  ImageGenerationOptions,
+  ImageOperation,
+  Run,
+  RunStopCause,
+} from "@pibot/protocol-base";
 import type { TaskAuthority } from "@pibot/storage";
 import type { ToolRunContext } from "../../core/local-types.ts";
 import type { ChatRun } from "./chat-run.ts";
@@ -27,6 +34,7 @@ export interface QueueInput {
   /** A `cheap` child task (from its persisted authority, never from tool input). */
   modelTier?: "cheap";
   imageOperation?: ImageOperation;
+  imageGeneration?: ImageGenerationOptions;
   userInitiated?: boolean;
   routine?: {
     claim(run: ChatRun): boolean;

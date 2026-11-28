@@ -3,6 +3,7 @@ import { access, readdir } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, isAbsolute, join, parse, relative, resolve, sep, win32 } from "node:path";
 import {
+  ExecError,
   type ExecutionTarget,
   type FolderLevel,
   sensitiveReadBoundary,
@@ -13,6 +14,20 @@ import {
   windowsWithin,
 } from "@pibot/execution";
 import { RpcError, RpcErrorCodes } from "@pibot/protocol-base";
+
+/** Preserve filesystem failures across the runner RPC without sending exception text. */
+async function workspaceMetadata<T>(read: () => Promise<T>, signal: AbortSignal): Promise<T> {
+  try {
+    return await read();
+  } catch (error) {
+    signal.throwIfAborted();
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    if (code === "ENOENT") throw new ExecError("file_not_found");
+    if (code === "ENOTDIR") throw new ExecError("file_not_directory");
+    if (code === "EACCES" || code === "EPERM") throw new ExecError("file_access_denied");
+    throw error;
+  }
+}
 
 /** The paired brain can authorize project roots, never this runner's credentials or owner files. */
 export function runnerExecution(
@@ -248,16 +263,20 @@ export function runnerExecution(
       });
     },
     async inspectPath(input) {
-      if (!local.inspectPath)
-        throw new RpcError(RpcErrorCodes.unsupported, "workspace_files_unsupported");
-      await guard(input);
-      return local.inspectPath(input);
+      const inspect = local.inspectPath;
+      if (!inspect) throw new RpcError(RpcErrorCodes.unsupported, "workspace_files_unsupported");
+      return workspaceMetadata(async () => {
+        await guard(input);
+        return inspect(input);
+      }, input.signal);
     },
     async listEntries(input) {
-      if (!local.listEntries)
-        throw new RpcError(RpcErrorCodes.unsupported, "workspace_files_unsupported");
-      await guard(input);
-      return local.listEntries(input);
+      const list = local.listEntries;
+      if (!list) throw new RpcError(RpcErrorCodes.unsupported, "workspace_files_unsupported");
+      return workspaceMetadata(async () => {
+        await guard(input);
+        return list(input);
+      }, input.signal);
     },
     async listDir(input) {
       const expectedPath = await guard(input);

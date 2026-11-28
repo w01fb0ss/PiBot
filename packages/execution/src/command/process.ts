@@ -4,6 +4,7 @@ import { StringDecoder } from "node:string_decoder";
 import { z } from "zod";
 import { stallTolerantTimeout, withDeadline } from "../core/deadline.ts";
 import { ExecError, type ExecRedactor } from "../core/types.ts";
+import { type IsolationProbeStage, IsolationProbeStageSchema } from "../sandbox/isolation-probe.ts";
 import {
   MAX_REPORTED_VIOLATIONS,
   MAX_VIOLATION_CHARS,
@@ -32,6 +33,7 @@ export class ProcessCleanupError extends ExecError {
     readonly record:
       | { group: number; processes: { pid: number; started: string }[]; spawnedAt: number }
       | undefined,
+    readonly cleanup?: "unconfirmed" | "unverified",
   ) {
     super("command_failed", "cleanup_failed");
   }
@@ -121,9 +123,16 @@ export async function executeProcess(options: {
   log: Writable;
   redactor: ExecRedactor;
   onOutput?: (text: string) => void;
+  onStderr?: (text: string) => void;
   beforeSpawn?(): void;
   onProcess?(control: ProcessControl): void;
-  host?: { payload: string; prepared(): Promise<void>; dispatch?(): void };
+  onExit?(code: number | null): void;
+  host?: {
+    payload: string;
+    prepared(record: ProcessControl["record"] | undefined): Promise<void>;
+    dispatch?(): void;
+    onProbeStage?(stage: IsolationProbeStage): void;
+  };
 }) {
   options.signal.throwIfAborted();
   options.beforeSpawn?.();
@@ -146,7 +155,15 @@ export async function executeProcess(options: {
   let startupTimer: ReturnType<typeof setTimeout> | undefined;
   let preparing: Promise<void> | undefined;
   let exitCode: number | null = null;
+  let commandExited = false;
+  const recordExit = (code: number | null) => {
+    if (commandExited) return;
+    commandExited = true;
+    exitCode = code;
+    options.onExit?.(code);
+  };
   let killTask: Promise<void> | undefined;
+  let windowsTreeDrained = false;
   let forceDrain: ReturnType<typeof stallTolerantTimeout> | undefined;
   let finishWait: (() => void) | undefined;
   let rootClosed = false;
@@ -155,7 +172,7 @@ export async function executeProcess(options: {
     finishWait = resolve;
     child.once("close", (code) => {
       rootClosed = true;
-      exitCode = code;
+      recordExit(options.host && !hostReady && options.signal.aborted ? null : code);
       resolve();
     });
   });
@@ -170,7 +187,7 @@ export async function executeProcess(options: {
           // retryable monitor fault (found in review).
           const late = rootClosed || exitCode !== null || killTask !== undefined;
           processFailure ??= late
-            ? cleanupFailed()
+            ? cleanupFailed("unverified")
             : error instanceof ExecError
               ? error
               : new ExecError("command_failed", "process_monitor_failed");
@@ -180,11 +197,12 @@ export async function executeProcess(options: {
         spawnedAt,
       )
     : undefined;
-  const cleanupFailed = () =>
+  const cleanupFailed = (reason?: ProcessCleanupError["cleanup"]) =>
     new ProcessCleanupError(
       child.pid
         ? { group: child.pid, processes: tree?.record().processes ?? [], spawnedAt }
         : undefined,
+      options.platform === "win32" ? (reason ?? "unconfirmed") : undefined,
     );
   const terminate = () => {
     if (killTask) return;
@@ -203,7 +221,9 @@ export async function executeProcess(options: {
       (async () => {
         if (options.platform === "win32") {
           if (!tree) throw new ExecError("command_failed", "process_kill_failed");
-          return windowsTree(tree, monitorEnv, deadlineSignal);
+          await windowsTree(tree, monitorEnv, deadlineSignal);
+          windowsTreeDrained = true;
+          return;
         }
         signalGroup(child, "SIGTERM");
         const deadline = performance.now() + 5000;
@@ -260,13 +280,19 @@ export async function executeProcess(options: {
         const line = buffer.slice(0, end);
         buffer = buffer.slice(end + 1);
         if (line.length > limit()) return failHost();
-        if (line.startsWith("violations ") && hostReady && !hostViolations) {
+        if (/^exited (?:null|[0-9]{1,3})$/.test(line) && hostReady && !commandExited) {
+          recordExit(line === "exited null" ? null : Number(line.slice(7)));
+        } else if (line.startsWith("violations ") && hostReady && !hostViolations) {
           hostViolations = parseHostViolations(line.slice(11));
           if (!hostViolations) return failHost();
+        } else if (line.startsWith("probe ") && host.onProbeStage && !hostReady) {
+          const stage = IsolationProbeStageSchema.safeParse(line.slice(6));
+          if (!stage.success) return failHost();
+          host.onProbeStage(stage.data);
         } else if (line === "prepared" && !hostPrepared && !hostReady) {
           hostPrepared = true;
           preparing = host
-            .prepared()
+            .prepared(tree?.record)
             .then(() => {
               options.signal.throwIfAborted();
               if (failed || rootClosed) throw new ExecError("isolation_unavailable");
@@ -277,6 +303,7 @@ export async function executeProcess(options: {
             .catch(failHost);
         } else if (line === "ready" && hostPrepared && !hostReady) {
           hostReady = true;
+          host.onProbeStage?.("run_sandbox");
           publishControl();
           clearTimeout(startupTimer);
         } else return failHost();
@@ -304,7 +331,7 @@ export async function executeProcess(options: {
           record: tree.record,
           output: () => output.snapshot(),
           lines: () => output.progress.lines,
-          running: () => !rootClosed && !failed && !killTask,
+          running: () => !commandExited && !rootClosed && !failed && !killTask,
           drained: () => drained,
         });
       })
@@ -320,7 +347,8 @@ export async function executeProcess(options: {
   for (const source of [child.stdout, child.stderr]) {
     if (!source) continue;
     const decoder = new StringDecoder("utf8");
-    const channel = output.channel(options.redactor, source === child.stderr);
+    const stderr = source === child.stderr;
+    const channel = output.channel(options.redactor, stderr, stderr ? options.onStderr : undefined);
     let finished = false;
     const flush = () => {
       if (finished) return;
@@ -354,7 +382,8 @@ export async function executeProcess(options: {
   });
   // exit precedes close: orphaned pipe owners cannot prevent cleanup from starting.
   child.once("exit", (code) => {
-    exitCode = code;
+    // For a hosted command, the status pipe can still contain the shell's earlier exit.
+    if (!options.host) recordExit(code);
     terminate();
   });
   options.signal.addEventListener("abort", terminate, { once: true });
@@ -374,14 +403,15 @@ export async function executeProcess(options: {
     // A failed snapshot here is the same unconfirmed state: the command may already have run, so
     // it must not surface as the transient monitor fault the model is told to retry (found in
     // review).
-    const leftovers = tree
-      ? await tree.members(true).then(
-          (members) => members.length,
-          () => {
-            throw cleanupFailed();
-          },
-        )
-      : 0;
+    const leftovers =
+      tree && !windowsTreeDrained
+        ? await tree.members(true).then(
+            (members) => members.length,
+            () => {
+              throw cleanupFailed("unverified");
+            },
+          )
+        : 0;
     if (!rootClosed || leftovers) throw cleanupFailed();
     drained = true;
     for (const flush of flushChannels) flush();

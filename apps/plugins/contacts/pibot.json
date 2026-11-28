@@ -19,12 +19,12 @@
         "id": "system",
         "auth": "system",
         "capability": {
-          "zh": "macOS 系统框架 / Windows 经典 Outlook；写入需确认。",
-          "en": "macOS system frameworks / Windows classic Outlook; writes require confirmation."
+          "zh": "连接本机通讯录（macOS 通讯录或 Windows 经典版 Outlook）；修改联系人前会请你确认。",
+          "en": "Connects to your local contacts (macOS Contacts or Windows classic Outlook); asks before making changes."
         },
         "help": {
-          "zh": "连接时会检查系统权限。Windows 需要经典 Outlook；新版 Outlook 不支持 COM。Linux EDS 驱动暂不可用。",
-          "en": "Connecting checks system access. Windows requires classic Outlook; new Outlook has no COM support. Linux EDS driver is currently unavailable."
+          "zh": "连接时会请求访问本机通讯录的权限。Windows 上仅支持经典版 Outlook（暂不支持新版 Outlook）；Linux 暂不支持本机通讯录。",
+          "en": "Connecting requests access to your local contacts. On Windows, classic Outlook is required (new Outlook isn't supported yet); local contacts aren't available on Linux yet."
         },
         "documentationUrl": "https://developer.apple.com/documentation/contacts"
       }
@@ -82,12 +82,12 @@
     },
     "toolDescriptions": {
       "list_contacts": {
-        "zh": "分页列出本机联系人姓名，按 nextCursor 继续；问数量用 count_contacts",
-        "en": "List local contact names with bounded pagination; follow nextCursor for more. For counts use count_contacts"
+        "zh": "分批查看本机联系人列表",
+        "en": "Browse your local contacts in pages"
       },
       "search_contacts": {
-        "zh": "按姓名、电话数字、邮箱或公司搜索，分页返回；失败或无结果时说明下一步，不改用操作电脑点通讯录",
-        "en": "Search contacts by name, phone digits, email or company, with bounded pagination; explain failures or empty results without clicking Contacts"
+        "zh": "按姓名、电话、邮箱或公司查找本机联系人",
+        "en": "Search local contacts by name, phone number, email, or company"
       },
       "create_contact": {
         "zh": "创建本机联系人",
@@ -102,8 +102,8 @@
         "en": "Delete one contact; disabled by default"
       },
       "count_contacts": {
-        "zh": "只统计本机联系人数量，不返回姓名、电话或邮箱；问数量时使用此工具",
-        "en": "Count local contacts without returning names, phones or emails; use for quantity questions"
+        "zh": "统计本机联系人总数，不读取具体联系方式",
+        "en": "Count how many local contacts you have without reading personal details"
       }
     }
   }

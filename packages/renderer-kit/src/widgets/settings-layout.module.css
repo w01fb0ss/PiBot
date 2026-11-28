@@ -57,7 +57,7 @@
 }
 .text {
   display: flex;
-  flex: 1 1 240px;
+  flex: 1 1 var(--settings-row-text-basis, 240px);
   flex-direction: column;
   gap: 1px;
   min-width: 0;

@@ -43,6 +43,8 @@ export type SkillExtrasSlot = (controls: {
   groupId?: string;
   botId: string;
   name: string;
+  prepareRuntime?: boolean;
+  runtime?: "python" | "node";
 }) => ReactNode;
 
 export function WriteSkillPanel({

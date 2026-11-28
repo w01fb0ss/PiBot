@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@pibot/videos-contract": "workspace:0.0.0",
     "@pibot/plugins-contract": "workspace:0.0.0",
     "@pibot/routines-contract": "workspace:0.0.0",
     "@pibot/models-contract": "workspace:0.0.0",

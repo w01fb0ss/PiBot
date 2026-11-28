@@ -7,10 +7,12 @@ export const NATIVE_HOST_NAME = "com.pibot.browser";
 export const BROWSERS = ["chrome", "edge", "brave", "chromium", "firefox"] as const;
 /** From the manifest key in apps/browser-extension (sha256 of the key, a–p). */
 /**
- * The Chrome Web Store item (manifest `key` = the store's public key, so a locally loaded build
- * has the same id), then the development id builds carried before the listing (2026-11-19).
+ * The Chrome Web Store item id first. The store assigned its own id, so it differs from the id of
+ * a locally loaded build (derived from the manifest `key`), which comes next, followed by the
+ * development id builds carried before the listing (2026-11-19).
  */
 export const CHROME_EXTENSION_IDS = [
+  "pnjdgninncjgoedhbaiollbhkhfmlngl",
   "jfaelafpdicbnlnbngicngehehafpmbk",
   "epolfpffabplnhnkpjlckibfckdfeeib",
 ] as const;
@@ -94,14 +96,16 @@ export async function registerNativeManifest(options: {
   const path = nativeManifestPath(options.platform, options.home, options.browser);
   const content = `${JSON.stringify(nativeManifest(options.browser, options.launcher), null, 2)}\n`;
   const current = await readFile(path, "utf8").catch(() => undefined);
-  if (current === content) return false;
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${process.pid}.tmp`;
-  await writeFile(temporary, content, { mode: 0o600 });
-  await rename(temporary, path);
+  if (current !== content) {
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+    const temporary = `${path}.${process.pid}.tmp`;
+    await writeFile(temporary, content, { mode: 0o600 });
+    await rename(temporary, path);
+  }
+  // Retry the registry write even if a previous attempt already wrote the file.
   if (options.platform === "win32")
     await registry("add", registryPath(options.browser), ["/ve", "/t", "REG_SZ", "/d", path, "/f"]);
-  return true;
+  return current !== content;
 }
 
 /** The launcher an existing manifest starts, if it is ours and readable. */

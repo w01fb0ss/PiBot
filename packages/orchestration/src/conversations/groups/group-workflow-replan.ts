@@ -137,7 +137,10 @@ export class GroupWorkflowReplanner {
     const bot = new BotsRepo(this.service.deps.db).get(record.coordinatorBotId);
     if (!bot || bot.archivedAt) return this.progress.stop(record, "coordinator_unavailable");
     this.service.deps.chat.queue.capacity([bot.id]);
-    await this.service.model(bot.id, signal);
+    await this.service.model(bot.id, signal, undefined, {
+      groupId: record.groupId,
+      conversationId: group.conversationId,
+    });
     signal.throwIfAborted();
     const facts = this.repo.steps(record.id).map((step) => ({
       id: step.stepId,

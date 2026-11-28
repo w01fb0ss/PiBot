@@ -217,6 +217,18 @@ export class ModelSettings {
       signal?.throwIfAborted();
       const latest = bots.get(botId);
       if (!latest || latest.archivedAt) throw new RpcError(-32602, "Unknown active Bot");
+      const video = patch.defaultVideoModel;
+      if (
+        video &&
+        !providers
+          .videoProviders()
+          .some(
+            (provider) =>
+              provider.id === video.provider &&
+              provider.videoModels.some((model) => model.id === video.id),
+          )
+      )
+        throw new RpcError(-32602, "video_model_unavailable");
       // Compare after queued model lookups, immediately before the synchronous write.
       // A preview in another window must not overwrite newer custom norms.
       if (expectedNorms !== undefined) {

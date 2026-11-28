@@ -1,5 +1,7 @@
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { Logger } from "@pibot/observability";
+import { SKILL_DROP_CHANNEL, SkillDropPathsSchema } from "@pibot/protocol-base/desktop-bridge";
 import { app, BrowserWindow, ipcMain, nativeTheme, shell } from "electron";
 import { pickStartupLabels } from "../../shared/startup-labels.ts";
 import { STARTUP_SNAPSHOT_CHANNEL } from "../../shared/startup-snapshot.ts";
@@ -77,6 +79,29 @@ export function createWindow(options: {
     hasOverlay = false;
     window = new BrowserWindow(base);
   }
+  // Keep the native paths in the host. A renderer can redeem only a fresh, one-use drop ID.
+  const skillDrops = new Map<string, { paths: string[]; expires: number }>();
+  ipcMain.handle(SKILL_DROP_CHANNEL, (event, value: unknown) => {
+    if (
+      event.sender !== window.webContents ||
+      event.senderFrame !== window.webContents.mainFrame ||
+      options.isQuitting()
+    )
+      return null;
+    const paths = SkillDropPathsSchema.safeParse(value);
+    if (!paths.success) return null;
+    const now = Date.now();
+    for (const [id, drop] of skillDrops) if (drop.expires <= now) skillDrops.delete(id);
+    if (skillDrops.size >= 8) return null;
+    const id = randomUUID();
+    skillDrops.set(id, { paths: paths.data, expires: now + 30_000 });
+    return id;
+  });
+  const takeSkillDrop = ({ dropId }: { dropId: string }) => {
+    const drop = skillDrops.get(dropId);
+    skillDrops.delete(dropId);
+    return drop && drop.expires > Date.now() ? drop.paths : null;
+  };
   let cacheRequests = 0;
   let timingCount = 0;
   let firstScreen = false;
@@ -185,11 +210,6 @@ export function createWindow(options: {
     );
   };
   ipcMain.on("pibot:startup-timing", requestTiming);
-  window.once("closed", () => {
-    ipcMain.removeHandler(STARTUP_SNAPSHOT_CHANNEL);
-    ipcMain.removeHandler(SYSTEM_PROXY_CHANNEL);
-    ipcMain.off("pibot:startup-timing", requestTiming);
-  });
   const firstScreenReady = (event: Electron.IpcMainEvent) => {
     if (
       firstScreen ||
@@ -213,7 +233,6 @@ export function createWindow(options: {
     );
   };
   ipcMain.on("pibot:first-screen-ready", firstScreenReady);
-  window.once("closed", () => ipcMain.off("pibot:first-screen-ready", firstScreenReady));
   let timer: ReturnType<typeof setTimeout> | undefined;
   const save = () => options.saveBounds(window.getNormalBounds());
   const scheduleSave = () => {
@@ -243,10 +262,6 @@ export function createWindow(options: {
     }
   };
   nativeTheme.on("updated", updateTheme);
-  window.on("closed", () => {
-    clearTimeout(timer);
-    nativeTheme.off("updated", updateTheme);
-  });
   // Local UI is the only navigation target. window.open / target=_blank with http(s) goes to the
   // system browser after the same validation as host.openExternal; everything else is dropped.
   window.webContents.setWindowOpenHandler(({ url }) => {
@@ -281,7 +296,17 @@ export function createWindow(options: {
       if (!window.isDestroyed() && !options.isQuitting()) window.webContents.reload();
     }, 500);
   });
-  window.on("closed", () => clearTimeout(reloadTimer));
+  window.once("closed", () => {
+    ipcMain.removeHandler(STARTUP_SNAPSHOT_CHANNEL);
+    ipcMain.removeHandler(SYSTEM_PROXY_CHANNEL);
+    ipcMain.removeHandler(SKILL_DROP_CHANNEL);
+    skillDrops.clear();
+    ipcMain.off("pibot:startup-timing", requestTiming);
+    ipcMain.off("pibot:first-screen-ready", firstScreenReady);
+    nativeTheme.off("updated", updateTheme);
+    clearTimeout(timer);
+    clearTimeout(reloadTimer);
+  });
   window.once("ready-to-show", () => {
     if (!window.isDestroyed() && !options.isQuitting()) {
       window.show();
@@ -294,7 +319,7 @@ export function createWindow(options: {
       );
     }
   });
-  return window;
+  return { window, takeSkillDrop };
 }
 
 /**

@@ -5,6 +5,7 @@
  */
 
 // One canonical file identity encoding for every recorder and checker (execution core/file-identity).
+export { canonicalExistingPathSync, samePathSpelling, windowsDisplayPath } from "@pibot/execution";
 export {
   type FileIdentity,
   fileIdentity,
@@ -32,7 +33,11 @@ export type { KernelRegisterRpc } from "./core/business-rpc.ts";
 export { GroupToolError } from "./core/collaboration-tool-error.ts";
 export { activeGroup, visibleGroupMessage } from "./core/group-access.ts";
 export type { CollaborationPort, ToolRunContext } from "./core/local-types.ts";
-export type { GroupOrchestrationPort, OrchestrationFactory } from "./core/orchestration.ts";
+export type {
+  GroupOrchestrationPort,
+  GroupPlanControl,
+  OrchestrationFactory,
+} from "./core/orchestration.ts";
 export { resolvePersonaLanguage } from "./core/personas/language.ts";
 export type { BrainRedactor } from "./core/privacy.ts";
 export { redactValue } from "./core/privacy.ts";
@@ -48,6 +53,10 @@ export { GroupFoldersService } from "./resources/groups/group-folders.ts";
 export { GroupTopicFolderChoices } from "./resources/groups/group-topic-folder-choices.ts";
 export { groupWorkplace } from "./resources/groups/group-workplace.ts";
 export { skillContract } from "./resources/packages/skill-format.ts";
+export {
+  type DispatchTopicOptions,
+  verifyDispatchFolder,
+} from "./resources/workplaces/dispatch-folder.ts";
 export {
   resolveRunWorkplace,
   topicWorkplaceSnapshot,
@@ -83,6 +92,12 @@ export {
 export { resultPrompt } from "./runtime/continuation/continuation-prompts.ts";
 export { attachmentModelForBot, validateImageInputs } from "./runtime/media/image-preflight.ts";
 export type { OfficePort } from "./runtime/media/office-port.ts";
+export {
+  type RunModelScope,
+  runModelOverride,
+  validateModelOverride,
+  withModelOverride,
+} from "./runtime/models/run-model.ts";
 export { canAskUser } from "./runtime/questions/user-question-tools.ts";
 export { BudgetExceededError, BudgetService } from "./runtime/queue/budget-service.ts";
 export { resumeRun } from "./runtime/queue/resume-service.ts";
@@ -122,6 +137,7 @@ export {
 export { pipelineWorkflow } from "./runtime/workflows/workflow-pipeline.ts";
 export {
   checkWorkflowInputs,
+  omitUnavailableWorkflowInput,
   prepareWorkflow,
   type WorkflowRun,
   type WorkflowSkill,

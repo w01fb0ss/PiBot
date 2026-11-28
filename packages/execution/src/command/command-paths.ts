@@ -3,6 +3,7 @@ import { statSync } from "node:fs";
 import { posix, win32 } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { ExecError } from "../core/types.ts";
+import { readWindowsCommandPath } from "./command-paths-windows.ts";
 
 /** Importing paths grants neither writes nor an exception to sandbox read/execute rules. */
 export function commandPaths(platform: NodeJS.Platform, value: string): string[] {
@@ -30,11 +31,19 @@ export async function discoverCommandPaths(options: {
   platform: NodeJS.Platform;
   env: Readonly<NodeJS.ProcessEnv>;
   home: string;
-  source: "process" | "terminal";
+  source: "process" | "terminal" | "windows";
   signal: AbortSignal;
-}): Promise<{ paths: string[]; source: "process" | "terminal"; shell?: string }> {
+}): Promise<{ paths: string[]; source: "process" | "terminal" | "windows"; shell?: string }> {
   const { platform, env, source, signal } = options;
   signal.throwIfAborted();
+  if (source === "windows") {
+    if (platform !== "win32") throw new ExecError("command_path_discovery_failed");
+    try {
+      return { paths: commandPaths(platform, await readWindowsCommandPath(env, signal)), source };
+    } catch {
+      throw new ExecError("command_path_discovery_failed");
+    }
+  }
   if (source === "process" || platform === "win32") {
     const value = Object.entries(env).find(([key]) => key.toUpperCase() === "PATH")?.[1] ?? "";
     return { paths: commandPaths(platform, value), source: "process" };

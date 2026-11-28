@@ -32,6 +32,8 @@ export const ConversationSchema = z.object({
   main: z.boolean().optional(),
   /** Pinned in the desktop sidebar (`sidebar.list` pinnedAt). */
   pinned: z.boolean().optional(),
+  /** Position in the desktop sidebar response. Older caches only have the pin flag. */
+  pinOrder: z.number().int().nonnegative().optional(),
   /** Unread on the computer (`sidebar.list`), stored so a cold start shows the marks too. */
   unread: z.boolean().optional(),
   /** An external agent Bot; it runs only on the computer (never on the phone's own model). */

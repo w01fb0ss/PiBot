@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { IdSchema } from "../core/ids.ts";
+import { DispatchModelNeedsSchema } from "../providers/dispatch-model.ts";
 
 /**
  * A user message the default Pi sent into another Bot's or group's new topic on the person's
@@ -10,6 +11,7 @@ export const MessageDispatchSchema = z.strictObject({
   /** The sending Pi's display name at the time (already redacted). */
   from: z.string().min(1).max(200),
   dispatchId: IdSchema,
+  modelNeeds: DispatchModelNeedsSchema.optional(),
 });
 export type MessageDispatch = z.infer<typeof MessageDispatchSchema>;
 

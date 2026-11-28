@@ -1,4 +1,5 @@
 import {
+  chatPermissionFailureText,
   interruptedMessage,
   messageBubbleText,
   providerFailureText,
@@ -12,13 +13,15 @@ import {
   answeredOnPhone,
   type Bot,
   backgroundRestartUsage,
+  imageGenerationResults,
   isBackgroundRestart,
   type Message,
   messageDispatch,
   messageFailureCode,
   PI_DISPATCH_TOOLS,
+  PI_HEALTH_CHECK_TOOL,
 } from "@pibot/protocol";
-import { BotAvatar, botAvatarLook, useSettings, useT } from "@pibot/renderer-kit";
+import { BotAvatar, botAvatarLook, useNavigation, useSettings, useT } from "@pibot/renderer-kit";
 import { MessageRoutineProposals } from "@pibot/routines/ui";
 import { MessageSkillProposals, TeachTrialReturn } from "@pibot/skills/ui";
 import { Button, Card, Icon } from "@pibot/ui";
@@ -34,6 +37,7 @@ import { RunActivityLine } from "../status/RunActivityLine.tsx";
 import { useBackgroundRun } from "../status/use-background-run.ts";
 import type { ApprovalDecision } from "../tools/ApprovalCard.tsx";
 import { DispatchReceipts } from "../tools/DispatchReceipts.tsx";
+import { HealthReports } from "../tools/HealthReports.tsx";
 import type { ActivityState } from "../tools/local-activity.ts";
 import { ToolActivity } from "../tools/ToolActivity.tsx";
 import { MessageSelectionToggle, MessageTranslation } from "./MessageActionParts.tsx";
@@ -42,13 +46,16 @@ import { MessageAttachmentOverflow } from "./MessageAttachmentOverflow.tsx";
 import { MessageAttachments } from "./MessageAttachments.tsx";
 import { MessageForwardCard } from "./MessageForwardCard.tsx";
 import { MessageImageDelivery } from "./MessageImageDelivery.tsx";
+import { MessageImageResults } from "./MessageImageResults.tsx";
 import { QuotedMessage, useMessageReplyMenu } from "./MessageReply.tsx";
 import { mentionText } from "./markdown-mentions.tsx";
 import { ReplyContent } from "./ReplyContent.tsx";
+import { VideoJobCard } from "./VideoJobCard.tsx";
 
 interface ChatMessageProps {
   message: Message;
   preview?: boolean;
+  allowReadOnlyAttachmentPreview?: boolean;
   imageActor?: { botId: string; conversationId: string; groupId?: string };
   name: string;
   busy: boolean;
@@ -63,6 +70,7 @@ interface ChatMessageProps {
   bot?: Bot;
   activity?: ActivityState;
   approvalContext?: { botName: string; groupName: string };
+  inlineApprovals?: boolean;
   toolPaths?: ToolPaths;
   refreshApprovals?: () => Promise<void>;
   decideApproval?: ApprovalDecision;
@@ -97,6 +105,7 @@ interface ChatMessageProps {
 export const ChatMessage = memo(function ChatMessage({
   message,
   preview = false,
+  allowReadOnlyAttachmentPreview = false,
   imageActor,
   name,
   busy,
@@ -110,6 +119,7 @@ export const ChatMessage = memo(function ChatMessage({
   bot,
   activity,
   approvalContext,
+  inlineApprovals,
   toolPaths,
   refreshApprovals,
   decideApproval,
@@ -126,6 +136,7 @@ export const ChatMessage = memo(function ChatMessage({
   turn,
 }: ChatMessageProps) {
   const t = useT();
+  const navigation = useNavigation();
   const replyMenu = useMessageReplyMenu(message, name, preview, turn?.origin);
   const messageActions = useMessageActions();
   const [stoppedReceiptMessage, setStoppedReceiptMessage] = useState<string | null>(null);
@@ -237,6 +248,7 @@ export const ChatMessage = memo(function ChatMessage({
             attachments={message.attachments}
             messageId={message.id}
             readOnly={preview}
+            allowReadOnlyPreview={allowReadOnlyAttachmentPreview}
           />
           {userFooter}
           {!preview && <MessageTranslation message={message} />}
@@ -249,7 +261,9 @@ export const ChatMessage = memo(function ChatMessage({
     typeof message.usage === "object" &&
     !Array.isArray(message.usage) &&
     message.usage.imageGeneration === true;
+  const imageResults = imageGenerationResults(message.usage);
   const failureCode = messageFailureCode(message);
+  const permissionFailure = failureCode === "permission_denied";
   const providerFailure = failureCode && providerFailureText(message, t);
   const failed = !!failureCode;
   const interrupted = interruptedMessage(message);
@@ -280,6 +294,7 @@ export const ChatMessage = memo(function ChatMessage({
         live={activity.tools}
         approvals={activity.approvals}
         approvalContext={approvalContext}
+        inlineApprovals={inlineApprovals}
         refresh={refreshApprovals}
         decide={decideApproval}
         focusToolCallId={focusToolCallId}
@@ -331,7 +346,7 @@ export const ChatMessage = memo(function ChatMessage({
       </span>
       <div className={styles.reply}>
         {!stepsAfterText && steps}
-        {message.content.trim() && (
+        {!imageResults && message.content.trim() && (
           <ReplyContent
             message={message}
             mentionNames={mentionNames}
@@ -343,6 +358,7 @@ export const ChatMessage = memo(function ChatMessage({
           />
         )}
         {stepsAfterText && steps}
+        <VideoJobCard message={message} readOnly={!!preview} />
         {!message.content.trim() && streaming && (
           // Before the first words arrive, the speaker shows a typing pill in its colour.
           <span
@@ -399,15 +415,25 @@ export const ChatMessage = memo(function ChatMessage({
                 tool.messageId === message.id &&
                 (PI_DISPATCH_TOOLS as readonly string[]).includes(tool.tool),
             )) && <DispatchReceipts messageId={message.id} />}
+        {!preview &&
+          (message.tools?.some((tool) => tool.tool === PI_HEALTH_CHECK_TOOL) ||
+            activity?.tools.some(
+              (tool) => tool.messageId === message.id && tool.tool === PI_HEALTH_CHECK_TOOL,
+            )) && <HealthReports messageId={message.id} />}
         {!preview && runId && (message.botId ?? botId) && (
           <TeachTrialReturn botId={(message.botId ?? botId) as string} runId={runId} />
         )}
-        {!turnFiles && (
-          <MessageAttachments
-            attachments={message.attachments}
-            messageId={message.id}
-            readOnly={preview}
-          />
+        {imageResults ? (
+          <MessageImageResults message={message} results={imageResults} />
+        ) : (
+          !turnFiles && (
+            <MessageAttachments
+              attachments={message.attachments}
+              messageId={message.id}
+              readOnly={preview}
+              allowReadOnlyPreview={allowReadOnlyAttachmentPreview}
+            />
+          )
         )}
         {message.role === "assistant" && (
           <MessageAttachmentOverflow message={message} readOnly={preview} />
@@ -428,14 +454,16 @@ export const ChatMessage = memo(function ChatMessage({
             receipt(false)
           ) : endCard ? (
             <div className={styles.turnEnd}>
-              {turn?.attachments?.map((part) => (
-                <MessageAttachments
-                  key={part.messageId}
-                  attachments={part.attachments}
-                  messageId={part.messageId}
-                  readOnly={false}
-                />
-              ))}
+              {turn?.attachments?.map((part) =>
+                part.messageId === message.id && imageResults ? null : (
+                  <MessageAttachments
+                    key={part.messageId}
+                    attachments={part.attachments}
+                    messageId={part.messageId}
+                    readOnly={false}
+                  />
+                ),
+              )}
               <TurnCard
                 bare
                 message={turn?.tools ? { ...receiptMessage, tools: turn.tools } : receiptMessage}
@@ -465,22 +493,23 @@ export const ChatMessage = memo(function ChatMessage({
         {failed && !background.pending && (
           <Card className={styles.error} role="alert">
             <p>
-              {t(
-                // "permission_denied" also names an image-provider refusal; for an external
-                // agent it is Pi Bot's launch policy (the Bot may not run commands or edit files).
-                agentFacts && failureCode === "permission_denied"
-                  ? "externalAgents.errors.launchDenied"
-                  : `errors.${failureCode ?? "internal"}`,
-              )}
+              {permissionFailure
+                ? chatPermissionFailureText(message.usage, !!agentFacts, t)
+                : t(`errors.${failureCode ?? "internal"}`)}
             </p>
-            {providerFailure && <p className={styles.notice}>{providerFailure}</p>}
-            {agentFacts?.errorDetail && (
-              <p className={styles.notice}>
-                {t("externalAgents.errors.agentSaid", {
-                  name: agentFacts.name,
-                  detail: agentFacts.errorDetail,
-                })}
-              </p>
+            {(providerFailure || agentFacts?.errorDetail) && (
+              <details className={styles.errorDetails}>
+                <summary>{t("chat.technicalDetails")}</summary>
+                {providerFailure && <p className={styles.notice}>{providerFailure}</p>}
+                {agentFacts?.errorDetail && (
+                  <p className={styles.notice}>
+                    {t("externalAgents.errors.agentSaid", {
+                      name: agentFacts.name,
+                      detail: agentFacts.errorDetail,
+                    })}
+                  </p>
+                )}
+              </details>
             )}
             {background.commands
               .filter((row) => row.status === "running")
@@ -488,6 +517,14 @@ export const ChatMessage = memo(function ChatMessage({
                 <BackgroundCommandLine key={row.id} row={row} />
               ))}
             <div className={styles.actions}>
+              {!preview && permissionFailure && !agentFacts && !imageResults && (
+                <Button
+                  variant="ghost"
+                  onClick={() => navigation.openAudit(message.botId ?? botId, imageActor?.groupId)}
+                >
+                  {t("media.multi.actionLogs")}
+                </Button>
+              )}
               {!preview && (
                 <ModelRecovery message={{ ...message, errorCode: failureCode ?? null }} bot={bot} />
               )}
@@ -528,9 +565,12 @@ export const ChatMessage = memo(function ChatMessage({
                 </Button>
               )}
             </div>
-            {failureCode !== "output_limit" && retry === undefined && !retryAttachments?.length && (
-              <span className={styles.notice}>{t("chat.retryNeedsHistory")}</span>
-            )}
+            {!heading &&
+              failureCode !== "output_limit" &&
+              retry === undefined &&
+              !retryAttachments?.length && (
+                <span className={styles.notice}>{t("chat.retryNeedsHistory")}</span>
+              )}
           </Card>
         )}
         {message.status === "aborted" &&

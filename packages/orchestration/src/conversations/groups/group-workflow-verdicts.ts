@@ -6,6 +6,7 @@ import type {
 } from "@pibot/protocol-base";
 import { RpcError } from "@pibot/protocol-base";
 import type { GroupWorkflowStepRecord } from "@pibot/storage";
+import { groupPlanText } from "@pibot/teams-contract/i18n";
 import type { WorkflowProgress } from "./group-workflow-progress.ts";
 
 type Step = GroupPlan["steps"][number];
@@ -28,20 +29,31 @@ export function verdictResolution(
   }
 }
 
-export function verdictStepLabel(progress: WorkflowProgress, stepId: string, zh: boolean) {
+export function verdictStepStatus(
+  progress: WorkflowProgress,
+  stepId: string,
+  language: "zh" | "en",
+  title: (stepId: string) => string,
+) {
   const resolution = verdictResolution(progress, stepId);
   if (resolution?.kind === "skipped")
-    return zh ? `已由你跳过（${resolution.stepId}）` : `Skipped by you (${resolution.stepId})`;
-  if (resolution?.kind === "accepted")
-    return zh
-      ? `不通过，已由你按现状接受（${resolution.stepId}）`
-      : `FAIL, accepted as is by you (${resolution.stepId})`;
+    return ["✅", groupPlanText(language, "group.plan.stepLine.skippedRecheck")] as const;
   if (resolution?.kind === "repaired")
-    return zh
-      ? `已修复，复验通过（复验：${resolution.stepId}）`
-      : `Fixed, recheck passed (${resolution.stepId})`;
+    return [
+      "✅",
+      groupPlanText(language, "group.plan.stepLine.repaired", { step: title(resolution.stepId) }),
+    ] as const;
   const report = progress.verdicts[stepId];
-  return report ? verdictLabel(report, zh) : undefined;
+  if (report?.verdict !== "fail") return undefined;
+  const failed = groupPlanText(language, "group.plan.stepLine.failedCount", {
+    count: report.failures.length,
+  });
+  return [
+    "❌",
+    resolution?.kind === "accepted"
+      ? `${failed} · ${groupPlanText(language, "group.plan.stepLine.accepted")}`
+      : failed,
+  ] as const;
 }
 
 export function verdictRepairReady(
@@ -225,10 +237,14 @@ export function verdictLabel(report: ReportVerdict, zh: boolean) {
       : `FAIL (${report.failures.length} items)`;
 }
 
-export function verdictFailureLines(progress: WorkflowProgress, zh: boolean) {
+export function verdictFailureLines(
+  progress: WorkflowProgress,
+  zh: boolean,
+  title: (stepId: string) => string,
+) {
   return unresolvedVerdicts(progress).map(
     ([id, report]) =>
-      `${id}: ${verdictLabel(report, zh)}${report.failures.length ? ` — ${report.failures.join("; ")}` : ""}`,
+      `${title(id)}: ${verdictLabel(report, zh)}${report.failures.length ? ` — ${report.failures.join("; ")}` : ""}`,
   );
 }
 

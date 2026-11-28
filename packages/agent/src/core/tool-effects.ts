@@ -30,6 +30,9 @@ const TOOL_EFFECTS: Readonly<Record<string, ToolEffectClass>> = {
   web_fetch: "read",
   web_search: "read",
   read_messages: "read",
+  // A conflict instructs the Bot to reread the same ref for a fresh version.
+  knowledge_read: "read",
+  knowledge_search: "read",
   code_navigate: "read",
   code_outline: "read",
   code_symbols: "read",

@@ -6,6 +6,7 @@ import {
 } from "@pibot/plugins-contract/full";
 import { connectionConfirmation } from "@pibot/policy";
 import type { ConnectorsRepo, PluginsRepo } from "../../store/index.ts";
+import { isManagedNotionRead } from "../../store/notion-tools.ts";
 import type { PluginRegistry } from "../apps/registry.ts";
 
 /** This projection explains state; dispatch still revalidates credentials, policy and versions. */
@@ -20,6 +21,7 @@ export function connectionAvailability(
   target: ConnectionTarget,
   connection: string,
   tool?: string,
+  knowledgeWrite = false,
 ): ConnectionAvailability {
   const app = deps.registry
     .list(deps.platform as NodeJS.Platform)
@@ -83,9 +85,17 @@ export function connectionAvailability(
       ? (deps.connectors.tool(connector.id, connector.catalogVersion, tool) ??
         deps.connectors.toolByCapability(connector.id, connector.catalogVersion, tool))
       : undefined;
+    const writable = row
+      ? deps.connectors.managedKnowledgeWriteAllowed(
+          connector,
+          knowledgeWrite ? row.tool : undefined,
+        )
+      : undefined;
     const readOnly =
       row?.readOnly === true &&
-      (!builtin || deps.registry.toolPolicy(installation.pluginId, row.tool).readOnly);
+      (writable !== undefined
+        ? isManagedNotionRead(row.tool)
+        : !builtin || deps.registry.toolPolicy(installation.pluginId, row.tool).readOnly);
     // A guessed tool name that the connection does not have is not "disabled": saying so made a
     // Bot give up on GitHub instead of looking the real tool up (owner's Mac, 2026-11-01).
     result.reason =
@@ -93,7 +103,9 @@ export function connectionAvailability(
         ? "unknown_tool"
         : tool && !row?.enabled
           ? "tool_disabled"
-          : tool && connectionConfirmation(connector.confirmationMode, !readOnly) === "blocked"
+          : tool &&
+              ((!readOnly && writable === false) ||
+                connectionConfirmation(connector.confirmationMode, !readOnly) === "blocked")
             ? "read_only_mode"
             : "available";
   }

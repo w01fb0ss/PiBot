@@ -65,12 +65,26 @@ export async function executeRunCommand(
       secretEnv[name] = value;
     }
   }
+  const skillSecrets = await runtime.commandSkillSecrets?.(prepared, signal);
+  if (skillSecrets) {
+    if (!isolation.available || args.background || args.docker || args.outsideSandbox || handles)
+      throw new ExecError("invalid_input");
+    for (const [name, value] of Object.entries(skillSecrets.env)) {
+      if (Object.hasOwn(secretEnv, name)) throw new ExecError("invalid_input");
+      secretEnv[name] = value;
+    }
+  }
   // Brain resolves the prepared runtime for this skill scope; nothing here comes from args.
   const skillEnv = await runtime.commandSkillEnvironment?.(prepared);
   runtime.assertDispatch(prepared);
   // Spent here, once: a confirmed outside run (or listed command) gets its one-time permit.
   const outsideSandbox = runtime.outsideSandboxPermit(prepared);
-  if (outsideSandbox && args.background) throw new ExecError("invalid_input");
+  if (
+    skillEnv &&
+    (prepared.docker || (!isolation.available && isolation.reason !== "windows_unisolated"))
+  )
+    throw new ExecError("isolation_unavailable");
+  if (outsideSandbox && (args.background || skillSecrets)) throw new ExecError("invalid_input");
   const allowUnisolated = !isolation.available && runtime.allowsUnisolated(prepared.call.id);
   const commandAudit = {
     ...auditFields,
@@ -100,6 +114,8 @@ export async function executeRunCommand(
   runtime.auditCommand("started", "Command started / 命令开始", commandAudit);
   await runtime.watchCommandRoots(prepared);
   const literal = prepared.result.analysis?.literalCommand;
+  const leading = prepared.result.analysis?.leadingAndCommand;
+  const git = literal ?? leading?.invocation;
   const primary = prepared.boundary?.roots.find((root) => root.id === prepared.boundary?.primaryId);
   const check = await runtime.beginCommandCheck(args.command, prepared, signal);
   // Declared paths are authority only through the approval; a runner must not receive them raw.
@@ -110,13 +126,17 @@ export async function executeRunCommand(
     ...commandArgs
   } = args;
   const managedGit =
+    isolation.available &&
+    !outsideSandbox &&
+    !prepared.docker &&
     primary &&
-    literal &&
-    /^(?:git|.*[/\\]git(?:\.exe)?)$/.test(literal.program) &&
-    literal.args.includes("init");
+    git &&
+    /^(?:git|\/(?:usr\/bin|bin|usr\/local\/bin|opt\/homebrew\/bin)\/git)$/.test(git.program) &&
+    git.args.includes("init");
   // Automatic isolated consent covers a foreground lifetime, never automatic background promotion.
   const foreground =
     !handles &&
+    !skillSecrets &&
     !prepared.docker &&
     !managedGit &&
     !outsideSandbox &&
@@ -137,6 +157,9 @@ export async function executeRunCommand(
     .runCommand({
       ...(foreground ? { promotion: foreground.promotion } : {}),
       ...commandArgs,
+      ...(prepared.result.windowsReadProven && !prepared.docker && prepared.result.command
+        ? { command: prepared.result.command }
+        : {}),
       rootIdentities: prepared.boundary?.roots,
       denyWriteRoots: prepared.boundary?.denyWriteRoots,
       cwd: prepared.cwd,
@@ -144,6 +167,8 @@ export async function executeRunCommand(
       botHome: prepared.home,
       skillGroupId: runtime.commandGroupId(),
       skillPackageIds: runtime.commandSkillPackageIds?.(),
+      // Settings can send a prepared skill command outside after confirmation. Drop its runtime.
+      ...(skillEnv && !outsideSandbox ? { skillEnv } : {}),
       runId: runtime.context.runId,
       toolCallId: prepared.call.id,
       writeRoots: runtime.writeRoots(prepared),
@@ -157,6 +182,7 @@ export async function executeRunCommand(
         : {}),
       ...(localServices ? { localServices } : {}),
       secretEnv,
+      ...(skillSecrets ? { secretOutput: skillSecrets.values } : {}),
       ...(handles
         ? {
             secretOutput: handles.values,
@@ -181,17 +207,22 @@ export async function executeRunCommand(
       ...(prepared.gitEntries?.plan?.remotePlanId
         ? { gitEntryPlanId: prepared.gitEntries.plan.remotePlanId }
         : {}),
+      ...(prepared.result.windowsReadOnly &&
+      (prepared.result.windowsReadProven || prepared.result.reason === "windows_read_only") &&
+      !prepared.docker
+        ? { windowsReadOnly: true as const }
+        : {}),
       signal,
       onOutput: output,
       allowUnisolated,
       ...(outsideSandbox ? { outsideSandbox } : {}),
-      ...(primary &&
-      literal &&
-      /^(?:git|\/(?:usr\/bin|bin|usr\/local\/bin|opt\/homebrew\/bin)\/git)$/.test(literal.program)
+      ...(managedGit
         ? {
             gitInitialization: {
-              program: literal.program,
-              argv: literal.args,
+              program: git.program,
+              argv: git.args,
+              directory: leading?.directory,
+              remainder: leading?.remainder,
               primary,
               assertAuthorized() {
                 if (!runtime.authorizationMatches(prepared))
@@ -217,7 +248,7 @@ export async function executeRunCommand(
     result.exitCode === 0 && !result.timedOut && !result.stopped,
     signal,
   );
-  if (handles && result.truncatedOutput.includes(SECRET_OUTPUT_WITHHELD)) {
+  if ((handles || skillSecrets) && result.truncatedOutput.includes(SECRET_OUTPUT_WITHHELD)) {
     runtime.auditCommand("finished", "Secret output withheld / 秘密输出已扣留", {
       ...commandAudit,
       exitCode: result.exitCode,
@@ -270,6 +301,16 @@ export async function executeRunCommand(
   // A block the sandbox itself reported counts after exit 0 too (`aws … | head` exits 0
   // with "Unable to locate credentials"), so the model is told before it trusts that output.
   const block = !result.stopped && !result.timedOut ? result.sandboxBlock : undefined;
+  if (
+    block &&
+    isolation.available &&
+    !outsideSandbox &&
+    block.items.length === 1 &&
+    block.items[0]?.rule === "proxy_denied"
+  ) {
+    const retried = await runtime.retrySandboxWebsite?.(prepared, block, signal);
+    if (retried) return retried;
+  }
   const offerOutside = block ? runtime.recordSandboxBlock(prepared, block) : false;
   const commandHint = failed
     ? runtime.commandFailureGuidance(
@@ -279,6 +320,8 @@ export async function executeRunCommand(
         offerOutside,
         isolation.available && !outsideSandbox && !prepared.docker,
         network,
+        prepared.result.analysis?.commands,
+        !!outsideSandbox,
       )
     : block
       ? // Only the block: the other failure hints describe output of a command that failed.

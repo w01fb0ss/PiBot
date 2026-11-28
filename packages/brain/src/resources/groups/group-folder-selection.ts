@@ -1,9 +1,10 @@
 import { realpath, stat } from "node:fs/promises";
 import path from "node:path";
-import { fileIdentity } from "@pibot/execution";
+import { fileIdentity, samePathSpelling, windowsPathName } from "@pibot/execution";
 import { containsPath } from "@pibot/policy";
 import { type KernelMethodParams, RpcError } from "@pibot/protocol-base";
 import type { LocalService } from "../../local-service.ts";
+import { assertWritableFolders } from "../workplaces/writable-folders.ts";
 
 type Remote = Pick<KernelMethodParams["groups.topics.pickFolder"], "location" | "path">;
 
@@ -48,6 +49,7 @@ export async function selectGroupFolder(
     return {
       path: canonical.path,
       name: paths.basename(canonical.path) || canonical.path,
+      displayPath: canonical.path,
       location: remote.location,
       device: canonical.device,
       inode: canonical.inode,
@@ -65,9 +67,13 @@ export async function selectGroupFolder(
   const info = await stat(canonical, { bigint: true });
   if (!info.isDirectory() || containsPath(await realpath(dataDir), canonical, platform))
     throw new RpcError(-32602, "Group folder unavailable");
+  const displayPath = platform === "win32" ? windowsPathName(selected).path : canonical;
+  if (!samePathSpelling(displayPath, canonical))
+    await assertWritableFolders(local.deps, [canonical], dataDir, parent);
   parent.throwIfAborted();
   return {
     path: canonical,
+    displayPath,
     name: path.basename(canonical) || canonical,
     location: undefined,
     ...fileIdentity(info),

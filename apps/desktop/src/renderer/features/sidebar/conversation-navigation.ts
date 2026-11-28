@@ -29,7 +29,9 @@ interface Snapshot {
   slow?: boolean;
   error?: TranslationKey;
 }
-type Intent = { key: string } | { message: Pick<Message, "id" | "conversationId" | "botId"> };
+type Intent =
+  | { key: string; focusApproval: boolean }
+  | { message: Pick<Message, "id" | "conversationId" | "botId"> };
 const sourceKey = ({ query, view }: Source) =>
   JSON.stringify([
     query,
@@ -201,9 +203,29 @@ export class ConversationNavigation {
             if (!topicId) draftId = crypto.randomUUID();
           }
         }
+        const approval =
+          kind === "group" && intent.focusApproval
+            ? await peer
+                .call(
+                  "approvals.groupFocus",
+                  { groupId: id },
+                  { signal: AbortSignal.any([signal, AbortSignal.timeout(4_000)]) },
+                )
+                .catch(() => {
+                  // An unavailable focus hint must not prevent the user from opening the group.
+                  signal.throwIfAborted();
+                  return undefined;
+                })
+            : undefined;
         target =
           kind === "group"
-            ? { name: "chat", groupId: id }
+            ? {
+                name: "chat",
+                groupId: id,
+                ...(approval
+                  ? { topicId: approval.topicId, approvalFocus: { id: approval.approvalId } }
+                  : {}),
+              }
             : { name: "chat", botId: id, topicId, draftId };
       }
       signal.throwIfAborted();
@@ -243,8 +265,8 @@ export class ConversationNavigation {
       clearTimeout(slow);
     }
   }
-  open = (key: string) => {
-    void this.perform({ key });
+  open = (key: string, focusApproval = false) => {
+    void this.perform({ key, focusApproval });
   };
   openMessage = (message: Message) => {
     void this.perform({

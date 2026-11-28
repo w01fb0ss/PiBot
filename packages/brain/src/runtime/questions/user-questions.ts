@@ -21,7 +21,7 @@ export function registerUserQuestionRpc(
     "execution.question.answer",
     async (
       { messageId, reply }: KernelMethodParams["execution.question.answer"],
-      { signal, source, phone },
+      { signal, source, phone, phoneDeviceId },
     ) => {
       if (await local.collaboration?.answerPlanLimit?.(messageId, reply, signal))
         return { ok: true as const };
@@ -83,6 +83,7 @@ export function registerUserQuestionRpc(
         };
         assertCurrent();
         const text = `${initial.pause.question.prompt}\n${answer}${option ? `\n${option.description}` : ""}`;
+        const display = { questionAnswerText: answer };
         const continuationSignal = AbortSignal.any([
           signal,
           local.shutdown.signal,
@@ -96,7 +97,7 @@ export function registerUserQuestionRpc(
             },
             signal: continuationSignal,
           };
-          if (!(await groups.answerStepQuestion(sourceId, text, confirmation)))
+          if (!(await groups.answerStepQuestion(sourceId, text, confirmation, display)))
             await groups.send(
               {
                 groupId: initial.conversation.groupId,
@@ -106,6 +107,8 @@ export function registerUserQuestionRpc(
                 text,
               },
               confirmation,
+              undefined,
+              display,
             );
         } else
           await chat.confirmRoutine(
@@ -117,8 +120,12 @@ export function registerUserQuestionRpc(
               assertCurrent();
             },
             continuationSignal,
-            // The person's own answer, from where they gave it (the default Pi's tools follow it).
-            { inputOrigin: source === "acp" ? "acp" : phone ? "phone" : "user" },
+            // The default Pi's tools follow the origin of the person's answer.
+            {
+              ...display,
+              phoneDeviceId,
+              inputOrigin: source === "acp" ? "acp" : phone ? "phone" : "user",
+            },
           );
         local.deps.peer.emit("inbox.changed", {});
         local.deps.peer.emit("execution.question.answered", {

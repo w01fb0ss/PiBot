@@ -9,6 +9,9 @@ import type { GroupService } from "./group-service.ts";
 import { taskBrief } from "./group-task-brief.ts";
 
 export function registerGroupRpc(handle: KernelRegisterRpc, groups: GroupService, runs: RunsRepo) {
+  handle("groups.taskModel.set", ({ taskId, override }, { signal }) =>
+    groups.setTaskModel(taskId, override, signal),
+  );
   const acp = new GroupAcpRuntime(groups);
   const requireAcp = (source?: "acp") => {
     if (source !== "acp") throw new RpcError(-32601, "acp_method_unavailable");
@@ -109,6 +112,7 @@ export function registerGroupRpc(handle: KernelRegisterRpc, groups: GroupService
     get(groupId);
     return groups.cycles.get(groupId);
   });
+  handle("groups.rounds.continue", (params) => groups.continueRounds(params));
   handle("groups.update", async (params) => groups.folders.present(await groups.update(params)));
   handle("groups.addMember", async ({ groupId, botId }) =>
     groups.folders.present(await groups.addMember(groupId, botId)),

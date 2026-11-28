@@ -8,7 +8,7 @@
         "GMAIL_LOGIN_MODE": "${user_config.LOGIN_MODE}",
         "GMAIL_APP_PASSWORD": "${user_config.APP_PASSWORD}"
       },
-      "networkDomains": ["imap.gmail.com", "smtp.gmail.com"]
+      "networkDomains": ["imap.gmail.com:993", "smtp.gmail.com:465"]
     }
   }
 }

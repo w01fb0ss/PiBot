@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import {
+  type ClaudePluginBundle,
+  type ConnectorImportOrigin,
   type ConnectorManifest,
   ConnectorManifestSchema,
   type ConnectorOperation,
@@ -24,6 +26,14 @@ import {
   parseConnector,
   parseInstallation,
 } from "./connector-records.ts";
+import { freeInstalledName, installedManifestNames } from "./discovery.ts";
+import {
+  applyImportSettings,
+  preserveNetworkChoices,
+  readImportSettings,
+  refreshSettingsTemplate,
+  writeNetworkDenials,
+} from "./plugin-settings.ts";
 
 const SECRET_REF_GLOBAL = /\$\{secret:([A-Z][A-Z0-9_]{0,63})\}/g;
 const MAX_INSTALLATION_SECRET_NAMES = 64;
@@ -300,6 +310,7 @@ export class PluginsRepo {
     application = false,
     applicationPlatforms: readonly string[] = [],
     applicationId?: string,
+    template?: ClaudePluginBundle,
   ): void {
     this.db
       .prepare(
@@ -313,8 +324,26 @@ export class PluginsRepo {
           application,
           applicationPlatforms,
           applicationId,
+          ...(template ? { template } : {}),
         }),
       );
+  }
+
+  /** Plain settings and the template that re-evaluates them; undefined when not editable. */
+  importSettings(installationId: string) {
+    return readImportSettings(this.db, installationId);
+  }
+
+  applyImportSettings(input: Parameters<typeof applyImportSettings>[3]): PluginInstallation {
+    return applyImportSettings(this.db, this.audit, () => this.get(input.installationId), input);
+  }
+
+  refreshSettingsTemplate(
+    installationId: string,
+    template: ClaudePluginBundle | undefined,
+    config?: Record<string, string | number | boolean>,
+  ): void {
+    refreshSettingsTemplate(this.db, installationId, template, config);
   }
 
   importSkillCount(installationId: string): number {
@@ -395,19 +424,23 @@ export class PluginsRepo {
     requestEnable?: (connectorId: string, expectedRevision: number) => ConnectorOperation;
     /** Brought over from another AI tool (tool id and the scan's item key). */
     origin?: { tool: string; key: string };
+    /** A discovered plugin that was completed through the setup preview. */
+    setupOrigin?: ConnectorImportOrigin;
     /** Host-validated source folder/file, never exposed to the renderer. */
     originPath?: string;
     /** Brain-owned knowledge connections are usable by nobody until a source assigns them. */
     accessMode?: "all" | "selected";
+    confirmationMode?: "always_ask";
     /**
      * The brain owns this install. `source_kind` cannot say so (a person's imported
      * Notion MCP is 'json' too), and the marker is what startup repair and knowledge removal may
      * act on, so it is written in the same transaction as the installation.
      */
     managedBy?: "knowledge_source";
+    networkDenials?: ReadonlyMap<string, ReadonlySet<string>>;
   }) {
     return transaction(this.db, () => {
-      const manifest = ConnectorManifestSchema.parse(input.manifest);
+      let manifest = ConnectorManifestSchema.parse(input.manifest);
       const now = new Date().toISOString();
       const installation = PluginInstallationSchema.parse({
         id: input.id,
@@ -432,6 +465,25 @@ export class PluginsRepo {
           created: false,
           enableOperations: [],
         };
+      }
+      const origin = input.setupOrigin ?? input.origin;
+      if (
+        origin &&
+        this.db
+          .prepare(
+            "SELECT 1 FROM plugin_installations WHERE status='installed' AND origin_tool=? AND origin_key=? LIMIT 1",
+          )
+          .get(origin.tool, origin.key)
+      )
+        connectorConflict();
+      if (input.setupOrigin) {
+        const installed = installedManifestNames(this.db);
+        const taken = new Set(
+          installed.flatMap((row) => row.names.map((name) => name.toLowerCase())),
+        );
+        const en = freeInstalledName(manifest.name.en, taken);
+        const zh = freeInstalledName(manifest.name.zh, taken);
+        manifest = { ...manifest, name: { en, zh } };
       }
       input.commitSecrets?.();
       this.db
@@ -458,14 +510,19 @@ export class PluginsRepo {
         // the brain-owned Notion connection, which is only lent out through a knowledge source.
         .run(
           installation.id,
-          input.accessMode ?? (input.origin ? "selected" : newConnectionDefaults.accessMode),
+          input.accessMode ?? (origin ? "selected" : newConnectionDefaults.accessMode),
         );
-      if (input.origin)
+      if (origin)
         this.db
           .prepare(
             "UPDATE plugin_installations SET origin_tool=?,origin_key=?,origin_path=? WHERE id=?",
           )
-          .run(input.origin.tool, input.origin.key, input.originPath ?? null, installation.id);
+          .run(
+            origin.tool,
+            origin.key,
+            input.setupOrigin?.sourcePath ?? input.originPath ?? null,
+            installation.id,
+          );
       if (input.managedBy)
         this.db
           .prepare(
@@ -493,8 +550,10 @@ export class PluginsRepo {
           JSON.stringify(server),
           now,
           now,
-          newConnectionDefaults.confirmationMode,
+          input.confirmationMode ?? newConnectionDefaults.confirmationMode,
         );
+        const denied = input.networkDenials?.get(server.id);
+        if (denied?.size) writeNetworkDenials(this.db, id, denied);
         this.db
           .prepare(
             "INSERT INTO connector_access(connector_id,mode,bots_json) VALUES(?,'ask_first','[]')",
@@ -507,6 +566,19 @@ export class PluginsRepo {
         summary: connectorAuditEvents.plugin,
         detail: { installationId: installation.id, revision: 1 },
       });
+      if (input.setupOrigin)
+        this.audit.append({
+          botId: input.actorBotId,
+          kind: "plugin.changed",
+          summary: connectorAuditEvents.broughtOver,
+          detail: {
+            installationId: installation.id,
+            originTool: input.setupOrigin.tool,
+            itemKind: "plugin",
+            itemName: manifest.name.en.slice(0, 200),
+            outcome: "imported",
+          },
+        });
       const enableOperations: ConnectorOperation[] = [];
       for (const connector of this.connections(installation.id))
         if (input.requestEnable)
@@ -573,6 +645,7 @@ export class PluginsRepo {
     manifest: ConnectorManifest;
     digest: string;
     actorBotId: string;
+    commitSecrets?: () => void;
     changed: {
       commands: number;
       arguments: number;
@@ -585,14 +658,18 @@ export class PluginsRepo {
       const current = this.get(input.installationId);
       if (current?.status !== "installed") connectorMissing();
       if (current.revision !== input.expectedRevision) connectorConflict();
+      input.commitSecrets?.();
       const now = new Date().toISOString();
       const old = new Map(
         this.db
           .prepare(
-            "SELECT server_id AS id FROM connectors WHERE plugin_installation_id=? AND removed_at IS NULL",
+            "SELECT id,server_id,config_json FROM connectors WHERE plugin_installation_id=? AND removed_at IS NULL",
           )
           .all(input.installationId)
-          .map((row) => [String(row.id), true]),
+          .map((row) => [
+            String(row.server_id),
+            { id: String(row.id), config: String(row.config_json) },
+          ]),
       );
       if (input.reconcileServers) {
         const incoming = new Set(input.manifest.servers.map((server) => server.id));
@@ -627,13 +704,24 @@ export class PluginsRepo {
               .run(id);
           }
       }
+      const previous = new Map(
+        this.manifest(input.installationId)?.servers.map((server) => [server.id, server]),
+      );
       for (const server of input.manifest.servers) {
-        if (!old.has(server.id)) continue;
+        const stored = old.get(server.id);
+        if (!stored) continue;
+        const configuration = preserveNetworkChoices(
+          this.db,
+          stored.id,
+          server,
+          previous.get(server.id),
+          ConnectorServerSchema.parse(JSON.parse(stored.config)),
+        );
         this.db
           .prepare(
             "UPDATE connectors SET config_json=?,revision=revision+1,catalog_version=catalog_version+1,updated_at=? WHERE plugin_installation_id=? AND server_id=? AND removed_at IS NULL",
           )
-          .run(JSON.stringify(server), now, input.installationId, server.id);
+          .run(JSON.stringify(configuration), now, input.installationId, server.id);
       }
       this.db
         .prepare(

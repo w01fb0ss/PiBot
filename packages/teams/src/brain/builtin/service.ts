@@ -26,6 +26,8 @@ import {
   SettingsRepo,
   transaction,
 } from "@pibot/storage";
+import { builtinEn, builtinZh } from "@pibot/teams-contract/i18n";
+import { BuiltinBaselinesRepo } from "../../store/baselines.ts";
 import { copyTeamSkills, createTeam, skillCounts } from "../teams/team-create.ts";
 import { parseTeamEntries, tightenTemplate } from "../teams/team-import.ts";
 import { auditTeam } from "../teams/team-service.ts";
@@ -35,6 +37,7 @@ import {
   type CloudPacks,
   consistencyIssues,
   loadBuiltin,
+  packVersion,
   usesSkills,
 } from "./load.ts";
 import { researchMethodKeys } from "./methods.ts";
@@ -49,6 +52,8 @@ interface Models {
   image: { provider: string; id: string; modes: ImageMode[] }[];
   vision: boolean;
 }
+
+type RoutingInstall = { version: number; guard(): void };
 
 /**
  * Built-ins are `.pibot` folders read by the same code as a user's import, and every way of
@@ -78,6 +83,7 @@ export class BuiltinService {
       bots: { introduce(botId: string): void };
       language(): "zh" | "en";
       ensureMethods?(): void;
+      imageInspirationConnected?(botId: string): boolean;
       /** Roles and templates installed from the signed catalog. */
       cloud?: CloudPacks;
     },
@@ -153,6 +159,13 @@ export class BuiltinService {
       if (!map.has(String(row.roleId)))
         map.set(String(row.roleId), { id: String(row.id), name: String(row.name) });
     return map;
+  }
+  assertNewRecipient(kind: "role" | "group", id: string): void {
+    const exists =
+      kind === "role"
+        ? this.existing().has(id)
+        : new BuiltinBaselinesRepo(this.deps.db).hasActiveGroup(id);
+    if (exists) throw new RpcError(RpcErrorCodes.invalidParams, "builtin_routing_exists");
   }
   async catalog(): Promise<BuiltinCatalog> {
     const [content, models] = await Promise.all([this.content(), this.models()]);
@@ -236,11 +249,13 @@ export class BuiltinService {
       return bot && usesSkills(bot) && !merged.reuse.has(bot.ref) ? list : [];
     });
     this.shutdown.signal.throwIfAborted();
+    const language = this.deps.language();
+    const copy = language === "zh" ? builtinZh : builtinEn;
     const result = transaction(this.deps.db, () => {
       const value = createTeam(
         {
           db: this.deps.db,
-          language: this.deps.language(),
+          language,
           redact: (text) => this.deps.redactor.redact(text),
           introduce: (botId) => this.deps.bots.introduce(botId),
           trustAutoCheck: true,
@@ -249,6 +264,11 @@ export class BuiltinService {
           template: { ...template, bots },
           reuse: merged.reuse,
           skippedMembers: merged.skippedMembers,
+          welcomeNote: (index, coordinatorId) =>
+            merged.groupIds[index] === "content-desk" &&
+            !this.deps.imageInspirationConnected?.(coordinatorId)
+              ? copy["builtin.template.connectImageInspiration"]
+              : undefined,
           ...(quickStarts ? { quickStarts } : {}),
           ...(exactNames ? { exactNames } : {}),
         },
@@ -308,9 +328,17 @@ export class BuiltinService {
   }
   createBot(
     params: MethodParams["builtin.createBot"],
+    routing?: RoutingInstall,
   ): Promise<MethodResults["builtin.createBot"]> {
     return this.exclusive(async () => {
       const [content, models] = await Promise.all([this.content(), this.models()]);
+      if (routing) {
+        routing.guard();
+        const role = content.roles.get(params.roleId);
+        if (!role || packVersion(role, "role") !== routing.version)
+          throw new RpcError(RpcErrorCodes.invalidParams, "builtin_routing_changed");
+        this.assertNewRecipient("role", params.roleId);
+      }
       const merged = this.merge(content, { roles: [params.roleId] }, models);
       const bot = merged.template.bots[0];
       if (!bot) throw new RpcError(RpcErrorCodes.invalidParams, "builtin_no_image_model");
@@ -345,11 +373,24 @@ export class BuiltinService {
       return { bot: value, ...(skippedSkills.length ? { skippedSkills } : {}) };
     });
   }
-  create(params: MethodParams["builtin.create"]): Promise<MethodResults["builtin.create"]> {
+  create(
+    params: MethodParams["builtin.create"],
+    routing?: RoutingInstall,
+  ): Promise<MethodResults["builtin.create"]> {
     return this.exclusive(async () => {
       const [content, models] = await Promise.all([this.content(), this.models()]);
+      if (routing) {
+        routing.guard();
+        const id = params.groups?.[0];
+        const group = id && content.groups.get(id);
+        if (!id || !group || packVersion(group, "group") !== routing.version)
+          throw new RpcError(RpcErrorCodes.invalidParams, "builtin_routing_changed");
+        this.assertNewRecipient("group", id);
+      }
       const merged = this.merge(content, params, models);
       const { counts } = merged.plan;
+      if (routing && counts.groups !== 1)
+        throw new RpcError(RpcErrorCodes.invalidParams, "builtin_routing_group_unavailable");
       if (counts.groups > BUILTIN_MAX_GROUPS || counts.newBots > BUILTIN_MAX_BOTS)
         throw new RpcError(RpcErrorCodes.invalidParams, "builtin_limit");
       if (!merged.template.bots.length)

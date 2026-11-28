@@ -10,6 +10,7 @@ import {
   KnowledgeKindSchema,
   KnowledgeNameSchema,
   KnowledgePageSchema,
+  KnowledgeRepointRecipientsSchema,
   type KnowledgeSource,
   KnowledgeSourceSchema,
   type KnowledgeTargets,
@@ -38,6 +39,7 @@ function parseSource(row: Row, targets: KnowledgeTargets): KnowledgeSource {
     kind: row.kind,
     name: row.name,
     targets: { ...targets, all: Number(row.targets_all) === 1 },
+    writable: Number(row.writable) === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     lastUsedAt: row.last_used_at ?? null,
@@ -45,6 +47,11 @@ function parseSource(row: Row, targets: KnowledgeTargets): KnowledgeSource {
 }
 
 export class KnowledgeRepo {
+  private accountGeneration = 0;
+
+  get accountRevision(): number {
+    return this.accountGeneration;
+  }
   constructor(private readonly db: DatabaseSync) {}
 
   list(input: { before?: string; limit?: number } = {}) {
@@ -102,14 +109,26 @@ export class KnowledgeRepo {
     if (result.changes === 0) knowledgeMissing();
   }
 
+  /** Interactive OAuth may have selected a new workspace. Its editing grant needs fresh consent. */
+  invalidateNotionAccount(connectorId: string): void {
+    const result = this.db
+      .prepare(
+        `UPDATE knowledge_sources SET account_json=NULL,
+          config_json=json_remove(config_json,'$.writeActions'), updated_at=?
+        WHERE kind='notion' AND json_extract(config_json,'$.connectorId')=?`,
+      )
+      .run(new Date().toISOString(), connectorId);
+    if (result.changes > 0) this.accountGeneration++;
+  }
+
   /**
-   * Adding the same vault twice (double click, or picking the folder again) must not create a
-   * second source: the canonical path is the identity for a local folder.
+   * Adding the same local folder twice (double click, or picking the folder again) must not create
+   * a second source: the canonical path is the identity for a local folder.
    */
   findObsidian(path: string): KnowledgeSource | undefined {
     const row = this.db
       .prepare(
-        "SELECT * FROM knowledge_sources WHERE kind='obsidian' AND json_extract(config_json,'$.path')=?",
+        "SELECT * FROM knowledge_sources WHERE kind IN ('obsidian','folder') AND json_extract(config_json,'$.path')=?",
       )
       .get(path);
     if (!row) return undefined;
@@ -148,6 +167,8 @@ export class KnowledgeRepo {
         )
         .run(JSON.stringify(next), new Date().toISOString(), parsed);
       if (result.changes === 0) knowledgeMissing();
+      this.db.prepare("DELETE FROM knowledge_index_files WHERE source_id=?").run(parsed);
+      this.db.prepare("DELETE FROM knowledge_index_walks WHERE source_id=?").run(parsed);
       const updated = this.get(parsed);
       if (!updated) knowledgeMissing();
       return updated;
@@ -179,14 +200,30 @@ export class KnowledgeRepo {
     });
   }
 
-  update(input: { id: string; name: string; targets: KnowledgeTargets }): KnowledgeSource {
+  update(input: {
+    id: string;
+    name: string;
+    targets: KnowledgeTargets;
+    writable?: boolean;
+    config?: KnowledgeConfig;
+  }): KnowledgeSource {
     const id = IdSchema.parse(input.id);
     const name = KnowledgeNameSchema.parse(input.name);
     const targets = KnowledgeTargetsSchema.parse(input.targets);
     return transaction(this.db, () => {
       const result = this.db
-        .prepare("UPDATE knowledge_sources SET name=?, updated_at=? WHERE id=?")
-        .run(name, new Date().toISOString(), id);
+        .prepare(
+          "UPDATE knowledge_sources SET name=?, writable=COALESCE(?,writable), config_json=COALESCE(?,config_json), updated_at=? WHERE id=?",
+        )
+        .run(
+          name,
+          input.writable === undefined ? null : Number(input.writable),
+          input.config === undefined
+            ? null
+            : JSON.stringify(KnowledgeConfigSchema.parse(input.config)),
+          new Date().toISOString(),
+          id,
+        );
       if (result.changes === 0) knowledgeMissing();
       this.db.prepare("DELETE FROM knowledge_assignments WHERE source_id=?").run(id);
       this.writeTargets(id, targets);
@@ -203,7 +240,8 @@ export class KnowledgeRepo {
   remove(id: string): void {
     const parsed = IdSchema.parse(id);
     transaction(this.db, () => {
-      // Assignments first: the foreign key keeps a removed source from stranding rows.
+      // Assignments and local index first: foreign keys keep a removed source from stranding rows.
+      this.db.prepare("DELETE FROM knowledge_index_files WHERE source_id=?").run(parsed);
       this.db.prepare("DELETE FROM knowledge_assignments WHERE source_id=?").run(parsed);
       const result = this.db.prepare("DELETE FROM knowledge_sources WHERE id=?").run(parsed);
       if (result.changes === 0) knowledgeMissing();
@@ -217,6 +255,23 @@ export class KnowledgeRepo {
     );
     for (const botId of targets.bots) insert.run(id, "bot", IdSchema.parse(botId));
     for (const groupId of targets.groups) insert.run(id, "group", IdSchema.parse(groupId));
+  }
+
+  /** Keep archived and missing recipients in the disclosure for an explicit assignment. */
+  repointRecipients(id: string) {
+    const rows = this.db
+      .prepare(
+        `SELECT a.target_kind AS kind, COALESCE(b.name, g.name) AS name,
+          COALESCE(b.archived_at, g.archived_at) IS NOT NULL AS archived
+        FROM knowledge_assignments a
+        LEFT JOIN bots b ON a.target_kind='bot' AND a.target_id=b.id
+        LEFT JOIN groups g ON a.target_kind='group' AND a.target_id=g.id
+        WHERE a.source_id=? ORDER BY a.target_kind, a.target_id`,
+      )
+      .all(IdSchema.parse(id));
+    return KnowledgeRepointRecipientsSchema.parse(
+      rows.map((row) => ({ ...row, archived: row.archived === 1 })),
+    );
   }
 
   /**

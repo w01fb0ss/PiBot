@@ -14,6 +14,9 @@ export type OfficeConverterCapability = {
     | "office_layout_platform_unsupported";
 };
 
+export const libreOfficePlatformSupported = (platform: NodeJS.Platform) =>
+  platform === "darwin" || platform === "linux";
+
 /**
  * Detection reads fixed installation metadata only; it never launches, installs or configures Office.
  * The path lookup is shared with the conversion recipe so a detected engine is the one that runs.
@@ -25,16 +28,8 @@ export async function probeOfficeConverter(input: {
 }): Promise<OfficeConverterCapability> {
   const signal = AbortSignal.any([input.signal, AbortSignal.timeout(2_000)]);
   signal.throwIfAborted();
-  const candidates = engineCandidates(input.platform, input.env);
-  if (!candidates.length)
-    return {
-      engine: "libreoffice",
-      installed: false,
-      available: false,
-      reason: "office_layout_platform_unsupported",
-    };
   const installed = await withDeadline(
-    findEngine(candidates, signal),
+    findEngine(engineCandidates(input.platform, input.env), signal),
     2_000,
     new ExecError("isolation_unavailable", "timeout"),
     signal,
@@ -44,7 +39,11 @@ export async function probeOfficeConverter(input: {
     installed: !!installed,
     available: false,
     // Existing exec recipes cannot yet prove NEVER_EXECUTE/NO_UPDATE for native Office import.
-    reason: installed ? "office_layout_isolation_unavailable" : "office_layout_engine_unavailable",
+    reason: !libreOfficePlatformSupported(input.platform)
+      ? "office_layout_platform_unsupported"
+      : installed
+        ? "office_layout_isolation_unavailable"
+        : "office_layout_engine_unavailable",
   };
 }
 

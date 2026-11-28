@@ -8,6 +8,7 @@ const source = {
   kind: "obsidian" as const,
   name: "Vault",
   targets: { all: false, bots: [], groups: [] },
+  writable: false,
   createdAt: at,
   updatedAt: at,
   lastUsedAt: null,
@@ -22,7 +23,10 @@ type KnowledgeMethod =
   | "knowledge.detect"
   | "knowledge.list"
   | "knowledge.get"
+  | "knowledge.inspect"
   | "knowledge.addObsidian"
+  | "knowledge.repoint"
+  | "knowledge.repointReference"
   | "knowledge.addNotion"
   | "knowledge.account"
   | "knowledge.update"
@@ -69,10 +73,43 @@ export const knowledgeMethodCases = {
     badParams: {},
     badResult: { source, origin: { kind: "obsidian" } },
   },
+  "knowledge.inspect": {
+    params: { id },
+    result: {
+      summary: {
+        status: "ok" as const,
+        supported: 12,
+        unsupported: 3,
+        scannedPdf: 1,
+        skippedLarge: 0,
+        skippedUnreadable: 1,
+        unexamined: 0,
+        byKind: { markdown: 8, text: 2, pdf: 1, word: 1 },
+        truncated: false,
+      },
+    },
+    badParams: {},
+    badResult: { summary: { status: "missing" } },
+  },
   "knowledge.addObsidian": {
     params: {},
     result: { source },
     badParams: { path: "/Users/me/Vault" },
+    badResult: {},
+  },
+  "knowledge.repoint": {
+    params: { id },
+    result: { source },
+    badParams: { path: "/Users/me/Vault" },
+    badResult: {},
+  },
+  "knowledge.repointReference": {
+    params: {
+      messageId: id,
+      href: "obsidian://open?vault=Vault&file=Notes%2FPlan",
+    },
+    result: { sourceId: id },
+    badParams: { messageId: id, href: "obsidian://open?vault=Vault&file=Notes%2FPlan", botId: id },
     badResult: {},
   },
   "knowledge.addNotion": {

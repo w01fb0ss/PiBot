@@ -72,6 +72,7 @@ export function routineOperationHash(prepared: PreparedTool) {
           sendPaths: prepared.sendPaths,
           messageScope: prepared.messageScope,
           connector: prepared.connector,
+          capabilityPolicyBinding: prepared.capabilityPolicyBinding,
           // A parked human answer binds the exact memory text, even for category-only edits.
           // The reason can change when a resumed run reloads its context; consent cannot.
           memory: prepared.memorySafety && {

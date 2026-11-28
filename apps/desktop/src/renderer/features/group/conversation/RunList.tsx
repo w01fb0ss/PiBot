@@ -105,6 +105,8 @@ export function GroupRuns({
   refresh,
   messages,
   openTask,
+  openApproval,
+  pendingByRun,
 }: {
   peer: ChatPeer;
   data: GroupSnapshot;
@@ -112,6 +114,8 @@ export function GroupRuns({
   refresh(): Promise<void>;
   messages: Message[];
   openTask?(threadId: string): void;
+  openApproval(id: string): void;
+  pendingByRun: ReadonlyMap<string, string>;
 }) {
   const t = useT();
   const visible = new Set(messages.map((message) => message.runId));
@@ -144,11 +148,14 @@ export function GroupRuns({
               <button
                 type="button"
                 className={styles.task}
-                onClick={() =>
-                  openTask?.(
-                    tasks.get(run.taskId as string)?.threadConversationId ?? run.conversationId,
-                  )
-                }
+                onClick={() => {
+                  const approval = pendingByRun.get(run.id);
+                  if (approval) openApproval(approval);
+                  else
+                    openTask?.(
+                      tasks.get(run.taskId as string)?.threadConversationId ?? run.conversationId,
+                    );
+                }}
               >
                 <span className={styles.taskText}>
                   <b>{tasks.get(run.taskId as string)?.title ?? t("group.taskViewDetails")}</b>
@@ -156,7 +163,11 @@ export function GroupRuns({
                     {data.bots.find((bot) => bot.id === run.botId)?.name ?? t("group.member")}
                   </strong>
                 </span>
-                {tasks.has(run.taskId as string) ? (
+                {pendingByRun.has(run.id) ? (
+                  <span className={styles.taskStatus} data-status="waiting">
+                    {t("group.taskWaitingUser")}
+                  </span>
+                ) : tasks.has(run.taskId as string) ? (
                   <TaskStatus
                     task={
                       tasks.get(run.taskId as string) as NonNullable<ReturnType<typeof tasks.get>>

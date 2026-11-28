@@ -55,6 +55,8 @@ interface RetainedDrain {
   jobIds: string[];
   /** The run that owned the failed foreground command, when exactly one did. */
   runId?: string;
+  /** All affected runs, for Windows temp and folder leases. */
+  runIds: Set<string>;
   attempts: number;
   /** Bumped when another failure joins; a retry that started earlier must not release the pause. */
   revision: number;
@@ -91,8 +93,11 @@ export function createBackgroundJobs(deps: BackgroundDependencies) {
     }
   };
   const assertHealthy = () => {
-    if (drainFailure) throw drainFailure;
+    if (drainFailure && deps.platform !== "win32") throw drainFailure;
   };
+  const drainFailed = (runId?: string) =>
+    !!drainFailure &&
+    (deps.platform !== "win32" || runId === undefined || drain?.runIds.has(runId) === true);
   const owner = (current: RetainedDrain) => ({
     ...(current.jobIds.length === 1 ? { jobId: current.jobIds[0] } : {}),
     ...(current.runId ? { runId: current.runId } : {}),
@@ -195,9 +200,9 @@ export function createBackgroundJobs(deps: BackgroundDependencies) {
    * its temp folder instead of failing its drain, so a later proof frees the run's folder lease
    * too and nothing but the commands themselves waited (Windows test 2026-11-21).
    */
-  const whenHealthy = (signal?: AbortSignal) =>
+  const whenHealthy = (signal?: AbortSignal, runId?: string) =>
     new Promise<void>((resolve, reject) => {
-      if (!drainFailure) return resolve();
+      if (!drainFailed(runId)) return resolve();
       const stop = AbortSignal.any([lifetime.signal, ...(signal ? [signal] : [])]);
       const done = () => {
         healthyWaiters.delete(done);
@@ -212,8 +217,10 @@ export function createBackgroundJobs(deps: BackgroundDependencies) {
       healthyWaiters.add(done);
       stop.addEventListener("abort", abort, { once: true });
     });
-  const pauseState = (): CommandPauseState =>
-    drain ? (drain.stuck ? "stuck" : "retrying") : drainFailure ? "stuck" : null;
+  const pauseState = (): CommandPauseState => {
+    if (deps.platform === "win32" || !drainFailure) return null;
+    return drain && !drain.stuck ? "retrying" : "stuck";
+  };
   const failDrain = (
     error: ExecError,
     jobId?: string,
@@ -246,7 +253,10 @@ export function createBackgroundJobs(deps: BackgroundDependencies) {
         joined.records.push(candidate);
       }
       if (jobId && !joined.jobIds.includes(jobId)) joined.jobIds.push(jobId);
-      if (runId && joined.runId !== runId) joined.runId = undefined;
+      if (runId) {
+        joined.runIds.add(runId);
+        if (joined.runId !== runId) joined.runId = undefined;
+      }
       // A retry may be mid-flight with the older set; its release must be refused.
       joined.revision += 1;
       const added = joined.records.length > before;
@@ -274,6 +284,7 @@ export function createBackgroundJobs(deps: BackgroundDependencies) {
       records: retained,
       jobIds: jobId ? [jobId] : [],
       ...(runId ? { runId } : {}),
+      runIds: new Set(runId ? [runId] : []),
       attempts: 0,
       revision: 0,
       stuck: false,
@@ -309,7 +320,7 @@ export function createBackgroundJobs(deps: BackgroundDependencies) {
     activeCount: () => [...jobs.values()].filter((job) => job.running).length,
     assertHealthy,
     failDrain,
-    drainFailed: () => !!drainFailure,
+    drainFailed,
     whenHealthy,
     pauseState,
     /**

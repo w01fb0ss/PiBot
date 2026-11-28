@@ -134,7 +134,12 @@ export function TaskBriefFlow({ brief, bots }: { brief: GroupTaskBrief; bots: Bo
   );
 }
 
-/** Opens a delivered file the way the group's file list does (preview, else the system app). */
+/**
+ * Opens a delivered file the way the group's file list does: through `groups.files.open`, which
+ * checks the path against the group folder and hands it to the host's openPath (the system's
+ * default app). Only a runner's folder, whose file is not on this computer, comes back as a
+ * built-in preview.
+ */
 function useOpenFile(peer: ChatPeer, groupId: string) {
   const preview = useContext(OfficePreviewContext);
   const [busy, setBusy] = useState<string>();
@@ -268,6 +273,11 @@ export function TaskBriefCards({
                   <Icon name={IMAGE.test(item.path) ? "image" : "file"} size={16} />
                   <code title={item.path}>{item.path}</code>
                   <span className={styles.briefMuted}>{status}</span>
+                  {item.open && (
+                    <span className={styles.briefOpen} aria-hidden="true">
+                      {t("group.brief.openAction")}
+                    </span>
+                  )}
                   <StateMark state={item.delivered ? "done" : "todo"} label={status} />
                 </>
               );
@@ -352,7 +362,7 @@ export function TaskBriefCards({
                   label={botName(step.ownerBotId)}
                   size={18}
                 />
-                <strong>
+                <strong title={`${botName(step.ownerBotId)} · ${step.title}`}>
                   {botName(step.ownerBotId)} · {step.title}
                 </strong>
               </span>

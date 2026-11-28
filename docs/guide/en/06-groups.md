@@ -76,6 +76,8 @@ Click the group name to open its profile panel, with Profile, Topics, Skills, Pe
 ![Group profile](../images/en/group-info.png)
 
 - **Group name**, **Coordinator**, **Automatic round limit**, **Announcement** (saved when you leave the box). Renaming a group doesn't interrupt a running step.
+  - New groups default to 8 automatic rounds. You can set the limit from 1 to 10. Upgrading to v0.1.0 raises existing limits of 3 or 4 to 8, including limits you set yourself.
+  - When the group reaches the limit, choose **Continue (reset count)** or **Raise the limit and continue** in the round banner. Both resume the existing work and keep completed steps and outputs. At 10, you can still reset the count.
 - **Members**: see members and add another Bot. Members' private chats are unaffected.
 - **Used folders**, **Run limits (including the cost cap)**.
 - **Skills**: a group can have its own skill list.

@@ -94,9 +94,11 @@ const plugins = await loadBuiltinPlugins(
   new URL("../../../apps/plugins/", import.meta.url).pathname,
 );
 const registry = new PluginRegistry(plugins);
-assert.equal(
-  (registry as unknown as { list(platform: NodeJS.Platform): unknown[] }).list("darwin").length,
-  2,
+assert.deepEqual(
+  (registry as { list(platform: NodeJS.Platform): { id: string }[] })
+    .list("darwin")
+    .map((app) => app.id),
+  ["calendar", "contacts", "image-inspiration"],
   "declarative app cards must pass the strict public schema",
 );
 
@@ -246,7 +248,7 @@ for (const [index, item] of cases.entries()) {
     ) as { input: unknown; prepared: unknown };
     const prepared = {
       call: { id: `88888888-8888-4888-8888-88888888888${index}`, tool: stableName, input: args },
-      result: { decision: "allow" },
+      result: { decision: "allow", explanation: [] },
       capabilityConnector: { capabilityId: item.capability, input: gate.input },
       connector: gate.prepared,
     };

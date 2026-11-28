@@ -26,13 +26,10 @@ export function createImagesOperations({
         const configured = new Set(available.map((model) => `${model.provider}\0${model.id}`));
         return (opts?.availableOnly ? available : runtime.getModelsOfType("image"))
           .filter((model) => model.output.includes("image"))
-          .map((model) =>
-            imageInfo(
-              model,
-              configured.has(`${model.provider}\0${model.id}`),
-              custom.find((c) => c.id === model.provider),
-            ),
-          )
+          .map((model) => {
+            const config = custom.find((c) => c.id === model.provider);
+            return imageInfo(model, configured.has(`${model.provider}\0${model.id}`), config);
+          })
           .filter((model) => !opts?.mode || model.modes.includes(opts.mode));
       } catch (error) {
         throw new AgentError(signal.aborted ? "aborted" : mapAgentError(error));
@@ -66,23 +63,29 @@ export function createImagesOperations({
           request.model.provider,
           canonicalImageModelId(request.model.provider, request.model.id),
         );
+        if (!model) throw new AgentError("no_model");
+        const config = custom.find((c) => c.id === model.provider);
+        const info = imageInfo(model, true, config);
         if (
-          !model ||
-          !imageInfo(
-            model,
-            true,
-            custom.find((c) => c.id === model.provider),
-          ).modes.includes(request.mode)
+          !info.modes.includes(request.mode) ||
+          (info.maxReferences !== undefined && images.length > info.maxReferences)
         )
-          throw new AgentError("no_model");
-        if (new URL(model.baseUrl).hostname !== request.recipient)
+          throw new AgentError("image_mode_mismatch");
+        if (info.recipient !== request.recipient || (info.origin && request.origin !== info.origin))
           throw new AgentError("permission_denied");
-        await injectKey(runtime, model.provider);
+        if (config?.imageApi !== "comfyui-images") await injectKey(runtime, model.provider);
         signal.throwIfAborted();
         // Auth resolution stays in pi, including lazy subscription refresh via the injected transport.
         const auth = await runtime.getAuth(model, { signal });
         if (!auth) throw new AgentError("auth_failed");
         signal.throwIfAborted();
+        if (info.origin) {
+          // Config and credentials load independently. Refuse an origin change while resolving a key.
+          const current = deps.customProviders().find((c) => c.id === model.provider);
+          if (!current || new URL(current.baseUrl).origin !== info.origin)
+            throw new AgentError("permission_denied");
+        }
+        request.assertCurrent?.();
         const result = await runtime.generateImages(
           model,
           { input: [{ type: "text", text: request.prompt }, ...images] },

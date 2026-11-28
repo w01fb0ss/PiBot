@@ -14,6 +14,7 @@ import {
   type GroupTask,
   hasAcceptanceRelaxation,
   type KernelMethodResults,
+  messageDispatch,
   PlanRelaxationHistorySchema,
   RpcError,
 } from "@pibot/protocol-base";
@@ -24,7 +25,7 @@ import {
   MessagesRepo,
   transaction,
 } from "@pibot/storage";
-import { bindMethodFolderInputs } from "./group-method-inputs.ts";
+import { bindMethodInputs } from "./group-method-inputs.ts";
 import { assertRelaxationConfirmation } from "./group-plan-relaxations.ts";
 import { planRequestInputs } from "./group-plan-template.ts";
 import { assertPlanWorkplace, PlanWorkplaceSchema } from "./group-plan-workplace.ts";
@@ -227,7 +228,7 @@ export class GroupWorkflowStarter {
           return bot && !bot.archivedAt && bot.role ? [bot.role.id] : [];
         }),
       );
-      input = await bindMethodFolderInputs(
+      input = await bindMethodInputs(
         input,
         dynamic.card,
         primary,
@@ -238,6 +239,7 @@ export class GroupWorkflowStarter {
         signal,
         access.paths.join(place.folder, "inputs"),
         access,
+        this.service.deps.logger,
       );
     }
     const priorDetails =
@@ -324,6 +326,18 @@ export class GroupWorkflowStarter {
               currentGroup.coordinatorBotId,
             )
           : undefined;
+      const origin =
+        input.source.kind === "dynamic"
+          ? this.service.runs.get(input.source.originRunId)
+          : undefined;
+      const originMessage = origin?.userMessageId ? messages.get(origin.userMessageId) : undefined;
+      const inherited = dynamic?.previous ? workflowOf(dynamic.previous).piDispatchId : undefined;
+      const piDispatchId =
+        inherited ??
+        (originMessage?.conversationId === group.conversationId
+          ? messageDispatch(originMessage)?.dispatchId
+          : undefined);
+      const routed = piDispatchId ? { ...workflow, piDispatchId } : workflow;
       const created = this.repo.create({
         id,
         groupId,
@@ -338,7 +352,7 @@ export class GroupWorkflowStarter {
         budgetRootRunId: budgetRootRunId ?? null,
         workflow: dynamic
           ? {
-              ...workflow,
+              ...routed,
               dynamicPlan: dynamic.card.plan,
               progress: dynamic.previous
                 ? {
@@ -372,7 +386,7 @@ export class GroupWorkflowStarter {
                       : {}),
                   },
             }
-          : workflow,
+          : routed,
       });
       if (budgetRootRunId) {
         const budgets = this.service.deps.local.budgets.repo;

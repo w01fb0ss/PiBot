@@ -83,13 +83,15 @@ export function useChatFolders({
   const names = useMemo(() => {
     const map = new Map<string, FolderEntry>();
     const runnerNames = new Map(runners.map((entry) => [entry.id, entry.name]));
-    const add = (folder: Pick<WorkingFolder, "id" | "name" | "path" | "location">) =>
+    const add = (
+      folder: Pick<WorkingFolder, "id" | "name" | "path" | "location" | "displayPath">,
+    ) =>
       map.set(folder.id, {
         id: folder.id,
         name: folder.location?.startsWith("runner:")
           ? `${runnerNames.get(folder.location) ?? t("remote.runner.kind")} · ${folder.name}`
           : folder.name,
-        path: folder.path,
+        path: folder.displayPath ?? folder.path,
         location: folder.location,
       });
     for (const folder of registry?.folders ?? []) add(folder);

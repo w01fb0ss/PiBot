@@ -1,3 +1,4 @@
+import { systemServiceLabel } from "@pibot/client-core";
 import { SettingsLinkRow, SettingsRow, SettingsSection, useSettings } from "@pibot/renderer-kit";
 import { Button } from "@pibot/ui";
 
@@ -10,23 +11,35 @@ export function SandboxRemembered({
   folders?: string[];
   open?: () => void;
 }) {
-  const { t, settings, update } = useSettings();
+  const { t, language, settings, update } = useSettings();
   if (!settings) return null;
   const groups = [
     {
       key: "sandboxAutoWritePaths" as const,
       title: "permissions.sandboxWrites" as const,
-      entries: (settings.sandboxAutoWritePaths ?? []).map((e) => ({ ...e, value: e.path })),
+      entries: (settings.sandboxAutoWritePaths ?? []).map((e) => ({
+        ...e,
+        value: e.path,
+        display: e.path,
+      })),
     },
     {
       key: "sandboxAutoLocalServices" as const,
       title: "permissions.sandboxLocal" as const,
-      entries: (settings.sandboxAutoLocalServices ?? []).map((e) => ({ ...e, value: e.target })),
+      entries: (settings.sandboxAutoLocalServices ?? []).map((e) => ({
+        ...e,
+        value: e.target,
+        display: e.target,
+      })),
     },
     {
       key: "sandboxAutoSystemServices" as const,
       title: "permissions.sandboxSystem" as const,
-      entries: (settings.sandboxAutoSystemServices ?? []).map((e) => ({ ...e, value: e.service })),
+      entries: (settings.sandboxAutoSystemServices ?? []).map((e) => ({
+        ...e,
+        value: e.service,
+        display: systemServiceLabel(e.service, t),
+      })),
     },
   ].map((g) => ({
     ...g,
@@ -51,6 +64,9 @@ export function SandboxRemembered({
         onClick={open}
       />
     );
+  // Embedded in Bot › Permissions: omit when empty so no orphaned "None yet" appears.
+  if (folders && !count) return null;
+  const locale = language === "zh" ? "zh-CN" : "en";
   return (
     <>
       {!count && <p>{note}</p>}
@@ -62,8 +78,9 @@ export function SandboxRemembered({
               <SettingsRow
                 key={`${e.folder}\0${e.program}\0${e.value}`}
                 icon="shield"
-                label={`${e.value} · ${e.program}`}
-                note={`${e.folder.split(/[/\\]/).filter(Boolean).at(-1) ?? e.folder} · ${new Date(e.createdAt).toLocaleString()}`}
+                label={`${e.display} · ${e.program}`}
+                note={`${e.folder.split(/[/\\]/).filter(Boolean).at(-1) ?? e.folder} · ${new Date(e.createdAt).toLocaleString(locale)}`}
+                info={g.key === "sandboxAutoSystemServices" ? <code>{e.value}</code> : undefined}
               >
                 <Button
                   variant="ghost"

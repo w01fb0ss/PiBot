@@ -26,7 +26,11 @@ class CommandPauseStore {
     this.apply(next);
   };
   private apply(next: CommandPause) {
-    if (next.paused === this.state.paused) return;
+    if (
+      next.paused === this.state.paused &&
+      next.cleanupUnconfirmed === this.state.cleanupUnconfirmed
+    )
+      return;
     this.state = next;
     for (const listener of this.listeners) listener();
   }

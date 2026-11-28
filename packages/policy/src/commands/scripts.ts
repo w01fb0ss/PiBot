@@ -3,6 +3,8 @@
 // caller reads it (inside the workplace, bounded) and analyses again with the text. Anything this
 // cannot read or prove stays as before: the run asks, every time.
 import { createHash } from "node:crypto";
+import { posix, win32 } from "node:path";
+import type { CommandInvocation } from "../core/types.ts";
 import { PURE_CODE_MAX, type PureLanguage } from "./script-purity.ts";
 
 export { pureCode } from "./script-purity.ts";
@@ -107,6 +109,48 @@ export function scriptRun(program: string, args: readonly string[]): ScriptRun |
   if (program.includes("/") && !/^\/(?:usr\/|opt\/)?s?bin\//u.test(program))
     return { kind: "file", path: program, args: [...args] };
   return undefined;
+}
+
+/** The literal interpreter and operand a saved skill token may be approved for. */
+export function skillTokenScript(invocation: CommandInvocation | undefined) {
+  if (!invocation) return undefined;
+  const { program, args } = invocation;
+  const name = posix.basename(program);
+  if (
+    (name !== program &&
+      !/^\/(?:usr\/(?:local\/)?)?bin\/[^/]+$|^\/opt\/homebrew\/bin\/[^/]+$/.test(program)) ||
+    !(name === "node" || PYTHON.test(name) || SHELLS.has(name))
+  )
+    return undefined;
+  const run = scriptRun(name, args);
+  return run?.kind === "file" ? run.path : undefined;
+}
+
+export function skillInterpreterRuntime(
+  program: string | undefined,
+): "python" | "node" | undefined {
+  if (program === "node") return "node";
+  if (program && PYTHON.test(program)) return "python";
+}
+
+/** PowerShell is opaque to policy. Identify simple file invocations for runtime selection only. */
+export function windowsSkillScript(command: string) {
+  const invokesQuotedProgram = /^\s*&\s+/.test(command);
+  const words = command
+    .replace(/^\s*&\s+/, "")
+    .match(/(?:'[^'\r\n]*'|"[^"\r\n]*"|[^\s'"`;&|()<>]+)|\S/gu);
+  if (!words?.length || /[\r\n]/.test(command)) return undefined;
+  if (!invokesQuotedProgram && /^[\u0027"]/.test(words[0] ?? "")) return undefined;
+  const [program, ...args] = words.map((word) => word.replace(/^(['"])(.*)\1$/, "$2"));
+  if (!program || /[$%*?{}`]/.test(program)) return undefined;
+  const name = win32
+    .basename(program)
+    .toLowerCase()
+    .replace(/\.exe$/, "");
+  const run = scriptRun(name, args);
+  if (run?.kind === "file" && !/[$%*?{}`;&|()<>]/.test(run.path))
+    return { path: run.path, runtime: skillInterpreterRuntime(name) };
+  if (/[/\\]/.test(program) && /\.(?:ps1|py|[cm]?js)$/i.test(program)) return { path: program };
 }
 
 export function scriptLanguage(

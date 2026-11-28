@@ -11,6 +11,7 @@ import {
   MessagesRepo,
   transaction,
 } from "@pibot/storage";
+import { planStepTitles } from "./group-plan-summary.ts";
 import { assertPlanWorkplace } from "./group-plan-workplace.ts";
 import { contextFullReading, stepFailureReason } from "./group-step-failure.ts";
 import { confirmationRequired } from "./group-workflow-brief.ts";
@@ -202,6 +203,7 @@ export class GroupWorkflowDecisions {
         params.action === "skip" ? "step_skipped" : "step_accepted",
         "user",
       );
+    if (current.decisionMessageId) this.engine.refreshStatus(record, current.decisionMessageId);
     service.changed(record.groupId, "updated");
     // A step the ledger had parked for the cancelled replan now needs its own disposition card.
     if (replanCancelled) {
@@ -276,10 +278,9 @@ export class GroupWorkflowDecisions {
       requested: false,
       hold: { kind: "fix_skipped", stepIds: [...new Set([...already, ...reviewed])].slice(0, 20) },
     });
-    const workflow = workflowOf(latest);
-    const title = (id: string) =>
-      workflow.contract.steps?.find((step) => step.id === id)?.title ?? id;
-    const zh = service.deps.chat.currentLanguage() === "zh";
+    const language = service.deps.chat.currentLanguage();
+    const title = planStepTitles(workflowOf(latest).contract.steps, language);
+    const zh = language === "zh";
     const names = reviewed.map(title).join(zh ? "、" : ", ");
     new MessagesRepo(service.deps.db).create({
       conversationId: service.groups.get(record.groupId)?.conversationId ?? "",

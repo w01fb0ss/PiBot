@@ -70,6 +70,7 @@ export interface EndpointToolScope {
   endpointPhoneId?: string;
 }
 export interface EndpointCapabilityPort {
+  phoneOnline?(id: string): boolean;
   prepare?(tool: string, context: EndpointToolScope, signal: AbortSignal): Promise<void>;
   allows(tool: string, context: EndpointToolScope): boolean;
   check(tool: string, context: EndpointToolScope): void;

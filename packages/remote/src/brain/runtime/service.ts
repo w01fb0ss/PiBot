@@ -530,6 +530,9 @@ export class RemoteService {
   list(params: Parameters<RemoteDeviceOperations["list"]>[0]) {
     return this.deviceOperations.list(params);
   }
+  listWithCodes(params: Parameters<RemoteDeviceOperations["listWithCodes"]>[0]) {
+    return this.deviceOperations.listWithCodes(params);
+  }
   rename(id: string, name: string) {
     return this.mutate(() => this.deviceOperations.rename(id, name));
   }

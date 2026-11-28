@@ -24,20 +24,16 @@ export function useTopics(
   // page knows its topic (and so its stored messages) before any read.
   const first = () => (cacheKey ? store.peek(cacheKey, StoredTopicsSchema) : undefined);
   const [topics, setTopics] = useState<TopicRow[]>(() => first()?.topics ?? []);
-  const [current, setCurrent] = useState<string | undefined>(() => {
-    const copy = first();
-    return copy && opened && copy.topics.some((row) => row.id === opened) ? opened : copy?.current;
-  });
+  const [current, setCurrent] = useState<string | undefined>(() => opened ?? first()?.current);
   const scope = `${mobile.selectedId}:${kind}:${id}`;
   const shownFor = useRef(topics.length ? scope : undefined);
   const action = useAction(scope, mobile.peer);
   const write = useAction(scope, mobile.peer);
   const viewing = useRef(opened);
-  const shown = (rows: TopicRow[], value: string | undefined) =>
-    viewing.current && rows.some((row) => row.id === viewing.current) ? viewing.current : value;
+  const shown = (value: string | undefined) => viewing.current ?? value;
   const remember = async (rows: TopicRow[], value: string | undefined) => {
     setTopics(rows);
-    setCurrent(shown(rows, value));
+    setCurrent(shown(value));
     // The copy keeps the computer's current topic, so an offline open still lands there.
     if (cacheKey)
       await store.write(cacheKey, StoredTopicsSchema.parse({ current: value, topics: rows }));
@@ -50,7 +46,7 @@ export function useTopics(
         signal.throwIfAborted();
         if (cached) {
           setTopics(cached.topics);
-          setCurrent(shown(cached.topics, cached.current));
+          setCurrent(shown(cached.current));
         }
         return;
       }
@@ -61,7 +57,7 @@ export function useTopics(
         signal.throwIfAborted();
         if (cached) {
           setTopics(cached.topics);
-          setCurrent(shown(cached.topics, cached.current));
+          setCurrent(shown(cached.current));
         }
       }
       const rows = await listTopics(runtime, kind, id, signal);
@@ -76,7 +72,7 @@ export function useTopics(
       shownFor.current = scope;
       const copy = first();
       setTopics(copy?.topics ?? []);
-      setCurrent(copy ? shown(copy.topics, copy.current) : undefined);
+      setCurrent(shown(copy?.current));
     }
     void load();
     if (kind !== "bot") return;
@@ -91,11 +87,12 @@ export function useTopics(
       off?.();
     };
   }, [mobile.selectedId, mobile.peer, kind, id, mobile.refreshVersion]);
-  const title = topics.find((topic) => topic.id === current)?.title;
+  const selected = topics.find((topic) => topic.id === current);
   return {
     topics,
     current,
-    title,
+    title: selected?.title,
+    importSource: selected?.importSource,
     action,
     write,
     load,

@@ -4,6 +4,7 @@ import { RpcError } from "../core/peer.ts";
 /** Diagnostics are bounded facts, never source contents or an OS exception message. */
 export const GroupPlanInputFailureSchema = z.strictObject({
   name: z.string().max(200),
+  required: z.boolean().optional(),
   expected: z.string().max(4096),
   found: z.array(z.string().max(4096)).max(6),
 });

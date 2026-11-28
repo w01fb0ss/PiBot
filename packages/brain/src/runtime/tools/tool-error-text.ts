@@ -139,8 +139,11 @@ export function semanticErrorText(code: SemanticFailure, language: "zh" | "en"):
   return language === "zh" ? zh[code] : en[code];
 }
 
-export function readableError(error: ExecError, tool: string): string {
-  if (error.code === "command_failed" && error.reason === "cleanup_failed") return EXECUTION_PAUSED;
+export function readableError(error: ExecError, tool: string, platform?: NodeJS.Platform): string {
+  if (error.code === "command_failed" && error.reason === "cleanup_failed")
+    return platform === "win32"
+      ? "Pi Bot 未能确认这条命令已停下，请先检查它的结果再决定是否重试。其他命令仍可运行。 / Pi Bot couldn't confirm that this command stopped. Check its results before retrying it. Other commands can still run."
+      : EXECUTION_PAUSED;
   const checkText = error.reason ? executionChecks[error.reason] : undefined;
   if (checkText) return checkText;
   // The process monitor gave up reading the OS process list while the command was still
@@ -215,7 +218,7 @@ export function readableError(error: ExecError, tool: string): string {
     docker_endpoint_changed:
       "Docker 端点已变化，请重新申请本次命令审批 / Docker endpoint changed; request fresh approval",
     isolation_unavailable:
-      "当前命令未能建立所需隔离，尚未执行；这不表示 PATH 无效或用户拒绝审批。在执行设备上运行 pibot runner status 可以看到原因（如 linux_userns_restricted）和修复办法；存在只读目录或网站限制时不能降级执行 / Required command isolation could not be established; the command did not run. This is not a PATH or approval failure. Run pibot runner status on the execution device for the cause (for example linux_userns_restricted) and the fix; read-only folders and network restrictions cannot be bypassed",
+      "系统保护未能启动，命令没有运行。请查看运行该命令的电脑上的保护设置，再试一次。 / System protection could not start, so the command did not run. Check the protection settings on the computer running the command, then try again.",
     isolation_scan_limit:
       "只读目录保护扫描超过文件数或时间上限，命令尚未执行；不是 PATH 或审批问题。请缩小可写工作目录范围后重试 / Read-only protection scanning exceeded its entry or time limit; the command did not run. This is not a PATH or approval failure. Retry with a smaller writable workspace",
     web_blocked:

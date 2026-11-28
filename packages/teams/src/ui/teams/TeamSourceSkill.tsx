@@ -1,10 +1,10 @@
 import {
   RpcError,
   RpcErrorCodes,
-  type SkillImportPreview,
+  type SkillImportDetails,
   type TeamSkillReimport,
 } from "@pibot/protocol";
-import { useRpc, useT } from "@pibot/renderer-kit";
+import { useNavigation, useRpc, useT } from "@pibot/renderer-kit";
 import { Button } from "@pibot/ui";
 import { useEffect, useRef, useState } from "react";
 import styles from "./teams.module.css";
@@ -13,12 +13,18 @@ import styles from "./teams.module.css";
 export function TeamSourceSkill({ skill, botId }: { skill: TeamSkillReimport; botId?: string }) {
   const t = useT();
   const { peer } = useRpc();
+  const navigation = useNavigation();
   const life = useRef<{ controller: AbortController; previewId?: string }>({
     controller: new AbortController(),
   });
-  const [preview, setPreview] = useState<SkillImportPreview>();
+  const [preview, setPreview] = useState<SkillImportDetails>();
   const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState(false);
+  const [imported, setImported] = useState<{
+    skillId: string;
+    botId: string;
+    name: string;
+    needsRuntime: boolean;
+  }>();
   const [error, setError] = useState<"teams.sourceUnavailable" | "teams.sourceFailed">();
   useEffect(() => {
     const current = {
@@ -68,14 +74,19 @@ export function TeamSourceSkill({ skill, botId }: { skill: TeamSkillReimport; bo
     setBusy(true);
     setError(undefined);
     try {
-      await peer.call(
+      const saved = await peer.call(
         "skills.import",
         { previewId: preview.previewId },
         { signal: current.controller.signal },
       );
       current.previewId = undefined;
       if (!current.controller.signal.aborted) {
-        setDone(true);
+        setImported({
+          skillId: saved.id,
+          botId: saved.botId,
+          name: saved.name,
+          needsRuntime: !!preview.summary?.runtimeRequirements?.length,
+        });
         setPreview(undefined);
       }
     } catch {
@@ -96,7 +107,7 @@ export function TeamSourceSkill({ skill, botId }: { skill: TeamSkillReimport; bo
           {skill.reimport.source.url}
         </a>
       )}
-      {botId && skill.reimport.source && !preview && !done && (
+      {botId && skill.reimport.source && !preview && !imported && (
         <Button loading={busy} disabled={!peer || busy} onClick={() => void prepare()}>
           {t("teams.sourcePrepare")}
         </Button>
@@ -116,7 +127,21 @@ export function TeamSourceSkill({ skill, botId }: { skill: TeamSkillReimport; bo
           </Button>
         </>
       )}
-      {done && <p role="status">{t("teams.sourceImported")}</p>}
+      {imported && <p role="status">{t("teams.sourceImported")}</p>}
+      {imported?.needsRuntime && (
+        <Button
+          onClick={() => {
+            const { skillId, botId, name } = imported;
+            navigation.openPage("connectors");
+            navigation.navigate({
+              name: "connectors",
+              skillConnection: { skillId, botId, name, prepareRuntime: true },
+            });
+          }}
+        >
+          {t("skills.runtime.prepareNow")}
+        </Button>
+      )}
       {error && (
         <p role="alert" className={styles.error}>
           {t(error)}

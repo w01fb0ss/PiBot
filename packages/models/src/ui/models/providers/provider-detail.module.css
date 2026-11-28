@@ -180,6 +180,7 @@
 .imageModel > button {
   align-self: flex-start;
 }
+
 .providerDetail details > summary {
   font-weight: 600;
   cursor: pointer;

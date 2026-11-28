@@ -7,6 +7,7 @@ import { type Caller, type ChatScope, changesTarget, executionScope } from "./sc
 export interface TopicRow {
   id: string;
   title?: string;
+  importSource?: string;
   isCurrent: boolean;
   updatedAt: string;
 }
@@ -24,6 +25,7 @@ export async function listTopics(
     (row): TopicRow => ({
       id: row.id,
       title: row.title,
+      ...("importSource" in row && row.importSource ? { importSource: row.importSource } : {}),
       isCurrent: !!row.isCurrent,
       updatedAt: row.updatedAt,
     }),

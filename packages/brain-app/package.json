@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@pibot/videos": "workspace:0.0.0",
     "@pibot/brain": "workspace:0.0.0",
     "@pibot/protocol": "workspace:0.0.0",
     "@pibot/plugins": "workspace:0.0.0",

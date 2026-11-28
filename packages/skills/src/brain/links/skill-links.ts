@@ -8,19 +8,21 @@ import {
   RpcError,
   RpcErrorCodes,
   SKILL_IMPORT_MAX_BYTES,
+  type SkillImportSource,
   type SkillLinkListing,
   SkillLinkListingSchema,
   type SkillLinkOrigin,
   type SkillLinkResolution,
   SkillLinkResolutionSchema,
 } from "@pibot/skills-contract/full";
+import { digestFolder } from "../service/shared-packages.ts";
 import type { SkillImports } from "../service/skill-import.ts";
 import type { SkillServices } from "../service/skill-services.ts";
 import { extractLinkArchive, type LinkCandidate } from "./link-archive.ts";
 import { auditDownload } from "./link-audit.ts";
 import { downloadArchive } from "./link-download.ts";
 import { linkFailure } from "./link-errors.ts";
-import { type LinkSource, linkError, resolveLink } from "./link-source.ts";
+import { type LinkSource, linkError, linkSubpath, resolveLink } from "./link-source.ts";
 
 const TTL = 10 * 60_000;
 interface Entry {
@@ -283,12 +285,48 @@ export class SkillLinks {
         entry.running = undefined;
       });
   }
+  async previewTeamSource(
+    botId: string,
+    source: SkillImportSource,
+    expectedHash: string,
+    signal: AbortSignal,
+  ) {
+    this.services.skills.activeBot(botId);
+    const { sourceId } = await this.resolve(source.url, signal);
+    try {
+      const entry = this.get(sourceId);
+      if (entry.source.subpath && entry.source.subpath !== source.subpath)
+        throw linkError("skill_link_candidate_missing");
+      if (source.subpath) entry.source.subpath = linkSubpath(source.subpath);
+      await this.download(sourceId, signal);
+      const candidate = entry.candidates?.find((item) => item.subpath === source.subpath);
+      if (!candidate) throw linkError("skill_link_candidate_missing");
+      await this.guard(AbortSignal.any([signal, entry.abort.signal]), async (signal, touch) => {
+        const { digest } = await digestFolder(candidate.path, signal, touch, { ignoreJunk: true });
+        if (digest !== expectedHash) throw linkError("skill_link_source_changed");
+      });
+      const preview = await this.preview(sourceId, candidate.id, botId, undefined, signal, {
+        expectedHash,
+        source,
+      });
+      this.services.skills.imports.onPreviewRelease(preview.previewId, () => {
+        if (!entry.abort.signal.aborted)
+          void this.track(() => this.cancel(sourceId)).catch(() => this.warn());
+      });
+      return preview;
+    } catch (error) {
+      await this.cancel(sourceId).catch(() => this.warn());
+      throw error;
+    }
+  }
+
   preview(
     id: string,
     candidateId: string,
     botId: string,
     groupId: string | undefined,
     signal: AbortSignal,
+    team?: { expectedHash: string; source: SkillImportSource },
   ) {
     const entry = this.get(id);
     if (entry.running) throw new RpcError(RpcErrorCodes.busy, "skill_link_busy");
@@ -307,6 +345,9 @@ export class SkillLinks {
       try {
         const preview = await imports.previewPath(botId, candidate.path, "folder", deadline, {
           linkOrigin: origin,
+          ...(team
+            ? { create: { expectedHash: team.expectedHash, importSource: team.source } }
+            : {}),
         });
         if (deadline.aborted) {
           await imports.cancel(preview.previewId);

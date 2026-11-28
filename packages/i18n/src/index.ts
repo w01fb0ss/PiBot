@@ -1,3 +1,6 @@
+export { localizedPlanStepTitle } from "@pibot/teams-contract/i18n";
+
+import { imageErrorKey } from "@pibot/images-contract/i18n";
 import { en } from "./en.ts";
 import { type TranslationKey, zh } from "./zh.ts";
 
@@ -18,12 +21,20 @@ export function resolveLanguage(setting: LanguageSetting, systemLocale: string):
     : setting;
 }
 
+// Hermes on Android has no Intl.PluralRules (the phone crashed on every receipt line); zh has
+// no plural forms and en only distinguishes exactly 1.
+function pluralCategory(language: Language, count: number): string {
+  if (typeof Intl !== "undefined" && typeof Intl.PluralRules === "function")
+    return new Intl.PluralRules(language).select(count);
+  return language === "en" && count === 1 ? "one" : "other";
+}
+
 // Renderer and tray menus can use different translators without shared mutable state.
 export function t(key: TranslationKey, vars?: TranslationVars, language: Language = "en"): string {
   const table = { zh, en }[language];
   const pluralKey =
     typeof vars?.count === "number" && Object.hasOwn(table, `${key}.one`)
-      ? `${key}.${new Intl.PluralRules(language).select(vars.count)}`
+      ? `${key}.${pluralCategory(language, vars.count)}`
       : key;
   const template = table[Object.hasOwn(table, pluralKey) ? (pluralKey as TranslationKey) : key];
   return template.replace(
@@ -55,6 +66,27 @@ export function createTranslator(language: Language) {
   return (key: TranslationKey, vars?: TranslationVars) => t(key, vars, language);
 }
 
+export function directRunPermissionStatusKey(
+  source: "auto" | "user",
+  strictIsolation?: boolean,
+): TranslationKey {
+  if (source === "auto") return "permissions.sandboxAutoOutside";
+  return strictIsolation
+    ? "permissions.sandboxUserOutsidePaused"
+    : "permissions.sandboxUserOutside";
+}
+
+export function commandNetworkNoteKey(
+  platform: string | undefined,
+  allowAll: boolean,
+): TranslationKey {
+  if (platform === "win32")
+    return allowAll ? "permissions.networkOnWindows" : "permissions.networkOffWindows";
+  if (platform === "darwin" || platform === "linux")
+    return allowAll ? "permissions.networkOn" : "permissions.networkOff";
+  return allowAll ? "permissions.networkOnUnknown" : "permissions.networkOffUnknown";
+}
+
 /** Look up only fixed, translated check codes. Never render an unknown code as text. */
 export function policyReasonKey(code: string): TranslationKey | undefined {
   const key = `policy.reason.${code}`;
@@ -63,9 +95,35 @@ export function policyReasonKey(code: string): TranslationKey | undefined {
 
 /** Only fixed catalog keys qualify; external error text never becomes a translation key. */
 export function failureReasonKey(code: string): TranslationKey | undefined {
+  if (code === "proxy_unavailable") return "errors.proxy_unavailable_no_address";
+  if (code === "proxy_auth_failed") return "errors.proxy_auth_failed_no_address";
+  if (code === "image_approval_declined") return "media.error.approvalDeclined";
+  if (code === "image_replacement_approval_declined")
+    return "media.error.replacementApprovalDeclined";
+  if (code === "image_request_incomplete") return "media.error.permission_denied";
   for (const prefix of ["errors.", "connectors.failure.", "remote.status.", "policy.reason."]) {
     const key = `${prefix}${code}`;
     if (Object.hasOwn(zh, key)) return key as TranslationKey;
   }
   return undefined;
+}
+
+/** Localized error/failure reason; never leaks an unknown internal code into UI copy. */
+export function runErrorText(
+  code: string | null | undefined,
+  translate: (key: TranslationKey, vars?: TranslationVars) => string,
+  options?: { ambiguousPermissionDenied?: boolean },
+): string | undefined {
+  if (!code) return undefined;
+  if (options?.ambiguousPermissionDenied && code === "permission_denied")
+    return translate("errors.action_not_allowed");
+  const key = failureReasonKey(code);
+  return translate(key ?? "errors.genericFailure");
+}
+
+export function imageRunErrorText(
+  code: string,
+  translate: (key: TranslationKey, vars?: TranslationVars) => string,
+): string {
+  return translate(imageErrorKey(code) ?? failureReasonKey(code) ?? "media.multi.failureGeneric");
 }

@@ -181,10 +181,10 @@ export function SkillDetail({
               </Button>
             </div>
           )}
-          <p className={styles.note}>{t("skills.detail.allowedTools")}</p>
           {/* The Bot panel shows source, runtime and compatibility read-only; updating and
               preparing happen on the connections page, which owns those actions. */}
           <SkillDetailExtras
+            key={skillId}
             skillId={skillId}
             groupId={groupId}
             botId={botId}
@@ -194,11 +194,11 @@ export function SkillDetail({
             resources={resources}
             retryDestination={{
               botName,
-              open: () => {
+              open: (runtime) => {
                 navigation.openPage("connectors");
                 navigation.navigate({
                   name: "connectors",
-                  skillConnection: { skillId, botId, groupId, name: label.name },
+                  skillConnection: { skillId, botId, groupId, name: label.name, runtime },
                 });
               },
             }}

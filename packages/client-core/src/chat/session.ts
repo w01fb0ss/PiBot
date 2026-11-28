@@ -71,6 +71,7 @@ export class ChatSession {
   historyVersion = 0;
 
   historyRefreshPending = false;
+  historyReplacePending = false;
 
   failedPage = false;
 

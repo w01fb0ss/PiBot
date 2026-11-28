@@ -9,7 +9,9 @@ import {
   GithubTriggerMessageSchema,
 } from "../core/routine-triggers.ts";
 import { ToolCallRecordSchema } from "../execution/tool-calls.ts";
-import { AttachmentSchema, MAX_REPLY_ATTACHMENTS } from "./attachments.ts";
+import { ModelOverrideSchema } from "../providers/providers.ts";
+import { AttachmentSchema } from "./attachments.ts";
+import { MAX_GENERATED_IMAGES } from "./media.ts";
 
 export const MemoryNotedSchema = z
   .array(z.strictObject({ id: IdSchema, text: z.string().min(1).max(500) }))
@@ -68,14 +70,16 @@ export const MessageSchema = z.strictObject({
   content: z.string(),
   status: z.enum(["streaming", "done", "error", "aborted"]),
   runId: IdSchema.nullable(),
+  imported: z.literal(true).optional(),
   errorCode: AgentErrorCodeSchema.nullable(),
   usage: z.json().nullable(),
-  attachments: z.array(AttachmentSchema).max(MAX_REPLY_ATTACHMENTS).optional(),
+  attachments: z.array(AttachmentSchema).max(MAX_GENERATED_IMAGES).optional(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
   tools: z.array(ToolCallRecordSchema).optional(),
 });
 export const ConversationSchema = z.strictObject({
+  modelOverride: ModelOverrideSchema.optional(),
   readOnly: z.literal(true).optional(),
   importSource: z.string().min(1).max(32).optional(),
   workplaceFolderId: z

@@ -5,7 +5,7 @@ The **Connections** page (bottom left) manages the outside capabilities your Bot
 - **Apps**: the local calendar, local contacts and so on.
 - **MCP**: MCP servers (Model Context Protocol) that add tools.
 - **Skills**: written step-by-step methods a Bot follows when they fit the task.
-- **Knowledge**: an Obsidian vault or Notion, read only.
+- **Knowledge**: an Obsidian vault or Notion, read only by default.
 
 On this page:
 
@@ -47,6 +47,10 @@ With no MCP servers yet, the page offers **See what's there** (bring over from o
 Before anything is brought over or added, you get a preview and nothing is imported until you confirm; the source tool's files stay read-only. If keys are needed, you're asked to fill them in. Imported items aren't given to any Bot yet: back in the list, click **Give to a Bot** to choose which Bots may use them.
 
 If an MCP server's start command matches a high-risk rule, it's flagged as a dangerous command; check the source and command before deciding. Importing doesn't authorize running it: Bots using it still go through permission and isolation checks.
+
+On macOS and Linux, a local MCP running in the sandbox can reach the public websites declared by the connection. When a tool needs a new website, the chat shows a card with the hostname. **Allow, don't ask again** saves the website for this connection and lets the waiting request continue. A denial or timed-out approval suppresses further prompts for that website until Pi Bot quits, you choose **Undo denial**, or you allow the website in the connection's settings. If nobody is available, the blocked website also appears in settings so you can allow it for future calls. Each connection can show one card at a time, up to two for a tool call and four in any rolling minute.
+
+Use **Advanced › Manually edit allowed websites** to change the extra websites you have allowed. Use hostnames. A bare hostname covers ports 80 and 443, and other ports are authorized individually, such as `api.your-service.com:8443`. The sandbox blocks IP literals, local and private destinations, and cloud metadata. YOLO cannot add a new website to the list. Windows local MCPs and MCPs explicitly moved outside the sandbox have no sandbox website list. A remote MCP uses its configured server address, shown under **Declared by the connection**.
 
 ## Skills
 
@@ -105,9 +109,9 @@ Then say "do a pre-launch check" in a chat and the Bot follows the skill. Each B
 ![Connections · Knowledge](../images/en/connections-knowledge.png)
 
 - **Add an Obsidian folder**: pick a vault folder; it's read on this computer only. If Obsidian is installed, the page lists the vaults it found (only the folder paths are read, not the notes) and you click **Add**.
-- **Connect Notion**: sign in with Notion, read only.
+- **Connect Notion**: sign in with Notion.
 
-Bots only read knowledge sources and never change your notes.
+Bots can search and read assigned libraries. To let them create, edit, or delete notes, turn on **Bots can edit this library** in that library’s drawer. Deletions always ask you first and move the note to Trash.
 
 ## Access tokens
 

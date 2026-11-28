@@ -95,11 +95,87 @@ export async function diagnosticsStep(
     !!server &&
     !(await outsideSandboxConfirmed(this, connector, server));
   let suggestion: ConnectorDiagnostics["suggestion"] = null;
-  if (availability === "available" && !connector.outsideSandbox && server) {
+  if (
+    availability === "available" &&
+    !connector.outsideSandbox &&
+    server &&
+    lastFailure?.reason !== "command_not_found" &&
+    lastFailure?.reason !== "dependency_missing"
+  ) {
     if (await pointsIntoAiConfig(this, server).catch(() => false)) suggestion = "ai_config_path";
-    else if (lastFailure && !lastFailure.outsideSandbox) suggestion = "sandbox_start_failed";
+    // A refusal before spawning happens outside the sandbox too; running as the person would not help.
+    else if (
+      lastFailure &&
+      !lastFailure.outsideSandbox &&
+      lastFailure.reason !== "location_refused" &&
+      lastFailure.reason !== "config_invalid" &&
+      lastFailure.reason !== "proxy_scheme"
+    )
+      suggestion = "sandbox_start_failed";
   }
-  return { outsideSandbox: availability, needsReconfirm, suggestion, lastFailure };
+  let loginCommand: string | undefined;
+  let loginGuide: string | undefined;
+  if (
+    server?.transport === "stdio" &&
+    (lastFailure?.reason === "login_required" || lastFailure?.reason === "password_prompt")
+  ) {
+    // Only fixed, known commands. Never copy an imported line (including shell syntax or keys).
+    const executable = server.command
+      .split(/[\\/]/)
+      .at(-1)
+      ?.replace(/\.(exe|cmd|bat)$/i, "");
+    const runner = executable?.toLowerCase();
+    switch (runner) {
+      case "gh":
+        loginCommand = "gh auth login";
+        break;
+      case "gcloud":
+        loginCommand = "gcloud auth login";
+        break;
+      case "az":
+        loginCommand = "az login";
+        break;
+      case "aws":
+        if (/\baws sso login\b/i.test(lastFailure.stderrTail)) loginCommand = "aws sso login";
+        break;
+      case "op":
+        loginCommand = "op signin";
+        break;
+    }
+    if (runner && ["npx", "npm", "pnpm", "bunx", "uv", "uvx"].includes(runner)) {
+      // A package runner starts a provider's program. Registry login only helps a registry error.
+      if (
+        ["npm", "npx"].includes(runner) &&
+        /(?:^|\n)npm (?:ERR!|error) (?:code (?:ENEEDAUTH|E401)\b|.*\bnpm login\b)/m.test(
+          lastFailure.stderrTail,
+        )
+      ) {
+        loginCommand = "npm login";
+      } else {
+        const args = server.args.filter((arg) => !["-y", "--yes", "--"].includes(arg));
+        const prefix = ["exec", "dlx", "run", "tool"].includes(args[0] ?? "");
+        const index = prefix ? (args[0] === "tool" && args[1] === "run" ? 2 : 1) : 0;
+        const packageName = args[index];
+        if (
+          packageName &&
+          /^(?:@[a-z0-9._-]+\/)?[a-z0-9][a-z0-9._-]*(?:@[a-z0-9._-]+)?$/i.test(packageName)
+        ) {
+          const name = packageName.replace(/(?<=.)@[a-z0-9._-]+$/i, "");
+          if (runner === "uv" || runner === "uvx") {
+            if (!name.includes("/")) loginGuide = `https://pypi.org/project/${name}/`;
+          } else loginGuide = `https://www.npmjs.com/package/${name}`;
+        }
+      }
+    }
+  }
+  return {
+    outsideSandbox: availability,
+    needsReconfirm,
+    suggestion,
+    lastFailure,
+    ...(loginCommand ? { loginCommand } : {}),
+    ...(loginGuide ? { loginGuide } : {}),
+  };
 }
 
 export async function setOutsideSandboxStep(

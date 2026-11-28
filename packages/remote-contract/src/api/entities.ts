@@ -66,6 +66,7 @@ export const RunnerConnectionSchema = z.union([
   RunnerConnectionStateSchema,
   z.strictObject({ state: RunnerConnectionStateSchema, path: RunnerConnectionPathSchema }),
 ]);
+const SecurityCodeSchema = z.string().regex(/^\d{6}$/);
 export const DeviceViewSchema = z.strictObject({
   id: IdSchema,
   name: DeviceNameSchema,
@@ -78,6 +79,7 @@ export const DeviceViewSchema = z.strictObject({
   lastSeenAt: z.iso.datetime().nullable(),
   revokedAt: z.iso.datetime().nullable(),
   online: z.boolean(),
+  securityCode: SecurityCodeSchema.optional(),
   runnerConnection: RunnerConnectionSchema.optional(),
   directFailure: DirectFailureSchema.optional(),
   /** Last selected path; displayed only while online. Old records start on relay. */
@@ -98,10 +100,7 @@ export const PairStatusSchema = z.strictObject({
   status: z.enum(["waiting", "paired", "expired", "cancelled", "failed"]),
   expiresAt: z.iso.datetime(),
   deviceId: IdSchema.optional(),
-  securityCode: z
-    .string()
-    .regex(/^\d{6}$/)
-    .optional(),
+  securityCode: SecurityCodeSchema.optional(),
   /** While waiting: why this computer cannot reach the relay the code points to. */
   relayProblem: z.enum(["unreachable", "tls", "certificate"]).optional(),
 });

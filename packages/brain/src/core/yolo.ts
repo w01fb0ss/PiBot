@@ -1,12 +1,18 @@
 // Own conversation YOLO, Windows consent, and the release of waiting approvals.
 import type { LocalToolCall } from "@pibot/agent";
-import { type PolicyResult, YOLO_REASON } from "@pibot/policy";
-import { type ConversationYolo, RpcError, RpcErrorCodes } from "@pibot/protocol-base";
+import { type PolicyResult, SETTINGS_SECURITY_CONFIRM, YOLO_REASON } from "@pibot/policy";
+import {
+  type ConversationYolo,
+  type ConversationYoloState,
+  RpcError,
+  RpcErrorCodes,
+} from "@pibot/protocol-base";
 import {
   BotsRepo,
   ConversationsRepo,
   ConversationYoloRepo,
   GroupsRepo,
+  GroupTopicsRepo,
   SettingsRepo,
   transaction,
 } from "@pibot/storage";
@@ -75,7 +81,7 @@ export class YoloService {
   }
 
   async get(conversationId: string): Promise<ConversationYolo> {
-    return { ...this.state(conversationId), isolation: await this.isolation(conversationId) };
+    return this.describe(this.state(conversationId));
   }
 
   set(conversationId: string, enabled: boolean): Promise<ConversationYolo> {
@@ -155,7 +161,23 @@ export class YoloService {
     if (updatedSettings) peer.emit("settings.changed", updatedSettings);
     if (state !== before) peer.emit("conversations.yolo.changed", state);
     if (enabled) await this.releaseOnEnable(conversation.id, conversation.groupId ?? undefined);
-    return { ...state, isolation: await this.isolation(conversationId) };
+    return this.describe(state);
+  }
+
+  private async describe(state: ConversationYoloState): Promise<ConversationYolo> {
+    const isolation = await this.isolation(state.conversationId);
+    if (isolation.available || isolation.reason !== "windows_unisolated")
+      return { ...state, isolation };
+    const consented = new SettingsRepo(this.local.deps.db).get().yoloUnisolatedCommands === true;
+    return {
+      ...state,
+      isolation,
+      windowsDirectRun: consented
+        ? "consented"
+        : this.local.deps.platform === "win32"
+          ? "needs_consent"
+          : "unavailable",
+    };
   }
 
   private async releaseOnEnable(conversationId: string, groupId?: string) {
@@ -220,20 +242,27 @@ export class YoloService {
   /**
    * The command isolation shown in the confirm text. Right after startup the sandbox runtime may
    * still be starting (busy) or miss its 10 s deadline; ExecError carries no RPC code, so it used
-   * to surface as `internal` and hide the switch. Not knowing is reported as not isolated, which
-   * only adds the stronger warning to the confirm text; the switch itself does not depend on it.
+   * to surface as `internal` and hide the switch. Report an unknown reason so clients can
+   * retry the check and still display the current switch state.
    */
   private async isolation(conversationId: string): Promise<ConversationYolo["isolation"]> {
     const signal = AbortSignal.any([this.local.shutdown.signal, AbortSignal.timeout(20_000)]);
     try {
       const target = this.local.targetFor(this.executionLocation(conversationId));
-      return await abortable(target.isolationStatus(signal), signal);
+      const isolation = await abortable(target.isolationStatus(signal), signal);
+      return isolation.reason === "windows_unisolated"
+        ? {
+            ...isolation,
+            windowsYoloConsent:
+              new SettingsRepo(this.local.deps.db).get().yoloUnisolatedCommands === true,
+          }
+        : isolation;
     } catch (error) {
       if (this.local.shutdown.signal.aborted)
         throw new RpcError(RpcErrorCodes.closed, "Brain stopping");
       // The owner's 25 warnings were all a runner topic read in the first second after
       // startup, before the runner link connected (`targetFor` → runner_target_offline). That is
-      // an expected state, not a sandbox fault; the confirm text still warns as unisolated.
+      // an expected connection state.
       const offline = error instanceof RpcError && error.message === "runner_target_offline";
       this.local.deps.logger[offline ? "info" : "warn"](
         JSON.stringify({
@@ -253,13 +282,19 @@ export class YoloService {
   }
 
   /**
-   * A topic whose primary folder is on a paired computer runs its commands there, so the
-   * confirm text must describe that computer's isolation. This desktop's own sandbox says nothing
-   * about whether the other machine isolates anything. Anything unresolvable stays "this device",
-   * which only makes the warning stronger.
+   * The primary folder determines which computer runs commands. Group topics keep their folder
+   * selection separately from Bot topics, including when another group topic is active.
    */
   private executionLocation(conversationId: string): { target: string } | undefined {
-    const topic = new ConversationsRepo(this.local.deps.db).get(conversationId);
+    const { db } = this.local.deps;
+    const topic = new ConversationsRepo(db).get(conversationId);
+    if (topic?.groupId) {
+      const groupTopic = new GroupTopicsRepo(db).get(topic.groupId, conversationId);
+      const location = groupTopic.folders.find(
+        (folder) => folder.id === groupTopic.primaryFolderId,
+      )?.location;
+      return location ? { target: location } : undefined;
+    }
     const folderId = topic?.workplaceFolderId;
     if (!topic?.botId || !folderId || folderId === "home") return undefined;
     const location = this.local.workplaces.repo
@@ -308,6 +343,11 @@ export class YoloService {
       }
     });
     for (const approval of approvals) {
+      if (
+        approval.category === "settings_change" &&
+        approval.explanation?.some((step) => step.code === SETTINGS_SECURITY_CONFIRM)
+      )
+        continue;
       try {
         if (approval.computer) await this.local.computerGrants.resolveForYolo(approval);
         else await this.local.approvals.resolve(approval.id, "allow", false, false, "yolo");

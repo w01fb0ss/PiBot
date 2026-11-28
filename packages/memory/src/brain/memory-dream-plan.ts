@@ -1,5 +1,5 @@
-import { AgentError, type MemoryDraftUsage } from "@pibot/agent";
-import { type Memory, RpcError } from "@pibot/protocol-base";
+import { AgentError, MemoryDraftBudgetError, type MemoryDraftUsage } from "@pibot/agent";
+import { type Memory, type MemoryModelFallback, RpcError } from "@pibot/protocol-base";
 import {
   type DreamRun,
   type MemoryDreamRepo,
@@ -8,12 +8,13 @@ import {
 } from "@pibot/storage";
 import { z } from "zod";
 import { dayStart } from "./memory-extraction-attempt.ts";
+import { logMemoryFallback } from "./memory-maintenance-log.ts";
 import {
   type OrganizationProposal,
   organizationInstruction,
   parseOrganizationDraft,
 } from "./memory-organization.ts";
-import { organizationModel } from "./memory-organization-model.ts";
+import { memoryModelRoute } from "./memory-organization-model.ts";
 import type { OrganizationDeps } from "./memory-organization-queue.ts";
 import type { MemoryService } from "./memory-service.ts";
 
@@ -62,6 +63,17 @@ function longUnused(note: Memory, snapshot: RecallObservation | undefined, at: n
   return Math.max(...seen) <= at - unusedMs;
 }
 
+function keepWhenUnused(note: Memory) {
+  return (
+    note.scope === "user" ||
+    /不要|不许|不能|禁止|必须先|一定要|未经[^。！？；.!?;\r\n]{0,20}不|永远不|先确认/u.test(
+      note.text,
+    ) ||
+    /\b(?:never|don['’]t|do\s+not|must|always\s+ask|without\s+confirmation)\b/i.test(note.text) ||
+    /\bbefore(?:\s+[a-z-]+){0,4}\s+[a-z-]+ing\b/i.test(note.text)
+  );
+}
+
 function expiredAt(note: Memory, at: number) {
   return note.expiresAt != null && Date.parse(note.expiresAt) <= at;
 }
@@ -81,11 +93,17 @@ export function dreamPlan(notes: Memory[], proposals: OrganizationProposal[], un
   const merges: Memory[][] = [];
   const suggested: OrganizationProposal[] = [];
   const handled = new Set<string>();
-  for (const candidate of proposals) {
-    const members = candidate.ids.map((id) => byId.get(id));
+  for (const proposal of proposals) {
+    const members = proposal.ids.map((id) => byId.get(id));
     if (members.some((note) => !note)) continue;
-    for (const id of candidate.ids) handled.add(id);
     const notes = members as Memory[];
+    // The model can propose a removal even when the note's low-use flag is false.
+    const candidate =
+      proposal.action === "remove"
+        ? { ...proposal, ids: notes.filter((note) => !keepWhenUnused(note)).map((note) => note.id) }
+        : proposal;
+    if (candidate.ids.length === 0) continue;
+    for (const id of candidate.ids) handled.add(id);
     const head = notes[0];
     // Discard a redundant copy only when the survivor already carries the exact same content
     // and metadata. Semantic merges and conflicts remain reviewable proposals.
@@ -134,10 +152,13 @@ export async function draftDreamOwner(
   }
   let processedFactSequence: number | undefined;
   const observations = metrics(deps.memory as DreamMemory, botId, active, signal);
-  const unused = active.filter((note) => longUnused(note, observations.get(note.id), now));
+  const unused = active.filter(
+    (note) => longUnused(note, observations.get(note.id), now) && !keepWhenUnused(note),
+  );
   const userExpiry = expired.filter((note) => note.scope !== "bot");
   const suggestions = [...userExpiry, ...unused].map((note) => note.id);
-  const configured = organizationModel(deps.db, botId);
+  const route = memoryModelRoute(deps.db, botId, run.fallback);
+  let fallback: MemoryModelFallback | undefined;
   const settings = new SettingsRepo(deps.db).get();
   const limit = settings.memoryDreamCostUsd ?? 0.05;
   const cost = memoryMaintenanceUsage(deps.db, dayStart());
@@ -147,7 +168,7 @@ export async function draftDreamOwner(
     active.filter((note) => note.kind === "project").map((note) => note.id),
   );
   if (active.length > 1 || factWindows.size > 0) {
-    if (!configured || !deps.draftMemories) throw new AgentError("no_model");
+    if (!route || !deps.draftMemories) throw new AgentError("no_model");
     const text = deps.redactor.redact(
       JSON.stringify({
         ...(factWindows.size > 0 && { recentConversationFacts: [...factWindows.values()] }),
@@ -172,34 +193,36 @@ export async function draftDreamOwner(
         })),
       }),
     );
+    const dailyTokens = (settings.memoryExtractionDailyTokens ?? 2_000_000) - cost.tokens;
+    const dailyCost = (settings.memoryExtractionDailyCostUsd ?? 0.5) - cost.costUsd;
+    const remainingTokens = runTokens - run.tokens;
+    const remainingCost = limit - run.costUsd;
     let settled: MemoryDraftUsage | undefined;
-    const result = await deps.draftMemories({
-      model: configured,
-      signal,
-      text,
-      instruction: dreamInstruction(),
-      ...(settings.memoryDreamLocalOnly ? { localOnly: true } : {}),
-      budget: {
-        tokens: Math.max(
-          0,
-          Math.min(
-            runTokens - run.tokens,
-            (settings.memoryExtractionDailyTokens ?? 2_000_000) - cost.tokens,
-          ),
-        ),
-        costUsd: Math.max(
-          0,
-          Math.min(
-            limit - run.costUsd,
-            (settings.memoryExtractionDailyCostUsd ?? 0.5) - cost.costUsd,
-          ),
-        ),
-      },
-      onUsage(usage) {
-        settled = usage;
-        repo.usage(run.id, run.tokens + usage.tokens, run.costUsd + (usage.costUsd ?? 0));
-      },
-    });
+    const result = await deps
+      .draftMemories({
+        ...route,
+        onFallback: logMemoryFallback(deps, botId),
+        signal,
+        text,
+        instruction: dreamInstruction(),
+        ...(settings.memoryDreamLocalOnly ? { localOnly: true } : {}),
+        budget: {
+          tokens: Math.max(0, Math.min(remainingTokens, dailyTokens)),
+          costUsd: Math.max(0, Math.min(remainingCost, dailyCost)),
+        },
+        onUsage(usage) {
+          settled = usage;
+          repo.usage(run.id, run.tokens + usage.tokens, run.costUsd + (usage.costUsd ?? 0));
+        },
+      })
+      .catch((error: unknown) => {
+        if (
+          error instanceof MemoryDraftBudgetError &&
+          (error.required.tokens > dailyTokens || error.required.costUsd > dailyCost)
+        )
+          throw new DreamDailyBudgetError();
+        throw error;
+      });
     if (!settled)
       repo.usage(run.id, run.tokens + result.tokens, run.costUsd + (result.costUsd ?? 0));
     signal.throwIfAborted();
@@ -218,6 +241,7 @@ export async function draftDreamOwner(
     const picked = listed.filter((id): id is string => typeof id === "string" && ids.has(id));
     dropped = draft.dropped + listed.length - picked.length;
     proposals = draft.proposals;
+    fallback = result.fallback;
     processedFactSequence = factSlice.at(-1)?.seq;
     for (const id of picked.slice(0, 10)) projectIds.add(id);
   }
@@ -238,6 +262,7 @@ export async function draftDreamOwner(
   return {
     ...dreamPlan(notes, supported, suggestions),
     processedFactSequence,
+    fallback,
     dropped,
     expired: expired.filter((note) => note.scope === "bot"),
     projects: active.filter((note) => note.scope === "bot" && projectIds.has(note.id)).slice(0, 10),
@@ -246,4 +271,9 @@ export async function draftDreamOwner(
 
 export function dreamConflict(error: unknown) {
   return error instanceof RpcError && error.message === "memory_conflict";
+}
+export class DreamDailyBudgetError extends AgentError {
+  constructor() {
+    super("budget_exhausted");
+  }
 }

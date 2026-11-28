@@ -208,7 +208,7 @@ export function FolderPicker({
       >
         <Icon name={model.primary.id === "home" ? "home" : "folder"} size={13} />
         <span className={styles.triggerText}>{label}</span>
-        <Icon name="chevron" size={13} />
+        <Icon name="chevron" size={13} className={styles.chevron} />
       </button>
       {open &&
         position &&

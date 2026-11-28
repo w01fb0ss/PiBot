@@ -274,6 +274,7 @@ export const GroupPlanProgressSchema = z.strictObject({
       }),
     )
     .max(GROUP_PLAN_MAX_STEPS),
+  /** Settled steps (passed or skipped), the count every progress line shows against `total`. */
   passed: z.number().int().min(0).max(GROUP_PLAN_MAX_STEPS),
   total: z.number().int().min(0).max(GROUP_PLAN_MAX_STEPS),
   /**
@@ -326,7 +327,11 @@ export const GroupPlanMethods = {
       choice: z.enum(["continue", "accept", "stop", "new_plan"]),
       confirmed: z.literal(true),
     }),
-    result: GroupPlanProgressSchema,
+    /**
+     * `newPlanGoal` (only for `new_plan`): the request that started the plan (else its name), so
+     * the client can put it in the group's input for the user to edit and send; never sent itself.
+     */
+    result: GroupPlanProgressSchema.extend({ newPlanGoal: z.string().max(8_000).optional() }),
   },
   /**
    * A passed dynamic plan as a draft group workflow (no model call, nothing persisted).

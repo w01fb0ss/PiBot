@@ -21,7 +21,7 @@ export function resolveMessageQuote(
     !message ||
     !conversation ||
     conversation.archivedAt ||
-    (scope.importedSource && !conversation.readOnly) ||
+    (scope.importedSource && !message.imported) ||
     message.conversationId !== conversation.id ||
     message.status === "streaming"
   )

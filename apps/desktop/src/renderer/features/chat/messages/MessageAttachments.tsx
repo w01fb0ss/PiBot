@@ -1,5 +1,5 @@
 // Present persisted chat attachments through their format-specific preview paths.
-import { type Attachment, canPreviewSvg, previewKind } from "@pibot/protocol";
+import { type Attachment, canPreviewSvg, mediaMime, previewKind } from "@pibot/protocol";
 import { RevealFileButton, useRpc, useT } from "@pibot/renderer-kit";
 import { Button, CloseButton } from "@pibot/ui";
 import {
@@ -18,11 +18,20 @@ import { OfficeAttachment } from "../../office/OfficeAttachment.tsx";
 import { FileCard } from "../composer/Attachments.tsx";
 import styles from "../composer/attachments.module.css";
 import { imageKey, imagePreviewCache } from "./image-preview-cache.ts";
+import { MediaAttachment } from "./MediaAttachment.tsx";
 import { SvgAttachment } from "./SvgAttachment.tsx";
 
 const zeroVersion = () => 0;
 
-function ImagePreview({ attachment, messageId }: { attachment: Attachment; messageId?: string }) {
+export function ImagePreview({
+  attachment,
+  messageId,
+  className,
+}: {
+  attachment: Attachment;
+  messageId?: string;
+  className?: string;
+}) {
   const t = useT();
   const { peer } = useRpc();
   const openPreview = useContext(FilePreviewContext);
@@ -143,7 +152,7 @@ function ImagePreview({ attachment, messageId }: { attachment: Attachment; messa
       {source && !failed ? (
         <button
           type="button"
-          className={styles.imageButton}
+          className={[styles.imageButton, className].filter(Boolean).join(" ")}
           onClick={() =>
             messageId && openPreview
               ? openPreview(attachmentTarget(attachment, messageId))
@@ -256,10 +265,12 @@ export function MessageAttachments({
   attachments,
   messageId,
   readOnly = false,
+  allowReadOnlyPreview = false,
 }: {
   attachments?: Attachment[];
   messageId?: string;
   readOnly?: boolean;
+  allowReadOnlyPreview?: boolean;
 }) {
   const t = useT();
   if (!attachments?.length) return null;
@@ -275,8 +286,18 @@ export function MessageAttachments({
             <ImagePreview attachment={attachment} messageId={messageId} />
           ) : messageId && !readOnly && canPreviewSvg(attachment) ? (
             <SvgAttachment attachment={attachment} messageId={messageId} />
-          ) : previewKind(attachment.name) && messageId ? (
-            <OfficeAttachment attachment={attachment} messageId={messageId} readOnly={readOnly} />
+          ) : messageId && !readOnly && mediaMime(attachment.name) ? (
+            <MediaAttachment
+              attachment={attachment}
+              messageId={messageId}
+              fallback={<SavedFile attachment={attachment} readOnly={readOnly} />}
+            />
+          ) : !mediaMime(attachment.name) && previewKind(attachment.name) && messageId ? (
+            <OfficeAttachment
+              attachment={attachment}
+              messageId={messageId}
+              readOnly={readOnly && !allowReadOnlyPreview}
+            />
           ) : (
             <SavedFile attachment={attachment} readOnly={readOnly} />
           )}

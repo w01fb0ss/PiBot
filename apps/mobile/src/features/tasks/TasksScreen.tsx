@@ -42,10 +42,7 @@ export function TasksScreen() {
     />
   );
   const error = tasks.write.error ?? tasks.action.error;
-  const counts = routineCounts(
-    center,
-    approvals.items.map((approval) => approval.runId),
-  );
+  const counts = routineCounts(center, approvals.waiting);
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <TabHeader

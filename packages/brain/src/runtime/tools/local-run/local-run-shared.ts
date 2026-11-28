@@ -52,13 +52,18 @@ export function approvalResult<T extends { canRemember?: boolean }>(
 }
 
 export interface State {
+  inputTranslation?: string;
+  settingsAction?: import("@pibot/protocol-base").ToolSettingsAction;
   timing: ToolTimer;
   call: LocalToolCall;
   recordId: string;
   messageId: string;
   prepared?: PreparedTool;
   fingerprint?: string;
+  /** The SDK still executes the original call after the user picks a different model. */
+  modelCallInput?: string;
   auditFacts?: AuditDetail;
+  directRunSaveRequested?: string;
   unisolatedApproved: boolean;
   startSeen: boolean;
   started: boolean;

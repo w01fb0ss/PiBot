@@ -1,12 +1,12 @@
 import {
   automaticOutsidePatterns,
-  automaticOutsideShape,
   OUTSIDE_SANDBOX_REASON,
   OUTSIDE_WRITE_REASON,
 } from "@pibot/policy";
 import { ToolTimer } from "../../core/tool-timing.ts";
 import { observeProjectNotes } from "../notes/project-notes-observe.ts";
 import { commandHandleEnvironment, validateCommandHandles } from "./browser/secret-handles.ts";
+import { noteDependency } from "./dependency-notices.ts";
 import { groupPlanFailure } from "./group-plan-failure.ts";
 import { approvalFolderChange } from "./local-run/approval-folder.ts";
 import {
@@ -39,7 +39,7 @@ import { parallelToolCall, ToolBatch } from "./local-run/tool-batch.ts";
 import { recordSandboxNotices } from "./sandbox-notices.ts";
 export type LocalRunOperations = ReturnType<LocalRun["operationContext"]>;
 
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type {
   LocalToolActivity,
   LocalToolCall,
@@ -52,8 +52,10 @@ import { mapAgentError } from "@pibot/agent";
 import {
   ExecError,
   type ExecutionTarget,
+  type RunCommandOptions,
   rememberableSystemService,
   type SandboxBlock,
+  samePathSpelling,
 } from "@pibot/execution";
 import { containsPath, type Platform, type PolicyResult, soleInvokedProgram } from "@pibot/policy";
 import {
@@ -102,6 +104,11 @@ import {
   commandReadGuidance,
 } from "./command-guidance.ts";
 import { connectorCapabilityDefinition } from "./connectors/capability-adapter.ts";
+import {
+  connectionAliases,
+  connectionCommandTools,
+  translateConnectionCall,
+} from "./connectors/connection-commands.ts";
 import { connectorToolIndex } from "./connectors/connector-index.ts";
 import { ConnectorSchemaError } from "./connectors/connector-schema.ts";
 import { ConnectorToolError, connectorError } from "./connectors/connector-tools.ts";
@@ -206,6 +213,7 @@ export class LocalRun implements ToolRuntime {
   constructor(
     readonly local: LocalService,
     readonly context: ToolRunContext,
+    private readonly connectionCommand?: import("@pibot/protocol-base").ConnectorCommand,
   ) {
     context.toolTiming = (id) => this.timing(id);
     context.sandboxBlocks ??= new SandboxBlockRegistry();
@@ -215,6 +223,23 @@ export class LocalRun implements ToolRuntime {
         botId: context.botId,
         ...(context.groupId ? { groupId: context.groupId } : {}),
       });
+    const commandTools = connectionCommand
+      ? connectionCommandTools(local, connectionCommand, {
+          botId: context.botId,
+          groupId: context.groupId,
+          readOnly: local.execution.mode(context) === "plan",
+          signal: context.signal,
+          selections: this.capabilities,
+        })
+      : [];
+    const aliases = connectionAliases(local, commandTools);
+    const directCapabilities = new Set(commandTools.flatMap((tool) => tool.capabilityTool ?? []));
+    // Keep the model-only name outside the gate. Policy, drafts, receipts and dispatch all
+    // see the same connector_call shape as a call made after ordinary discovery.
+    const translate = (call: LocalToolCall) => {
+      const alias = aliases.get(call.tool);
+      return alias ? translateConnectionCall(call, alias.tool) : call;
+    };
     local.changes.turn.begin(context);
     this.lockOwner = { runId: context.runId, botId: context.botId, lease: randomUUID() };
     let mainDirectAnswer: boolean | undefined;
@@ -229,6 +254,9 @@ export class LocalRun implements ToolRuntime {
         (!local.deps.capabilityTools.specs[tool.name]?.unattendedOnly || !!context.routineRunId) &&
         // The default Pi's management and dispatch tools exist only in its own direct chat.
         (!local.deps.capabilityTools.specs[tool.name]?.mainBotOnly || mainDirect()) &&
+        (tool.name !== "delegate_to_agent" || !mainDirect()) &&
+        (!context.executionDevice?.target.startsWith("runner:") ||
+          local.deps.capabilityTools.specs[tool.name]?.policy.category !== "settings_change") &&
         (!local.deps.capabilityTools.specs[tool.name]?.roleIds ||
           local.deps.capabilityTools.specs[tool.name]?.roleIds?.includes(
             new BotsRepo(local.deps.db).get(context.botId)?.role?.id ?? "",
@@ -249,13 +277,26 @@ export class LocalRun implements ToolRuntime {
       // Read when the session registers tools, after useModel() saw the model.
       get definitions() {
         const offered = run.offered(definitions);
+        const catalog = scopedToolCatalog(offered, local.deps.capabilityTools);
+        const raw = offered.some((tool) => tool.name === "connector_call")
+          ? [...aliases.values()].filter(
+              ({ tool }) => tool.readOnly || local.execution.mode(context) !== "plan",
+            )
+          : [];
+        const commandId = connectionCommand?.id;
         const index = connectorToolIndex(local, context, offered);
         run.discovery = index?.snapshot;
-        return scopedToolCatalog(offered, local.deps.capabilityTools).map((tool) =>
-          tool.name === "tool_discover" && index
-            ? { ...tool, description: `${tool.description}\n${index.text}` }
-            : tool,
-        );
+        return [
+          ...catalog.map((tool) =>
+            directCapabilities.has(tool.name) &&
+            tool.capabilityImplementation?.connectorId === commandId
+              ? { ...tool, loadGroup: undefined }
+              : tool.name === "tool_discover" && index
+                ? { ...tool, description: `${tool.description}\n${index.text}` }
+                : tool,
+          ),
+          ...raw.map(({ definition }) => definition),
+        ];
       },
       get capabilityDefinitions() {
         return run.ports.definitions.filter((tool) => !!tool.capabilityImplementation);
@@ -277,7 +318,8 @@ export class LocalRun implements ToolRuntime {
           workplaceVersion: digest(context.runWorkplace ?? context.topicWorkplace ?? null),
         };
       },
-      authorize: async (call, signal) => {
+      authorize: async (requested, signal) => {
+        const call = translate(requested);
         this.state(call);
         try {
           if (
@@ -352,8 +394,9 @@ export class LocalRun implements ToolRuntime {
           return { allow: false, reason: result.text };
         }
       },
-      blocked: (call, reason, failed) => this.blocked(call, reason, failed),
-      execute: async (call, signal, output) => {
+      blocked: (call, reason, failed) => this.blocked(translate(call), reason, failed),
+      execute: async (requested, signal, output) => {
+        const call = translate(requested);
         try {
           const result = await this.execute(call, signal, output);
           groupHistory.remember(call, result, this.ports.definitions);
@@ -369,6 +412,7 @@ export class LocalRun implements ToolRuntime {
             const result = connectorError(
               error.code,
               error instanceof ConnectorToolError ? error.serviceMessage : undefined,
+              error instanceof ConnectorToolError ? error.blockedNetworkMessage : undefined,
             );
             const state = this.state(call);
             state.result = result;
@@ -407,7 +451,20 @@ export class LocalRun implements ToolRuntime {
           return { text, isError: true };
         }
       },
-      activity: (event) => this.activity(event),
+      activity: (event) => {
+        const alias = aliases.get(event.tool);
+        this.activity(
+          alias
+            ? {
+                ...event,
+                ...translateConnectionCall(
+                  { id: event.id, tool: event.tool, input: event.input },
+                  alias.tool,
+                ),
+              }
+            : event,
+        );
+      },
       assistantReply: (text) => {
         if (!this.closed && !context.signal.aborted && context.groupId)
           context.assistantReply = local.deps.redactor
@@ -463,7 +520,13 @@ export class LocalRun implements ToolRuntime {
       return adapted ? [adapted] : [];
     });
     const executionAllows = this.local.execution.catalogAvailability(this.context);
+    const knowledge = this.local.knowledgeSources(this.context.botId, this.context.groupId);
     return selected.filter((tool) => {
+      const knowledgeWrite =
+        this.local.deps.capabilityTools.specs[tool.name]?.group === "knowledge" &&
+        tool.name !== "knowledge_read" &&
+        tool.name !== "knowledge_search";
+      if (knowledgeWrite && !knowledge.some((source) => source.writable)) return false;
       if (this.local.endpoints && !this.local.endpoints.allows(tool.name, this.context))
         return false;
       if (
@@ -482,7 +545,8 @@ export class LocalRun implements ToolRuntime {
       if (["ask_user", "personal_todo"].includes(tool.name) && !canAskUser(this.context))
         return false;
       return (
-        (!category ||
+        (knowledgeWrite ||
+          !category ||
           levels[category] !== "never" ||
           (["read_file", "list_dir"].includes(tool.name) && levels.read_ai_config !== "never")) &&
         this.local.reviews.allowsTool(this.context, tool.name) &&
@@ -503,6 +567,20 @@ export class LocalRun implements ToolRuntime {
         (tool.name !== "browser_login" || (!!host.browser && !!host.credentials))
       );
     });
+  }
+  connectionInstruction(): string | undefined {
+    const command = this.connectionCommand;
+    if (!command) return;
+    const visible = this.ports.definitions.some(
+      (tool) =>
+        tool.id?.startsWith(`mcp:${command.id}:`) ||
+        (!tool.loadGroup && tool.capabilityImplementation?.connectorId === command.id),
+    );
+    if (!visible) return;
+    const name = JSON.stringify(command.name);
+    return this.context.language === "zh"
+      ? `用户指定使用 ${name}。直接使用本轮提供的工具。`
+      : `The user selected ${name}. Use the tools already provided for this turn.`;
   }
   toolGroups() {
     return this.groupHistory.snapshot(this.ports.definitions);
@@ -860,13 +938,25 @@ export class LocalRun implements ToolRuntime {
           runPermissionScope(this.local, this.context),
         );
   }
-  // A runner host has no skill environment of its own, so it never inherits one here.
-  async commandSkillEnvironment() {
-    if (this.remote) return undefined;
-    return this.local.skills?.runtimeEnvironment?.(
-      this.context.botId,
-      runPermissionScope(this.local, this.context),
-    );
+  async commandSkillSecrets(prepared: PreparedToolView, signal: AbortSignal) {
+    const checked = prepared as PreparedTool;
+    const uses = checked.skillSecretUses;
+    if (!uses?.length) return undefined;
+    this.assertDispatch(checked);
+    const values = await this.local.userSecrets.environment(uses, this.context, signal);
+    const env: Record<string, string> = {};
+    const masks: { handle: string; value: string }[] = [];
+    for (const { variable, name } of uses) {
+      const value = values[name];
+      if (!value) throw new ExecError("invalid_input");
+      env[variable] = value;
+      masks.push({ handle: `«secret:h${randomBytes(16).toString("hex")}»`, value });
+    }
+    this.assertDispatch(checked);
+    return { env, values: masks };
+  }
+  async commandSkillEnvironment(prepared: PreparedToolView) {
+    return (prepared as PreparedTool).commandSkill?.environment;
   }
   commandGroupId() {
     return runPermissionScope(this.local, this.context);
@@ -878,7 +968,7 @@ export class LocalRun implements ToolRuntime {
   }
   async watchCommandRoots(prepared: PreparedToolView, serial = false) {
     // The desktop filesystem watcher cannot observe a runner; never inspect a same-named local root.
-    if (this.remote) return;
+    if (this.remote || (prepared.result.windowsReadProven && !prepared.docker)) return;
     // A folder opened for one call is outside the workplace whose changes this lists;
     // scanning a cache tree there would only cost time. The audit names it instead.
     const roots = this.workplaceWriteRoots(prepared);
@@ -926,7 +1016,25 @@ export class LocalRun implements ToolRuntime {
     outsideSandbox = false,
     sandboxedExecution = false,
     network?: { allowAll: boolean; domains: readonly string[] },
+    commands: readonly { program: string }[] = [],
+    ranOutsideSandbox = false,
   ) {
+    if (
+      !this.remote &&
+      !this.local.deps.executionLocation &&
+      this.platform === "darwin" &&
+      (sandboxedExecution || ranOutsideSandbox) &&
+      (commands.some(({ program }) => /(?:^|\/)git$/.test(program)) ||
+        (literal && /(?:^|\/)git$/.test(literal.program))) &&
+      /^xcrun: (?:error: )?(?:invalid active developer path|unable to find utility "git")/m.test(
+        output,
+      )
+    ) {
+      noteDependency(this.local, this.context, "git");
+      return this.context.language === "zh"
+        ? "macOS 无法启动 Git。请用户在执行命令的电脑上修复 Apple 开发者工具，再重试。"
+        : "macOS could not start Git. Ask the user to repair Apple’s developer tools on the computer running the command, then retry.";
+    }
     return commandFailureGuidance(
       this.platform,
       literal,
@@ -951,6 +1059,38 @@ export class LocalRun implements ToolRuntime {
     if (hint) this.browserOpenHintShown = true;
     return hint;
   }
+  async retrySandboxWebsite(prepared: PreparedToolView, block: SandboxBlock, signal: AbortSignal) {
+    const checked = prepared as PreparedTool;
+    const state = this.states.get(prepared.call.id);
+    const args = prepared.call.input;
+    if (
+      !state ||
+      state.synthetic ||
+      !checked.commandSkill ||
+      this.remote ||
+      this.context.routineSource ||
+      args.background ||
+      args.outsideSandbox ||
+      checked.docker ||
+      checked.browserSecretUses?.length ||
+      !checked.result.analysis?.literalCommand ||
+      !this.context.conversationId
+    )
+      return undefined;
+    const pending = recordSandboxNotices(this.local, this.context, checked, block, signal);
+    if (!pending) return undefined;
+    this.context.executionClock?.pause("website_approval");
+    let confirmed: boolean;
+    try {
+      confirmed = await pending;
+    } finally {
+      this.context.executionClock?.resume("website_approval");
+    }
+    if (!confirmed) return undefined;
+    const retry = await this.runSynthetic({ ...prepared.call, id: randomUUID() }, signal);
+    return retry.allowed ? retry.result : { text: retry.reason, isError: true };
+  }
+
   /** Remembers the block; true when a run outside the sandbox may be offered. */
   recordSandboxBlock(prepared: PreparedToolView, block: SandboxBlock) {
     recordSandboxNotices(this.local, this.context, prepared as PreparedTool, block);
@@ -1038,36 +1178,48 @@ export class LocalRun implements ToolRuntime {
       return;
     }
     if (prepared.result.reason !== OUTSIDE_SANDBOX_REASON) return;
-    const command = (prepared.call.input as { command?: string }).command;
-    const pattern =
-      command &&
-      automaticOutsideShape(
-        command,
-        prepared.result.analysis,
-        this.local.deps.platform as Platform,
-      );
-    const entries = settings.sandboxAutoOutsideCommands ?? [];
+    const pattern = prepared.rememberDirectRun;
+    const entries = (settings.sandboxAutoOutsideCommands ?? []).filter(
+      (entry) =>
+        !(entry.source === "auto" && entry.folder === prepared.cwd && entry.pattern === pattern),
+    );
+    const approvalId = prepared.approvalId;
     if (
       !pattern ||
+      !approvalId ||
+      this.states.get(prepared.call.id)?.directRunSaveRequested !== approvalId ||
+      this.context.signal.aborted ||
+      !this.authorizationMatches(prepared) ||
       entries.length >= 256 ||
+      automaticOutsidePatterns(entries, prepared.cwd).length >= 32 ||
       entries.some((entry) => entry.pattern === pattern && entry.folder === prepared.cwd)
     )
       return;
-    transaction(this.local.deps.db, () => {
+    const saved = transaction(this.local.deps.db, () => {
+      if (!this.local.approvals.repo.recordDirectRunRemembered(approvalId)) return false;
       repo.set({
         sandboxAutoOutsideCommands: [
           ...entries,
-          { pattern, folder: prepared.cwd, source: "auto", createdAt: Date.now() },
+          { pattern, folder: prepared.cwd, source: "user", createdAt: Date.now() },
         ],
       });
       this.local.approvals.audit.append({
         botId: this.context.botId,
         runId: this.context.runId,
         kind: "permissions.changed",
-        summary: "Remembered outside-sandbox command / 自动记住沙箱外命令",
-        detail: { actor: "automatic", reasonCode: "sandbox_outside_auto_remembered" },
+        summary: "Remembered direct-run permission / 已记住直接运行授权",
+        detail: {
+          actor: "user",
+          reasonCode: "sandbox_outside_remembered",
+          approvalId,
+          toolCallId: prepared.call.id,
+        },
       });
+      return true;
     });
+    if (!saved) return;
+    const state = this.states.get(prepared.call.id);
+    if (state) state.directRunSaveRequested = undefined;
     this.local.deps.peer.emit("settings.changed", repo.get());
   }
   commandSystemServices(view: PreparedToolView) {
@@ -1206,6 +1358,7 @@ export class LocalRun implements ToolRuntime {
     prepared: PreparedToolView;
     command: string;
     secretEnv: Record<string, string>;
+    skillEnv?: RunCommandOptions["skillEnv"];
     allowUnisolated: boolean;
     auditFields: AuditDetail;
     signal: AbortSignal;
@@ -1217,6 +1370,7 @@ export class LocalRun implements ToolRuntime {
       assertAuthorized: () => this.assertDispatch(prepared),
       command: input.command,
       secretEnv: input.secretEnv,
+      skillEnv: input.skillEnv,
       file: {
         rootIdentities: prepared.boundary?.roots,
         cwd: prepared.cwd,
@@ -1288,6 +1442,16 @@ export class LocalRun implements ToolRuntime {
   redact(text: string) {
     return this.local.deps.redactor.redact(text);
   }
+  recordInputTranslation(callId: string, inputTranslation: string) {
+    const state = this.states.get(callId);
+    if (!state || state.finished) return;
+    const text =
+      state.inputTranslation && state.inputTranslation !== inputTranslation
+        ? `${state.inputTranslation}\n${inputTranslation}`.slice(0, 8_000)
+        : inputTranslation;
+    state.inputTranslation = text;
+    this.local.tools.update(state.recordId, { inputTranslation: text });
+  }
   log(level: "info" | "warn", fields: Record<string, unknown>) {
     this.local.deps.logger[level](JSON.stringify(fields));
   }
@@ -1297,9 +1461,8 @@ export class LocalRun implements ToolRuntime {
     signal: AbortSignal,
   ) {
     const prepared = preparedView as PreparedTool;
-    const approved = new Set(
-      prepared.patchPaths ?? (prepared.result.path ? [prepared.result.path.path] : []),
-    );
+    const approved =
+      prepared.patchPaths ?? (prepared.result.path ? [prepared.result.path.path] : []);
     for (const path of paths) {
       const current = await this.prepare(
         { ...prepared.call, tool: "write_file", input: { path, content: "" } },
@@ -1307,7 +1470,10 @@ export class LocalRun implements ToolRuntime {
       );
       if (
         current.result.decision === "deny" ||
-        (current.result.decision === "ask" && !approved.has(path))
+        !current.result.path ||
+        !samePathSpelling(current.result.path.path, path) ||
+        (current.result.decision === "ask" &&
+          !approved.some((approvedPath) => samePathSpelling(approvedPath, path)))
       )
         throw new ExecError("file_conflict", "cleanup_failed");
     }
@@ -1516,14 +1682,10 @@ export class LocalRun implements ToolRuntime {
     // lock is released only after the watch stopped, so the next writer's changes never land in
     // this run's "this turn".
     const browser = this.local.browserProvider?.finishRun(this.context) ?? Promise.resolve();
-    // A command deadline may return before its underlying process drains. Keep the folder
-    // lease through exec retirement too; a cleanup failure must remain a failed drain receipt.
-    const command =
-      this.remote && !this.selectedTarget
-        ? Promise.resolve()
-        : Promise.resolve().then(() =>
-            (this.selectedTarget ?? this.target).releaseRun(this.context.runId),
-          );
+    // A command deadline may return before its underlying process drains. Keep its folder
+    // lease through exec retirement while letting unrelated Windows sessions continue.
+    const commandTarget = this.selectedTarget ?? (this.remote ? undefined : this.target);
+    const command = Promise.resolve().then(() => commandTarget?.releaseRun(this.context.runId));
     const ordinary = Promise.all([
       this.local.changes.turn.finish(this.context),
       browser,
@@ -1535,6 +1697,9 @@ export class LocalRun implements ToolRuntime {
       this.context.runId,
       () => Promise.all([ordinary, command]).then(() => {}),
       releaseWrite,
+      commandTarget?.windowsCommandCleanupPending?.(this.context.runId)
+        ? (this.context.runWorkplace?.boundary.writeRoots ?? [])
+        : undefined,
     );
     this.local.runCleanup.hold(
       this.context.runId,

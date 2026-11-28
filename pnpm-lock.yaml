@@ -410,6 +410,12 @@ importers:
       '@pibot/ui':
         specifier: workspace:*
         version: link:../../packages/ui
+      '@pibot/videos':
+        specifier: workspace:*
+        version: link:../../packages/videos
+      '@pibot/videos-contract':
+        specifier: workspace:*
+        version: link:../../packages/videos-contract
       '@pibot/workspaces':
         specifier: workspace:0.0.0
         version: link:../../packages/workspaces
@@ -719,6 +725,18 @@ importers:
         specifier: 8.10.2
         version: 8.10.2
 
+  apps/plugins/image-inspiration:
+    dependencies:
+      '@pibot/plugin-sdk':
+        specifier: workspace:0.0.0
+        version: link:../../../sdk/plugin-sdk
+
+  apps/plugins/media-desk:
+    dependencies:
+      '@pibot/plugin-sdk':
+        specifier: workspace:0.0.0
+        version: link:../../../sdk/plugin-sdk
+
   apps/relay:
     dependencies:
       '@pibot/link':
@@ -764,6 +782,9 @@ importers:
       node-datachannel:
         specifier: 0.33.6
         version: 0.33.6
+      quickjs-wasi:
+        specifier: 3.6.2
+        version: 3.6.2
       ws:
         specifier: 8.22.0
         version: 8.22.0
@@ -936,6 +957,9 @@ importers:
       '@pibot/teams':
         specifier: workspace:0.0.0
         version: link:../teams
+      '@pibot/videos':
+        specifier: workspace:0.0.0
+        version: link:../videos
       '@pibot/workspaces':
         specifier: workspace:0.0.0
         version: link:../workspaces
@@ -1286,6 +1310,9 @@ importers:
       '@pibot/teams-contract':
         specifier: workspace:0.0.0
         version: link:../teams-contract
+      '@pibot/videos-contract':
+        specifier: workspace:0.0.0
+        version: link:../videos-contract
       '@pibot/workspaces-contract':
         specifier: workspace:0.0.0
         version: link:../workspaces-contract
@@ -1686,6 +1713,9 @@ importers:
       '@pibot/teams-contract':
         specifier: workspace:0.0.0
         version: link:../teams-contract
+      '@pibot/videos-contract':
+        specifier: workspace:0.0.0
+        version: link:../videos-contract
       '@pibot/workspaces-contract':
         specifier: workspace:0.0.0
         version: link:../workspaces-contract
@@ -2052,6 +2082,39 @@ importers:
       '@types/react-dom':
         specifier: 19.3.0
         version: 19.3.0(@types/react@19.3.0)
+
+  packages/videos:
+    dependencies:
+      '@pibot/brain':
+        specifier: workspace:0.0.0
+        version: link:../brain
+      '@pibot/execution':
+        specifier: workspace:0.0.0
+        version: link:../execution
+      '@pibot/policy':
+        specifier: workspace:0.0.0
+        version: link:../policy
+      '@pibot/protocol-base':
+        specifier: workspace:0.0.0
+        version: link:../protocol-base
+      '@pibot/storage':
+        specifier: workspace:0.0.0
+        version: link:../storage
+      '@pibot/videos-contract':
+        specifier: workspace:0.0.0
+        version: link:../videos-contract
+      zod:
+        specifier: 4.6.5
+        version: 4.6.5
+
+  packages/videos-contract:
+    dependencies:
+      '@pibot/protocol-base':
+        specifier: workspace:0.0.0
+        version: link:../protocol-base
+      zod:
+        specifier: 4.6.5
+        version: 4.6.5
 
   packages/workspaces:
     dependencies:

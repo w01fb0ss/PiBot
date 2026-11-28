@@ -4,7 +4,8 @@ export const offlineZh = {
   offlineRunnerConfirm: "执行端操作需要本次确认",
   offlineRunnerDanger: "风险：危险；请核对命令与目录",
   offlineRunnerNormal: "风险：常规；请核对命令与目录",
-  offlineRunnerOnceOnly: "只允许本次；YOLO 和记住均不能代答。文件与命令只在授权执行端执行。",
+  offlineRunnerOnceOnly:
+    "只允许本次；自动批准模式和已记住授权均不能代答。文件与命令只在授权执行端执行。",
   offlineRunnerAllowOnce: "允许一次",
   offlineRunnerDeny: "拒绝",
   offlineRunnerConfirmFailed: "未能确认，请重试或拒绝",
@@ -83,7 +84,7 @@ export const offlineEn: Record<keyof typeof offlineZh, string> = {
   offlineRunnerDanger: "Risk: dangerous. Check the command and folder.",
   offlineRunnerNormal: "Risk: normal. Check the command and folder.",
   offlineRunnerOnceOnly:
-    "This operation only. YOLO and remembered approvals cannot answer. Commands and files run only on the authorized runner.",
+    "This operation only. Auto-approve and remembered approvals cannot answer. Commands and files run only on the authorized runner.",
   offlineRunnerAllowOnce: "Allow once",
   offlineRunnerDeny: "Deny",
   offlineRunnerConfirmFailed: "Could not confirm. Retry or deny.",

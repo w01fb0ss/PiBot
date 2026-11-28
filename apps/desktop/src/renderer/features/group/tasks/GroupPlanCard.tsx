@@ -1,11 +1,13 @@
 import { budgetAmount } from "@pibot/client-core";
+import { localizedPlanStepTitle } from "@pibot/i18n";
 import {
   type GroupPlanCard as GroupPlanCardData,
   GroupPlanCardSchema,
+  type GroupPlanProgress,
   type Message,
 } from "@pibot/protocol";
 import { visibleTaskText } from "@pibot/protocol-base";
-import { BotAvatar, useRpc, useT } from "@pibot/renderer-kit";
+import { BotAvatar, useRpc, useSettings, useT } from "@pibot/renderer-kit";
 import { Button, Chip } from "@pibot/ui";
 import { useEffect, useRef, useState } from "react";
 import { Markdown } from "../../chat/messages/Markdown.tsx";
@@ -40,19 +42,32 @@ function layers<T extends { id: string; dependsOn: string[] }>(steps: readonly T
   return levels.filter((level) => level.length > 0);
 }
 
+/** Bullets and lines joined into one plain line (Markdown list marks dropped). */
+function taskLine(text: string) {
+  return text
+    .split(/\n+/)
+    .map((line) => line.replace(/^\s*(?:[-*\u2022]|\d+[.)])\s+/, "").trim())
+    .filter(Boolean)
+    .join(" · ");
+}
+
 function StepItem({
   step,
   bots,
   owners,
   titles,
+  oneLine = false,
 }: {
   step: GroupPlanCardData["plan"]["steps"][number];
   bots: Map<string, GroupSnapshot["bots"][number]>;
   owners: Map<string, string>;
   titles: Map<string, string>;
+  /** A started plan: each member's task on one line; the full text is in that task's 说明 tab. */
+  oneLine?: boolean;
 }) {
   const t = useT();
   const owner = bots.get(owners.get(step.id) ?? "");
+  const task = visibleTaskText(step.task);
   return (
     <li className={styles.step}>
       {/* The step's owner avatar marks the timeline. */}
@@ -63,14 +78,23 @@ function StepItem({
         label={owner?.name ?? t("group.member")}
         size={22}
       />
-      <b>{step.title}</b> · {owner?.name ?? t("group.member")}
-      <div className={styles.stepTask}>
-        <Markdown text={visibleTaskText(step.task)} />
-      </div>
+      <b>{titles.get(step.id) ?? t("group.plan.step.untitled")}</b> ·{" "}
+      {owner?.name ?? t("group.member")}
+      {oneLine ? (
+        <p className={styles.stepTaskLine} title={task}>
+          {taskLine(task)}
+        </p>
+      ) : (
+        <div className={styles.stepTask}>
+          <Markdown text={task} />
+        </div>
+      )}
       {!!step.dependsOn.length && (
         <p>
           {t("group.plan.depends", {
-            steps: step.dependsOn.map((id) => titles.get(id) ?? id).join(" · "),
+            steps: step.dependsOn
+              .map((id) => titles.get(id) ?? t("group.plan.step.untitled"))
+              .join(" · "),
           })}
         </p>
       )}
@@ -91,11 +115,29 @@ function StepItem({
   );
 }
 
+/**
+ * A started card's badge reads the live plan, not the card's stored 「已登记执行」: a finished plan
+ * in the Tasks panel says it finished, a stopped one that it stopped.
+ */
+function RunChip({ run }: { run: Pick<GroupPlanProgress, "status" | "choice"> }) {
+  const t = useT();
+  const live = run.status === "running" || run.status === "waiting";
+  if (live && run.choice) return <Chip tone="warn">{t("group.plan.choice.title")}</Chip>;
+  if (live) return <Chip tone="teal">{t("group.plan.run.running")}</Chip>;
+  if (run.status === "passed") return <Chip tone="ok">{t("group.plan.run.passed")}</Chip>;
+  return (
+    <Chip tone="neutral">
+      {t(run.status === "cancelled" ? "group.plan.run.cancelled" : "group.plan.run.stopped")}
+    </Chip>
+  );
+}
+
 /** Persisted program facts, not a plan parsed from the assistant's prose. */
 export function GroupPlanCard({
   message,
   bots,
   sendChanges,
+  fillComposer,
   embedded = false,
 }: {
   message: Pick<Message, "id"> & { usage?: unknown };
@@ -104,10 +146,14 @@ export function GroupPlanCard({
   embedded?: boolean;
   /** GroupSession owns send cancellation; the card only guards its local form updates. */
   sendChanges?(text: string): Promise<boolean>;
+  /** Puts text in the group's input for the user to edit (「新开计划」 fills the old goal). */
+  fillComposer?(text: string): void;
 }) {
   const t = useT();
   const { peer } = useRpc();
+  const { language } = useSettings();
   const active = useRef<AbortController | undefined>(undefined);
+  const [run, setRun] = useState<Pick<GroupPlanProgress, "status" | "choice">>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
   const [note, setNote] = useState("");
@@ -124,6 +170,7 @@ export function GroupPlanCard({
     setError(false);
     setModifying(false);
     setNote("");
+    setRun(undefined);
     return () => {
       active.current?.abort();
       active.current = undefined;
@@ -133,7 +180,9 @@ export function GroupPlanCard({
   const card = parsed.data;
   const byId = new Map(bots.map((bot) => [bot.id, bot]));
   const owners = new Map(card.owners.map((owner) => [owner.stepId, owner.botId]));
-  const titles = new Map(card.plan.steps.map((step) => [step.id, step.title]));
+  const titles = new Map(
+    card.plan.steps.map((step) => [step.id, localizedPlanStepTitle(step.title, language)]),
+  );
   const resolve = async (decision: "start" | "start_relaxed" | "modify" | "check") => {
     if (!peer || active.current) return;
     const controller = new AbortController();
@@ -170,11 +219,17 @@ export function GroupPlanCard({
         <b>
           {t("group.plan.title")} · {card.plan.name}
         </b>
-        <Chip
-          tone={card.status === "started" ? "teal" : card.status === "pending" ? "warn" : "neutral"}
-        >
-          {t(`group.plan.status.${card.status}`)}
-        </Chip>
+        {card.status === "started" && run ? (
+          <RunChip run={run} />
+        ) : (
+          <Chip
+            tone={
+              card.status === "started" ? "teal" : card.status === "pending" ? "warn" : "neutral"
+            }
+          >
+            {t(`group.plan.status.${card.status}`)}
+          </Chip>
+        )}
       </div>
       {card.startFailure && (
         <div className={styles.warning} role="alert">
@@ -223,19 +278,49 @@ export function GroupPlanCard({
             // serial-looking plan still reads as parallel work.
             <li key={first.id}>
               <b>
-                {t("group.plan.parallel", { steps: layer.map((step) => step.title).join(" · ") })}
+                {t("group.plan.parallel", {
+                  steps: layer
+                    .map((step) => titles.get(step.id) ?? t("group.plan.step.untitled"))
+                    .join(" · "),
+                })}
               </b>
               {layer.map((step) => (
-                <StepItem key={step.id} step={step} bots={byId} owners={owners} titles={titles} />
+                <StepItem
+                  key={step.id}
+                  step={step}
+                  bots={byId}
+                  owners={owners}
+                  titles={titles}
+                  oneLine={card.status === "started"}
+                />
               ))}
             </li>
           ) : (
-            <StepItem key={first.id} step={first} bots={byId} owners={owners} titles={titles} />
+            <StepItem
+              key={first.id}
+              step={first}
+              bots={byId}
+              owners={owners}
+              titles={titles}
+              oneLine={card.status === "started"}
+            />
           );
         })}
       </ol>
       {card.status === "started" && (
-        <GroupPlanProgressView card={card} titles={titles} bots={byId} />
+        <GroupPlanProgressView
+          card={card}
+          titles={titles}
+          bots={byId}
+          fillComposer={fillComposer}
+          onProgress={(value) =>
+            setRun((old) =>
+              old?.status === value.status && old.choice?.kind === value.choice?.kind
+                ? old
+                : { status: value.status, choice: value.choice },
+            )
+          }
+        />
       )}
       {(card.status === "pending" || card.status === "ready" || card.status === "starting") && (
         <div className={styles.actions}>

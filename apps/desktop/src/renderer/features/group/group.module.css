@@ -64,6 +64,20 @@
   flex: none;
   min-width: 0;
 }
+.rounds[data-limited] {
+  flex-wrap: wrap;
+  column-gap: 12px;
+  row-gap: 6px;
+}
+.rounds[data-limited] .roundsText {
+  flex: 0 1 auto;
+}
+.roundActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
 .roundsBar {
   flex: 1;
   min-width: 40px;
@@ -519,6 +533,14 @@ button.taskSource:focus-visible,
   display: flex;
   align-items: flex-start;
   gap: 10px;
+}
+.inlineApproval {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 4px;
+  color: var(--text2);
+  font-size: 12px;
 }
 .mentionAnchor {
   position: relative;
@@ -2046,7 +2068,8 @@ button.briefRowButton:focus-visible {
 }
 .briefRowButton > code {
   flex: 1;
-  min-width: 0;
+  /* Keeps a readable start of the path when the status and 「打开」 share a narrow pane. */
+  min-width: 7em;
   overflow: hidden;
   font-family: var(--font-mono);
   font-size: 13px;
@@ -2096,11 +2119,30 @@ button.briefRowButton:focus-visible {
   align-items: center;
   gap: 6px;
   min-width: 0;
+  max-width: 100%;
 }
+/* One line per member; the full title is in the tooltip and the member's own 说明 tab. */
 .briefNextStep > strong {
+  min-width: 0;
+  overflow: hidden;
   font-weight: 500;
   color: var(--text);
-  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.briefRowButton > .briefMuted {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.briefOpen {
+  flex: none;
+  padding: 1px 8px;
+  border: 1px solid var(--b2);
+  border-radius: var(--radius-pill);
+  color: var(--accent);
+  font-size: 11.5px;
+  font-weight: 600;
 }
 .briefRaw {
   min-width: 0;

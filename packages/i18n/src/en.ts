@@ -19,7 +19,14 @@ import {
 import { remoteEn } from "@pibot/remote-contract/i18n";
 import { routineProposalsEn, routinesEn } from "@pibot/routines-contract/i18n";
 import { skillsEn, teachEn, workflowsEn } from "@pibot/skills-contract/i18n";
-import { builtinEn, piManagerEn, teamsEn } from "@pibot/teams-contract/i18n";
+import {
+  builtinEn,
+  piHealthEn,
+  piManagerEn,
+  piSettingsEn,
+  teamsEn,
+} from "@pibot/teams-contract/i18n";
+import { videoEn } from "@pibot/videos-contract/i18n";
 import { changesEn, managedResourcesEn } from "@pibot/workspaces-contract/i18n";
 import { mergeTranslations } from "./merge-translations.ts";
 import { activityEn } from "./sections/activity.ts";
@@ -205,9 +212,9 @@ const common = {
     "The interface cache could not be cleared; old previews may remain on disk. Retry; run history has not been cleaned.",
   "startup.newerData":
     "This data was created by a newer version of Pi Bot and cannot be opened by this version. Update Pi Bot and retry; do not delete the data.",
-  "startup.clear": "Clear interface cache",
+  "startup.clear": "Clear startup preview cache",
   "startup.clearNote":
-    "Remove locally saved sidebar and recent message previews; pause saving until next launch.",
+    "Clears only the cached sidebar and recent-message preview used during startup. Does not delete chats or data.",
   "brain.starting": "Starting the background service…",
   "brain.ready": "Background service ready",
   "brain.restarting": "Restarting the background service…",
@@ -252,16 +259,28 @@ const common = {
   "settings.browserSection": "Browser",
   "settings.browserDefault": "Default browser",
   "settings.browserUnknown": "Unknown",
-  "settings.browserExtension": "Pi Bot extension",
+  "settings.browserExtension": "Pi Bot browser extension",
   "settings.browserExtensionStatus.connected": "Connected",
   "settings.browserExtensionStatus.installed": "Disconnected (previously connected)",
-  "settings.browserExtensionStatus.edgeNotListed": "Not yet listed in Microsoft Edge Add-ons",
-  "settings.browserExtensionStatus.not_installed": "Not installed",
-  "settings.browserExtensionStatus.unsupported": "Unsupported",
+  "settings.browserExtensionStatus.not_installed": "Extension not detected yet",
+  "settings.browserExtensionStatus.unsupported": "Uses built-in Bot browser",
   "settings.browserExtensionStatus.separate_data_dir":
-    "This Pi Bot uses a separate data folder and has not taken over the browser extension. Choose Connect here to switch the extension to this copy; your main Pi Bot loses it until this copy quits.",
+    "The browser extension can be registered from the installed Pi Bot using its default data folder.",
   "settings.browserExtensionStatus.other_instance":
     "The browser extension is connected to another Pi Bot. Choose Connect here to switch it to this one.",
+  "settings.browserExtensionInstall": "Open store",
+  "settings.browserExtensionCheck": "Check connection",
+  "settings.browserExtensionRetry": "Retry connection",
+  "settings.browserExtensionEdgeHelp":
+    "Install from the Chrome Web Store. If Edge asks, allow extensions from other stores.",
+  "settings.browserExtensionSafariHelp":
+    "There is no Pi Bot extension for Safari. Bots use their built-in browser automatically. Install the extension in Chrome or Firefox to use your existing sign-ins.",
+  "settings.browserExtensionStoreHelp":
+    "If the Chrome Web Store is unavailable, check your browser’s network or proxy settings. You can also install the Pi Bot extension in Firefox or keep using the built-in Bot browser.",
+  "settings.browserExtensionCheckHelp":
+    "Open the Pi Bot extension from your browser toolbar, then choose Check connection again.",
+  "settings.browserExtensionStatus.registration_failed":
+    "Pi Bot could not set up the browser connection. Choose Retry connection.",
   "settings.browserExtensionConnectHere": "Connect here",
   "settings.browserPreference": "Use browser",
   "settings.browserPreferenceUser": "Prefer your browser (use your sign-in)",
@@ -280,9 +299,35 @@ const common = {
   "settings.logsExported": "Logs exported",
   "settings.logsExportError": "Couldn’t export logs. Please try again.",
   "settings.data": "Data & storage",
-  "settings.runCleanup": "Clean up old run records",
+  "settings.dataLocation": "Data location",
+  "settings.dataLocationNote":
+    "The desktop copy of your chats, attachments, logs, and skill runtimes is stored in this folder (a paired phone can still view chat history when connected). API keys and saved passwords are stored encrypted in the local database using OS-backed encryption, never as plaintext.",
+  "settings.dataLocationLoading": "Reading data folder location…",
+  "settings.dataLocationError": "Couldn’t read the data folder location. Try again.",
+  "settings.openDataDir.darwin": "Open in Finder",
+  "settings.openDataDir.win32": "Open in Explorer",
+  "settings.openDataDir.linux": "Open data folder",
+  "settings.openDataDirError": "Couldn’t open the data folder. Try again.",
+  "settings.storageUsageLoading": "Checking disk usage…",
+  "settings.storageUsageError": "Couldn’t calculate disk usage. Try again.",
+  "settings.storageUsageSummary":
+    "About {total} total · Database & Bot files {chats} · Skills & runtimes {runtimes} · App logs & cache {logs} · Other files {other}",
+  "settings.storageUsageTruncated": " (partial estimate)",
+  "settings.storageUsageRefresh": "Refresh",
+  "settings.runCleanup": "Clean up old task records & temp files",
   "settings.runCleanupNote":
-    "Removes run events, result files, session files, and execution records older than the selected number of days. Chats stay; audit records still follow the 90-day policy.",
+    "Removes eligible old task records and unused temporary files. Chat history and tasks with a record of a file restore are kept. You’ll lose the option to undo file changes for tasks that are removed. Cleanup also clears the startup preview and removes unused result files that have sat for at least 10 minutes. Audit records stay for 90 days.",
+  "settings.runCleanupEstimateLoading":
+    "Estimating cleanup for task records older than {days} days…",
+  "settings.runCleanupEstimate":
+    "About {size} in {files} temporary files and {runs} old task records to clean up. The size counts files only. The startup preview is also cleared.",
+  "settings.runCleanupEstimateEmpty":
+    "No eligible task records older than {days} days or temporary files found. Cleanup will still clear the startup preview.",
+  "settings.runCleanupEstimateError":
+    "Couldn’t estimate reclaimable space right now. You can retry the estimate or still proceed with cleanup.",
+  "settings.runCleanupEstimateIncomplete":
+    "This estimate only counts files Pi Bot could check. Retry for a fuller estimate.",
+  "settings.runCleanupEstimateRetry": "Retry estimate",
   "settings.runCleanupDays": "Days",
   "settings.backgroundCommands": "Background commands",
   "settings.backgroundLimit": "Total time limit",
@@ -296,9 +341,9 @@ const common = {
   "settings.runCleaning": "Cleaning up…",
   "settings.runCleanupInvalid": "Enter a whole number from 1 to 36500 days.",
   "settings.runCleanupError":
-    "Run cleanup failed. Any unfinished file cleanup will be retried on the next start.",
+    "Couldn’t finish cleaning old task records and temporary files. Try again.",
   "settings.runCleanupDone":
-    "Cleaned {runs} runs, {events} events, {executions} execution records, and {files} files.",
+    "Cleaned {runs} old task records and {files} temporary files ({size} from those files). The startup preview was also cleared. Your chats are still available.",
   "audit.runRetention.cleaned":
     "Cleaned run records older than {days} days: {runs} runs, {events} events, {executions} execution records, and {files} files",
   "audit.commandLogs.requested": "Requested command log retention cleanup ({count} files)",
@@ -387,6 +432,7 @@ export const enSections = {
   independentBackgroundEn,
   toolFoldEn,
   mediaEn,
+  videoEn,
   externalAgentsEn,
   routineProposalsEn,
   routinesEn,
@@ -395,6 +441,8 @@ export const enSections = {
   groupEn,
   teamsEn,
   piManagerEn,
+  piSettingsEn,
+  piHealthEn,
   builtinEn,
   activityEn,
   providerAuthEn,

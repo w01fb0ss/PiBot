@@ -28,7 +28,9 @@ export interface DeclarativePluginFiles {
   }[];
 }
 
-function fixedServicePath(name: "calendar" | "contacts" | "gmail") {
+function fixedServicePath(
+  name: Extract<PiBotServerPreset, { transport: "stdio" }>["fixedService"],
+) {
   const current = new URL(import.meta.url);
   const entry = current.pathname.endsWith(".ts")
     ? new URL(`../../../../apps/plugins/${name}/server/index.ts`, current)

@@ -55,6 +55,7 @@ export const backgroundZh = {
   "background.reason.restart": "重启后清理",
   "background.reason.restart_unverified": "重启中断，尚未确认停止",
   "background.reason.time_limit": "已达总时长上限",
+  "background.reason.orphaned": "进程已经不在，由 Pi 清理",
   "background.restartNotice": "后台命令因重启中断，{count} 个已确认停止",
   "background.restartNoticeUnverified": "后台命令因重启中断，{count} 个尚未确认停止，仍在清理",
   "background.restartNoticePlain": "后台命令因重启中断",
@@ -121,6 +122,7 @@ export const backgroundEn: { [K in keyof typeof backgroundZh]: string } = {
   "background.reason.restart": "cleaned up after a restart",
   "background.reason.restart_unverified": "interrupted by restart; stop unverified",
   "background.reason.time_limit": "total time limit reached",
+  "background.reason.orphaned": "its process was gone; cleaned up by Pi",
   "background.restartNotice":
     "Background commands were interrupted by a restart; {count} confirmed stopped",
   "background.restartNoticeUnverified":

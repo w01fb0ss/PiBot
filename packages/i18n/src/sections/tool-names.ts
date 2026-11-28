@@ -1,6 +1,7 @@
 export const toolNamesZh = {
   "tool.syntaxApproximate": "语法级近似",
   "tool.syntaxApproximateNote": "按名字匹配，可能有误报或漏报；不是类型检查。",
+  "tool.inputTranslation": "已翻译为英文：{text}",
   "tool.project_notes": "更新项目背景",
   "tool.task_status": "查看子任务状态",
   "tool.finish_task": "结束群任务",
@@ -36,6 +37,7 @@ export const toolNamesZh = {
 
 export const toolNamesEn = {
   "tool.syntaxApproximate": "Syntax-level approximation",
+  "tool.inputTranslation": "Translated to English: {text}",
   "tool.syntaxApproximateNote":
     "Names are matched by spelling; results may include false positives or misses. This is not a type check.",
   "tool.project_notes": "Update project notes",

@@ -7,11 +7,12 @@ export function commandDeadline<T>(
   timeoutSec: number | undefined,
   signal: AbortSignal,
   lifetime: AbortController,
+  cleanupGraceMs = 10_000,
 ) {
   const force = new AbortController();
   let grace: ReturnType<typeof setTimeout> | undefined;
   const stop = () => {
-    if (!force.signal.aborted) grace ??= setTimeout(() => force.abort(), 10_000);
+    if (!force.signal.aborted) grace ??= setTimeout(() => force.abort(), cleanupGraceMs);
   };
   signal.addEventListener("abort", stop, { once: true });
   lifetime.signal.addEventListener("abort", stop, { once: true });
@@ -21,7 +22,7 @@ export function commandDeadline<T>(
       ? timeoutSec
       : 120;
   const deadline = new ExecError("command_failed", "timeout");
-  return withDeadline(operation, seconds * 1000 + 10_000, deadline, force.signal)
+  return withDeadline(operation, seconds * 1000 + cleanupGraceMs, deadline, force.signal)
     .catch((error: unknown) => {
       if (error === deadline || force.signal.aborted) lifetime.abort();
       throw error;

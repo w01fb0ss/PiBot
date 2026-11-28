@@ -14,6 +14,7 @@ export class GroupTopicFolderChoices {
     {
       groupId: string;
       path: string;
+      displayPath: string;
       location?: string;
       expires: number;
       device: string;
@@ -76,7 +77,12 @@ export class GroupTopicFolderChoices {
         ...selected,
         expires: Date.now() + 30 * 60 * 1000,
       });
-      return { choiceId, path: selected.path, name: selected.name, location: selected.location };
+      return {
+        choiceId,
+        path: selected.displayPath,
+        name: selected.name,
+        location: selected.location,
+      };
     } finally {
       this.picking.delete(groupId);
     }

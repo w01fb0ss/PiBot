@@ -6,10 +6,17 @@ export class AgentError extends Error {
     readonly code: AgentErrorCode,
     readonly httpStatus?: number,
     readonly providerDetail?: string,
+    readonly retryAfterMs?: number,
   ) {
     // Never expose raw SDK diagnostics: they can contain keys, headers or response bodies.
     super(code);
     this.name = "AgentError";
+  }
+}
+
+export class MemoryDraftBudgetError extends AgentError {
+  constructor(readonly required: { tokens: number; costUsd: number }) {
+    super("budget_exhausted");
   }
 }
 
@@ -148,6 +155,13 @@ export function mapAgentError(err: unknown, responseStatus?: number): AgentError
     if (status === 429 || /rate.?limit|too many requests/i.test(message)) return "rate_limited";
     if (/context.*(?:length|window|exceed|overflow)|maximum.*tokens/i.test(message))
       return "context_overflow";
+    if (
+      item.code === "model_not_found" ||
+      /\bmodel_not_found\b/i.test(message) ||
+      (status === 404 && /\bmodel\b[^\n]{0,200}\b(?:not found|does not exist)\b/i.test(message)) ||
+      caused === "no_model"
+    )
+      return "no_model";
     // A rejected field can be named "network" or contain "service unavailable".
     if (status === 400 || status === 404 || status === 422) return "provider_rejected";
     if (

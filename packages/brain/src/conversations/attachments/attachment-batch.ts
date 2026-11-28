@@ -6,6 +6,7 @@ import {
   type ImageContent,
   KernelHostMethods,
   type ModelInfo,
+  mediaMime,
   RpcError,
   RpcErrorCodes,
 } from "@pibot/protocol-base";
@@ -64,6 +65,9 @@ export class AttachmentBatch {
     input: AttachmentInput | { kind: "file"; name: string; mimeType: string; data: string },
   ) {
     if (input.kind === "image") return this.image({ input }, true);
+    await this.addOutputFile(input);
+  }
+  private async addOutputFile(input: { name: string; mimeType: string; data: string }) {
     this.signal.throwIfAborted();
     const bytes = Buffer.from(input.data, "base64");
     const id = randomUUID();
@@ -72,7 +76,7 @@ export class AttachmentBatch {
       : "bin";
     const path = join(this.root, `${id}.${extension}`);
     await this.save(path, bytes);
-    this.items.push({
+    const item: PreparedAttachment = {
       metadata: {
         id,
         kind: "file",
@@ -82,7 +86,9 @@ export class AttachmentBatch {
       },
       path,
       textPath: null,
-    });
+    };
+    this.items.push(item);
+    return item;
   }
   private async image(
     { input, stored }: AttachmentSource & { input: Extract<AttachmentInput, { kind: "image" }> },
@@ -130,7 +136,7 @@ export class AttachmentBatch {
     // translating the picture it already had (2026-11-14).
     if (!output)
       this.sections.push(
-        `图片：${JSON.stringify(input.name)}（${result.image.mimeType}，${bytes.length} bytes）已随消息附上，你能直接看到它；只有要把文件交给工具（编辑、发送、放进文档）时才用这个路径：${path}，不要为了查看而读取或打开它 / Image: ${JSON.stringify(input.name)} (${result.image.mimeType}, ${bytes.length} bytes) is attached and you can see it directly. Use this path only to hand the file to a tool (edit, send, place in a document): ${path}; don't read or open it to view it`,
+        `图片：${JSON.stringify(input.name)}（${result.image.mimeType}，${bytes.length} bytes）已随消息附上，你能直接看到它；只有要把文件交给工具（编辑、发送、放进文档）时才用这个路径：${path}（附件 ID：${id}），不要为了查看而读取或打开它 / Image: ${JSON.stringify(input.name)} (${result.image.mimeType}, ${bytes.length} bytes) is attached and you can see it directly. Use this path only to hand the file to a tool (edit, send, place in a document): ${path}; don't read or open it to view it. Attachment ID: ${id}`,
       );
     this.remaining = Math.max(0, this.remaining - 4096);
   }
@@ -208,6 +214,15 @@ export class AttachmentBatch {
   private async file(source: AttachmentSource) {
     const { input } = source;
     const bytes = Buffer.from(input.data, "base64");
+    if (mediaMime(input.name)) {
+      const item = await this.addOutputFile(input);
+      // Media can be delivered or played; the chat model receives no media bytes to interpret.
+      item.sourceAttachmentId = source.stored?.metadata.id;
+      this.sections.push(
+        `Media attachment: ${JSON.stringify(input.name)} (attachment ID: ${item.metadata.id}). Available for playback in chat.`,
+      );
+      return;
+    }
     const extracted = await convertFile(input, bytes, source.cache, this.signal, this.office);
     const id = randomUUID();
     const path = join(this.root, `${id}.${input.name.split(".").at(-1)?.toLowerCase()}`);

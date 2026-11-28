@@ -122,6 +122,12 @@
       "path": "./apps/plugins/gmail"
     },
     {
+      "path": "./apps/plugins/image-inspiration"
+    },
+    {
+      "path": "./apps/plugins/media-desk"
+    },
+    {
       "path": "./sdk/plugin-sdk"
     },
     {
@@ -192,6 +198,12 @@
     },
     {
       "path": "./packages/ui"
+    },
+    {
+      "path": "./packages/videos"
+    },
+    {
+      "path": "./packages/videos-contract"
     },
     {
       "path": "./packages/workspaces"

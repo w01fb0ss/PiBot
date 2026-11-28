@@ -97,16 +97,14 @@ export async function checkedTarget(
   allowed: readonly string[],
   upstream: boolean,
   signal: AbortSignal,
+  isPrivate = privateAddress,
 ) {
   const explicit = listedTarget(host, port, allowed);
   if (!targetAllowed(host, port, allowed)) throw new Error("private_address");
   if (isIP(host)) return host;
   try {
     const addresses = await resolved(host, signal);
-    if (
-      !addresses.length ||
-      (!explicit && addresses.some(({ address }) => privateAddress(address)))
-    )
+    if (!addresses.length || (!explicit && addresses.some(({ address }) => isPrivate(address))))
       throw new Error("private_address");
     return addresses[0]?.address as string;
   } catch (error) {

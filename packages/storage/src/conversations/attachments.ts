@@ -1,7 +1,7 @@
 import { lstatSync, realpathSync, unlinkSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { type Attachment, AttachmentSchema, MAX_REPLY_ATTACHMENTS } from "@pibot/protocol-base";
+import { type Attachment, AttachmentSchema, MAX_GENERATED_IMAGES } from "@pibot/protocol-base";
 import { isStoredAttachmentPath, resolveAttachmentPath } from "./attachment-paths.ts";
 
 export interface StoredAttachment {
@@ -126,9 +126,9 @@ export class AttachmentsRepo {
       (item) => !present.has(item.id),
     );
     if (
-      ids.length > MAX_REPLY_ATTACHMENTS ||
+      ids.length > MAX_GENERATED_IMAGES ||
       (this.forMessages([toMessageId]).get(toMessageId)?.length ?? 0) + ids.length >
-        MAX_REPLY_ATTACHMENTS
+        MAX_GENERATED_IMAGES
     )
       throw new TypeError("Too many attachments");
     for (const item of ids)
@@ -148,7 +148,7 @@ export class AttachmentsRepo {
       .get(toMessageId, fromMessageId);
     if (!valid) throw new TypeError("Invalid retry attachment link");
     const items = this.forMessages([fromMessageId]).get(fromMessageId) ?? [];
-    if (items.length > MAX_REPLY_ATTACHMENTS) throw new TypeError("Too many attachments");
+    if (items.length > MAX_GENERATED_IMAGES) throw new TypeError("Too many attachments");
     for (const item of items)
       this.db
         .prepare(

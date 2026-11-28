@@ -2,8 +2,34 @@ import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { CredentialTotpSecretSchema, RpcError, RpcErrorCodes } from "@pibot/protocol-base";
 import { assertSafeSecretValue, keyHint, type Redactor, type SecretCipher } from "@pibot/secrets";
+import { z } from "zod";
 
 const warmConcurrency = 8;
+// Imported connector fields can be empty or whitespace-sensitive. The encrypted envelope
+// distinguishes them from legacy values without widening the host's secret input contract.
+const connectorValuePrefix = "\0pibot-connector-value:";
+const importedConnectorValue = (scope: string, name: string) =>
+  scope === "user-secret" && /^IMPORT_[A-F0-9]{32}_/.test(name);
+const connectorValueSchema = z.union([
+  z.string(),
+  z.strictObject({ value: z.string(), configuration: z.boolean() }),
+]);
+
+function decodedValue(scope: string, name: string, plain: string) {
+  if (importedConnectorValue(scope, name) && plain.startsWith(connectorValuePrefix)) {
+    try {
+      const saved = connectorValueSchema.parse(
+        JSON.parse(plain.slice(connectorValuePrefix.length)),
+      );
+      // The legacy flag meant a value was eligible for plaintext, even if it was kept private.
+      return typeof saved === "string" ? saved : saved.value;
+    } catch {
+      throw new Error("Saved connector value unavailable");
+    }
+  }
+  assertSafeSecretValue(plain);
+  return plain;
+}
 
 export class SecretStore {
   constructor(
@@ -15,16 +41,25 @@ export class SecretStore {
   async set(scope: string, name: string, value: string): Promise<void> {
     const commit = await this.prepareSet(scope, name, value);
     commit();
+    this.registerCommittedImport(scope, name, value);
+  }
+
+  /** Import callers publish redaction after their enclosing storage transaction has committed. */
+  registerCommittedImport(scope: string, name: string, value: string): void {
+    if (importedConnectorValue(scope, name)) this.register(scope, name, value);
   }
 
   /** Encryption may cross host RPC: finish it before entering a synchronous SQLite transaction. */
   async prepareSet(scope: string, name: string, value: string): Promise<() => void> {
-    assertSafeSecretValue(value);
+    const imported = importedConnectorValue(scope, name);
+    const plain = imported ? connectorValuePrefix + JSON.stringify(value) : value;
+    assertSafeSecretValue(plain);
     if (!(await this.cipher.isAvailable()))
       throw new RpcError(RpcErrorCodes.secretsUnavailable, "secrets_unavailable");
-    const ciphertext = await this.cipher.encrypt(value);
-    this.register(scope, name, value);
-    const hint = keyHint(value) ?? null;
+    const ciphertext = await this.cipher.encrypt(plain);
+    // Preparing an install must have no redaction side effects if it rolls back.
+    if (!imported) this.register(scope, name, value);
+    const hint = imported ? null : (keyHint(value) ?? null);
     return () =>
       this.db
         .prepare(`INSERT INTO secrets (id, scope, name, ciphertext, hint, created_at, last_used_at)
@@ -33,24 +68,32 @@ export class SecretStore {
         .run(randomUUID(), scope, name, ciphertext, hint, new Date().toISOString());
   }
 
-  async get(scope: string, name: string): Promise<string | undefined> {
+  async get(
+    scope: string,
+    name: string,
+    onCredentialRead?: (value: string) => void,
+  ): Promise<string | undefined> {
     const row = this.db
       .prepare("SELECT ciphertext FROM secrets WHERE scope = ? AND name = ?")
       .get(scope, name);
     if (!row) return undefined;
     if (!(await this.cipher.isAvailable()))
       throw new RpcError(RpcErrorCodes.secretsUnavailable, "secrets_unavailable");
-    const value = await this.cipher.decrypt(row.ciphertext as Uint8Array);
-    assertSafeSecretValue(value);
+    const value = decodedValue(
+      scope,
+      name,
+      await this.cipher.decrypt(row.ciphertext as Uint8Array),
+    );
     // Undecrypted secrets are absent from this process and cannot be emitted by it.
     // Register plaintext before returning it to any caller that could produce diagnostics.
     this.register(scope, name, value);
+    onCredentialRead?.(value);
     this.db
       .prepare(`UPDATE secrets SET last_used_at = ?, hint = COALESCE(hint, ?)
         WHERE scope = ? AND name = ? AND ciphertext = ?`)
       .run(
         new Date().toISOString(),
-        keyHint(value) ?? null,
+        importedConnectorValue(scope, name) ? null : (keyHint(value) ?? null),
         scope,
         name,
         row.ciphertext as Uint8Array,
@@ -59,6 +102,12 @@ export class SecretStore {
   }
 
   private register(scope: string, name: string, value: string) {
+    if (importedConnectorValue(scope, name)) {
+      // Short imported literals are protected at the MCP output boundary. Making them
+      // shared substring matches can corrupt unrelated structured fields such as audit IDs.
+      value = value.trim().replace(/^[!\s]+/, "");
+      if (value.length < 8 || /[\0\r\n]/.test(value)) return;
+    }
     const named = this.redactor as Redactor & { addNamed?(name: string, value: string): void };
     if (scope === "user-secret" && /^[A-Z][A-Z0-9_]{0,63}$/.test(name) && named.addNamed)
       named.addNamed(name, value);
@@ -98,9 +147,14 @@ export class SecretStore {
         while (next < rows.length) {
           const row = rows[next++] as (typeof rows)[number];
           signal.throwIfAborted();
-          const value = await this.cipher.decrypt(row.ciphertext as Uint8Array);
-          assertSafeSecretValue(value);
-          this.register(String(row.scope), String(row.name), value);
+          const scope = String(row.scope);
+          const name = String(row.name);
+          const value = decodedValue(
+            scope,
+            name,
+            await this.cipher.decrypt(row.ciphertext as Uint8Array),
+          );
+          this.register(scope, name, value);
         }
       };
       // A failed worker must not release the owner while sibling host decrypts still run.

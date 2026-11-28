@@ -38,6 +38,7 @@ export class SkillServices {
           ...(target.groupId ? { groupId: target.groupId } : {}),
           skillId: target.skillId,
           state: status.state,
+          runtime: status.runtime,
           ...progress,
         }),
       local: ctx.local,
@@ -48,13 +49,20 @@ export class SkillServices {
         new AuditRepo(ctx.db, ctx.redactor).append({
           botId: input.botId,
           kind: "skill.runtime.prepared",
-          summary: "Skill runtime prepared / 技能运行环境",
+          summary:
+            input.result === "approved"
+              ? "Approved skill runtime installation without isolation / 已确认在无隔离的情况下安装技能运行环境"
+              : "Skill runtime prepared / 技能运行环境",
           detail: {
             target: input.skillName.slice(0, 200),
+            ...(input.groupId ? { groupId: input.groupId } : {}),
             skillRuntime: {
+              skillId: input.skillId,
               runtime: input.runtime,
               packages: input.packages,
               result: input.result,
+              ...(input.planHash ? { planHash: input.planHash } : {}),
+              ...(input.mirror ? { mirror: true } : {}),
               ...(input.reasonCode ? { reasonCode: input.reasonCode } : {}),
             },
           },

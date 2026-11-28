@@ -34,7 +34,14 @@
   padding: 4px 12px;
   font-size: 13px;
 }
-/* Each skill leads with a violet tile spanning its name and description. */
+.section {
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+/* The tile spans both lines of each option. */
 .option {
   display: grid;
   grid-template-columns: 24px minmax(0, 1fr);

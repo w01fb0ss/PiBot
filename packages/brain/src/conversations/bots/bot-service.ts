@@ -7,6 +7,7 @@ import {
   type KernelEvents,
   type KernelMethodParams,
   type KernelMethods,
+  type ModelPreference,
   type Peer,
   RpcError,
   resolveThinkingLevel,
@@ -77,6 +78,20 @@ export class BotService {
       new SettingsRepo(this.deps.db).get().language,
       Intl.DateTimeFormat().resolvedOptions().locale,
     );
+  }
+  private videoPreference(model: ModelPreference | undefined) {
+    if (
+      model &&
+      !this.deps.local.models
+        ?.videoProviders()
+        .some(
+          (provider) =>
+            provider.id === model.provider &&
+            provider.videoModels.some((video) => video.id === model.id),
+        )
+    )
+      throw new RpcError(-32602, "video_model_unavailable");
+    return model;
   }
   active(botId: string) {
     const bot = this.bots.get(botId);
@@ -172,6 +187,7 @@ export class BotService {
               ...this.avatar(params),
               modelProvider: model.provider,
               modelId: model.id,
+              defaultVideoModel: this.videoPreference(params.defaultVideoModel),
               thinkingLevel: "off",
               permissionOverrides: {},
               memoryMode: "auto",
@@ -241,6 +257,7 @@ export class BotService {
             ...this.avatar(params),
             modelProvider: requested?.provider ?? null,
             modelId: requested?.id ?? null,
+            defaultVideoModel: this.videoPreference(params.defaultVideoModel),
             thinkingLevel,
             thinkingPreference: preference,
             permissionOverrides: {},
@@ -409,8 +426,8 @@ export class BotService {
       this.conversations.isInternal(topicId)
     )
       return null;
-    const { title, routineId, importSource, readOnly } = topic;
-    return { title, routineId, importSource, readOnly: !!readOnly };
+    const { title, routineId, importSource, readOnly, modelOverride } = topic;
+    return { title, routineId, importSource, readOnly: !!readOnly, modelOverride };
   }
 
   async topics(params: KernelMethodParams["topics.list"]) {
@@ -429,7 +446,9 @@ export class BotService {
     const topic = businessResult(() =>
       new TopicsRepo(this.deps.db).rename(botId, topicId, this.deps.redactor.redact(title)),
     );
-    this.deps.peer.emit("sidebar.changed", { conversationKey: `dm:${botId}` });
+    const route = { conversationKey: `dm:${botId}` };
+    this.deps.peer.emit("sidebar.topicsChanged", route);
+    this.deps.peer.emit("sidebar.changed", route);
     return topic;
   }
   async newTopic(botId: string) {

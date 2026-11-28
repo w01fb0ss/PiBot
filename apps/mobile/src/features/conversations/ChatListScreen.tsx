@@ -1,9 +1,9 @@
 import { approvalText } from "@pibot/client-core";
 import { useRouter } from "expo-router";
-import { memo, useCallback, useMemo, useState } from "react";
-import { FlatList, RefreshControl, Text, useWindowDimensions, View } from "react-native";
+import { memo, useCallback, useMemo, useRef, useState } from "react";
+import { FlatList, RefreshControl, Text, View } from "react-native";
 import { useOffline } from "../../offline/OfflineProvider.tsx";
-import { useLanguage, useMobileSelector, useText } from "../../runtime/context.tsx";
+import { useLanguage, useMobileSelector, useRuntime, useText } from "../../runtime/context.tsx";
 import { space, type } from "../../theme/scale.ts";
 import { useColors } from "../../theme/use-theme.ts";
 import { Banner, EmptyState, ErrorLine, SearchField } from "../../ui/controls.tsx";
@@ -11,10 +11,11 @@ import { ComputerStatus, HeaderPill, OfflineBanner, TabHeader } from "../../ui/h
 import { StatRow } from "../../ui/stats.tsx";
 import { useTabBarInset } from "../../ui/tab-bar.tsx";
 import { useApprovals } from "../approvals/approvals-context.tsx";
+import { useRemoteValue } from "../chat/controls/use-remote-value.ts";
 import { OfflineDetailsSheet } from "../offline/OfflineDetailsSheet.tsx";
 import { greetingKey, taskCounts } from "../tasks/counts.ts";
 import { useTaskCenter } from "../tasks/tasks-context.tsx";
-import { ConversationRow, PinnedTile } from "./ConversationRow.tsx";
+import { ConversationRow } from "./ConversationRow.tsx";
 import { useConversations } from "./conversations-context.tsx";
 import { type Conversation, conversationKey } from "./model.ts";
 
@@ -43,7 +44,7 @@ function HomeSummary() {
     approvals = useApprovals(),
     list = useConversations();
   const running = Object.values(list.running).filter(Boolean).length;
-  const counts = taskCounts(tasks.center, approvals.items.length, running);
+  const counts = taskCounts(tasks.center, approvals.waiting, running);
   const greet = t(greetingKey());
   const line = counts.waiting
     ? t("homeWaiting", { greet, count: counts.waiting })
@@ -66,6 +67,7 @@ function HomeSummary() {
 /** A list row that re-renders only when its conversation or marks change, not with the page. */
 const Row = memo(function Row({
   row,
+  pinned,
   unread,
   running,
   waiting,
@@ -73,6 +75,7 @@ const Row = memo(function Row({
   onOpen,
 }: {
   row: Conversation;
+  pinned: boolean;
   unread: boolean;
   running: boolean;
   waiting?: string;
@@ -82,6 +85,7 @@ const Row = memo(function Row({
   return (
     <ConversationRow
       row={row}
+      pinned={pinned}
       unread={unread}
       running={running}
       waiting={waiting}
@@ -93,12 +97,13 @@ const Row = memo(function Row({
 const rowKey = (row: Conversation) => row.key;
 const RowGap = () => <View style={{ height: 2 }} />;
 const SKELETON = ["a", "b", "c", "d", "e"].map((key) => <Skeleton key={key} />);
-/** The desktop sidebar as a page: search, pinned tiles, then every chat by last activity. */
+/** The desktop sidebar as a page: pinned chats first, then every chat by last activity. */
 export function ChatListScreen() {
   const colors = useColors(),
     t = useText(),
     language = useLanguage(),
     router = useRouter(),
+    runtime = useRuntime(),
     mobile = useMobileSelector((s) => ({
       status: s.status,
       reconnecting: s.reconnecting,
@@ -110,19 +115,30 @@ export function ChatListScreen() {
     offline = useOffline();
   const [query, setQuery] = useState("");
   const [offlineDetails, setOfflineDetails] = useState(false);
+  const opening = useRef(0);
   const tabInset = useTabBarInset();
-  // Two tiles per row, as the sidebar's 1fr 1fr grid.
-  const tileWidth = (useWindowDimensions().width - space.page * 2 - 8) / 2;
   const online = mobile.status === "online";
   const connecting = mobile.status === "connecting";
   const canReplyOffline = offline.unreachable && offline.ready.length > 0;
   const computer = mobile.devices.find((d) => d.id === mobile.selectedId)?.name ?? "";
-  const rows = list.rows.filter((row) =>
-    row.name.toLowerCase().includes(query.trim().toLowerCase()),
+  const inbox = useRemoteValue(
+    approvals.total > 0 ? "chat-list-approval-origins" : undefined,
+    (signal) => runtime.call("inbox.list", { kind: "approval", limit: 50 }, signal),
+    ["inbox.changed", "approval.requested", "approval.resolved"],
   );
-  // A search lists matches flat; the tiles are a shortcut for the unfiltered list only.
-  const pinned = query ? [] : rows.filter((row) => row.pinned);
-  const rest = query ? rows : rows.filter((row) => !row.pinned);
+  const rows = useMemo(() => {
+    if (query) {
+      const match = query.trim().toLowerCase();
+      return list.rows.filter((row) => row.name.toLowerCase().includes(match));
+    }
+    // Old cached pins keep their activity order until the next sync supplies their positions.
+    const pinned = list.rows
+      .filter((row) => row.pinned)
+      .sort(
+        (a, b) => (a.pinOrder ?? Number.MAX_SAFE_INTEGER) - (b.pinOrder ?? Number.MAX_SAFE_INTEGER),
+      );
+    return [...pinned, ...list.rows.filter((row) => !row.pinned)];
+  }, [list.rows, query]);
   // One pass over the approvals instead of a search per row: the waiting line of each chat.
   const waitingByKey = useMemo(() => {
     const groupTopics = new Set(
@@ -134,11 +150,25 @@ export function ChatListScreen() {
       ),
     );
     const byKey = new Map<string, string>();
+    const grouped = new Set<string>();
+    for (const item of inbox.value ?? []) {
+      if (item.kind !== "approval") continue;
+      const { approval, origin } = item;
+      if (!origin?.groupId) continue;
+      grouped.add(approval.id);
+      const key = conversationKey("group", origin.groupId);
+      if (!byKey.has(key))
+        byKey.set(
+          key,
+          `${origin.botName ?? t("gpMember")} · ${approvalText(approval, language).title}`,
+        );
+    }
     for (const card of approvals.items) {
       const groupKey = groupByTopic.get(card.conversationId ?? "");
-      const botKey = groupTopics.has(card.conversationId ?? "")
-        ? undefined
-        : conversationKey("bot", card.botId);
+      const botKey =
+        grouped.has(card.id) || groupTopics.has(card.conversationId ?? "")
+          ? undefined
+          : conversationKey("bot", card.botId);
       const title = approvalText(card, language).title;
       const bot = list.bots.get(card.botId)?.name;
       // The first pending card of a chat names it, as the per-row search did.
@@ -146,10 +176,28 @@ export function ChatListScreen() {
       if (botKey && !byKey.has(botKey)) byKey.set(botKey, title);
     }
     return byKey;
-  }, [list.rows, list.bots, approvals.items, language]);
+  }, [list.rows, list.bots, approvals.items, inbox.value, language, t]);
   const open = useCallback(
-    (row: Conversation) => router.push(`/conversation/${row.kind}/${row.id}`),
-    [router],
+    async (row: Conversation) => {
+      const request = ++opening.current;
+      const pathname = "/conversation/[kind]/[id]";
+      const params = { kind: row.kind, id: row.id };
+      // Older or disconnected computers can still open the chat normally.
+      const approval =
+        row.kind === "group" && online && waitingByKey.has(row.key)
+          ? await runtime
+              .call("approvals.groupFocus", { groupId: row.id }, undefined, 4_000)
+              .catch(() => null)
+          : null;
+      if (request !== opening.current) return;
+      router.push({
+        pathname,
+        params: approval
+          ? { ...params, topic: approval.topicId, approvalFocus: approval.approvalId }
+          : params,
+      });
+    },
+    [online, router, runtime, waitingByKey],
   );
   const header = (
     <View style={{ paddingBottom: 2 }}>
@@ -175,30 +223,6 @@ export function ChatListScreen() {
         </View>
       )}
       <ErrorLine text={list.action.error && t(list.action.error)} />
-      {pinned.length > 0 && (
-        <View
-          style={{
-            flexDirection: "row",
-            flexWrap: "wrap",
-            gap: 8,
-            paddingHorizontal: space.page,
-            paddingBottom: 6,
-          }}
-        >
-          {pinned.map((row) => (
-            <View key={row.key} style={{ width: tileWidth }}>
-              <PinnedTile
-                row={row}
-                unread={list.unread.has(row.key)}
-                running={online && !!list.running[row.key]}
-                waiting={waitingByKey.has(row.key)}
-                unavailable={!online && !!row.agent}
-                onPress={() => open(row)}
-              />
-            </View>
-          ))}
-        </View>
-      )}
     </View>
   );
   const empty =
@@ -239,13 +263,18 @@ export function ChatListScreen() {
       />
       {/* Virtualized: a computer with hundreds of Bots and groups mounts only the rows on screen. */}
       <FlatList
-        data={connecting && !list.rows.length ? [] : rest}
+        data={rows}
         keyExtractor={rowKey}
         renderItem={({ item: row }) => (
           <Row
             row={row}
+            pinned={!query && !!row.pinned}
             unread={list.unread.has(row.key)}
-            running={online && !!list.running[row.key]}
+            running={
+              online &&
+              !!list.running[row.key] &&
+              (row.kind !== "group" || !waitingByKey.has(row.key))
+            }
             waiting={waitingByKey.get(row.key)}
             unavailable={!online && !!row.agent}
             onOpen={open}
@@ -253,7 +282,7 @@ export function ChatListScreen() {
         )}
         ItemSeparatorComponent={RowGap}
         ListHeaderComponent={header}
-        ListFooterComponent={rest.length ? <View style={{ height: 8 }} /> : undefined}
+        ListFooterComponent={rows.length ? <View style={{ height: 8 }} /> : undefined}
         ListEmptyComponent={empty}
         keyboardShouldPersistTaps="handled"
         contentContainerStyle={{ paddingBottom: tabInset }}

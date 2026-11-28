@@ -1,5 +1,6 @@
 import { IdSchema, SkillImportDetailsSchema } from "@pibot/protocol-base";
 import { z } from "zod";
+import { ConnectorMethods } from "./methods.ts";
 
 // Read-only discovery of skills / MCP servers / plugins that other AI tools on
 // this computer already have, and bringing them over through the existing import paths. Only
@@ -30,8 +31,7 @@ export const DiscoveredItemSchema = z.strictObject({
   /**
    * Keys this item uses, by name only. stored: the configuration has the value written in, and
    * bringing it over saves it in Pi Bot's keychain; needed: the configuration reads it from the
-   * environment, so it has to be filled in afterwards — unless `existing`, a Pi Bot key of that
-   * name that will be used as is.
+   * environment. A saved key with the same name can be selected during setup.
    */
   secrets: z
     .array(
@@ -52,6 +52,13 @@ export const DiscoveredItemSchema = z.strictObject({
    * 技能 tab the ones with skills (maintainers 2026-10-31).
    */
   contains: z.strictObject({ mcp: z.boolean(), skills: z.boolean() }).optional(),
+  /** Plugins only: requires userConfig settings before importing, so bring-over routes to setup. */
+  needsSetup: z.boolean().optional(),
+  workingDirectory: text(4096).pipe(z.string().min(1)).optional(),
+  registrySites: z
+    .array(text(253).pipe(z.string().min(1)))
+    .max(64)
+    .optional(),
 });
 export type DiscoveredItem = z.output<typeof DiscoveredItemSchema>;
 export const DiscoverySourceSchema = z.strictObject({
@@ -82,7 +89,7 @@ export const BringOverReasonSchema = z.enum([
   /** The package holds a link or file the import refuses for safety. */
   "unsafe",
   "too_large",
-  /** A plugin needs settings filled in; use 「导入插件」 for it. */
+  /** Open the shared import preview to choose credentials or fill in settings. */
   "needs_setup",
   /** A stored secret of the same name already holds a different value. */
   "secret_conflict",
@@ -97,6 +104,8 @@ export const BringOverResultSchema = z.strictObject({
   reason: BringOverReasonSchema.optional(),
   /** The name it was saved under ("name 2" after a clash). */
   name: text(200).optional(),
+  /** The installed plugin/MCP record created by this bring-over item, when applicable. */
+  installationId: IdSchema.optional(),
 });
 export type BringOverResult = z.output<typeof BringOverResultSchema>;
 /**
@@ -180,6 +189,15 @@ export const DiscoveryMethods = {
         .refine((keys) => new Set(keys).size === keys.length, "Duplicate keys"),
     }),
     result: z.strictObject({ results: z.array(BringOverPreviewSchema).max(100) }),
+  },
+  /** Turns a discovered plugin folder into a short-lived import selection so setup can run. */
+  "connections.adoptBringOver": {
+    params: z.strictObject({ key: DiscoveredItemKeySchema }),
+    result: z.strictObject({ selectionId: IdSchema }),
+  },
+  "connections.previewSetup": {
+    params: z.strictObject({ key: DiscoveredItemKeySchema }),
+    result: ConnectorMethods["plugins.previewImport"].result,
   },
   "connections.tokens": {
     params: z.strictObject({}),

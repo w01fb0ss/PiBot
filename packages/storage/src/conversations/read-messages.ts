@@ -6,9 +6,10 @@ import {
   type ReadMessagesInput,
   ReadMessagesInputSchema,
 } from "@pibot/protocol-base";
+import { visibleImportedRows } from "./conversations.ts";
 
 // Scope is applied in SQL, never by loading another Bot's history and filtering it afterwards.
-const readable = `c.archived_at IS NULL AND c.internal_task_id IS NULL AND c.import_id IS NULL AND EXISTS(SELECT 1 FROM bots b WHERE b.id=$bot AND b.archived_at IS NULL)
+const readable = `c.archived_at IS NULL AND c.internal_task_id IS NULL AND ${visibleImportedRows("c.import_id")} AND EXISTS(SELECT 1 FROM bots b WHERE b.id=$bot AND b.archived_at IS NULL)
   AND ((c.kind='dm' AND c.bot_id=$bot) OR (c.kind IN ('group','thread') AND
     EXISTS(SELECT 1 FROM groups g JOIN group_members gm ON gm.group_id=g.id
       WHERE g.id=c.group_id AND gm.bot_id=$bot AND gm.left_at IS NULL) AND
@@ -43,7 +44,7 @@ export class ReadMessagesRepo {
         AND rr.decision_consumed_at IS NULL AND json_type(rr.wait_checkpoint,'$.drain')='object'
         AND json_extract(rr.wait_checkpoint,'$.messageId')=m.id
         AND json_extract(rr.wait_checkpoint,'$.conversationId')=c.id)))
-      AND r.message_id=? AND c.id=? AND c.internal_task_id IS NULL AND c.import_id IS NULL AND m.role='assistant' AND m.status='streaming'
+      AND r.message_id=? AND c.id=? AND c.internal_task_id IS NULL AND ${visibleImportedRows("c.import_id")} AND m.role='assistant' AND m.status='streaming'
       AND m.bot_id=r.bot_id AND m.run_id=r.id AND m.conversation_id=c.id
       AND r.group_id IS c.group_id`)
       .get(runId, botId, parkedRoutineId ?? null, messageId, conversationId);
@@ -77,7 +78,9 @@ export class ReadMessagesRepo {
     if (page.before && !this.scope(botId, page.before))
       throw new TypeError("message_scope_unavailable");
     const rows = this.db
-      .prepare(`SELECT c.id,c.kind,CASE WHEN length(CAST(c.title AS BLOB))>2000 THEN '' ELSE c.title END AS title,c.group_id AS groupId,c.thread_of AS threadOf
+      .prepare(`SELECT c.id,c.kind,CASE WHEN length(CAST(c.title AS BLOB))>2000 THEN '' ELSE c.title END AS title,
+      c.group_id AS groupId,c.thread_of AS threadOf,c.created_at AS createdAt,
+      CASE WHEN c.import_id IS NOT NULL THEN c.import_source END AS importSource
       FROM conversations c WHERE c.id>$before AND ${readable} ORDER BY c.id LIMIT $limit`)
       .all({ $bot: botId, $before: page.before ?? "", $limit: (page.limit ?? 20) + 1 });
     signal.throwIfAborted();
@@ -102,19 +105,18 @@ export class ReadMessagesRepo {
     // Oversize bodies are omitted entirely, not sliced before secret redaction.
     const rows = this.db
       .prepare(`SELECT m.id,m.role,m.bot_id AS botId,m.created_at AS createdAt,
+      CASE WHEN m.import_id IS NOT NULL THEN c.import_source END AS importSource,
       CASE WHEN length(CAST(m.content AS BLOB))>16000 THEN '' ELSE m.content END AS content,
       length(CAST(m.content AS BLOB))>16000 AS truncated FROM messages m JOIN conversations c ON c.id=m.conversation_id
       WHERE c.id=$id AND ${readable} AND m.status='done' AND m.role IN ('user','assistant')
       AND (c.kind<>'dm' OR m.role='user' OR m.bot_id=$bot)
       AND ${readableTaskResult}
-      AND ($before IS NULL OR m.created_at<$at OR (m.created_at=$at AND m.rowid<$row))
+      ${cursor ? "AND (m.created_at,m.rowid)<($at,$row)" : ""}
       ORDER BY m.created_at DESC,m.rowid DESC LIMIT $limit`)
       .all({
         $bot: botId,
         $id: conversationId,
-        $before: page.before ?? null,
-        $at: cursor?.created_at ?? null,
-        $row: cursor?.rowid ?? null,
+        ...(cursor ? { $at: cursor.created_at, $row: cursor.rowid } : {}),
         $limit: (page.limit ?? 50) + 1,
       });
     signal.throwIfAborted();
@@ -136,7 +138,7 @@ export class ReadMessagesRepo {
       a.truncated,a.sent_percent AS sentPercent FROM refs r JOIN messages target ON target.id=r.message_id
       JOIN conversations tc ON tc.id=target.conversation_id JOIN attachments a ON a.id=r.attachment_id
       JOIN messages source ON source.id=a.message_id JOIN conversations sc ON sc.id=source.conversation_id
-      WHERE target.conversation_id=? AND (source.id=target.id OR (tc.group_id IS NOT NULL
+      WHERE target.conversation_id=? AND target.import_id IS NULL AND (source.id=target.id OR (tc.group_id IS NOT NULL
         AND sc.group_id=tc.group_id AND source.bot_id=target.bot_id AND source.role='assistant'
         AND source.status='done' AND (sc.kind='group' OR (sc.kind='thread' AND EXISTS(
           SELECT 1 FROM conversations p JOIN group_tasks t ON t.thread_conversation_id=sc.id

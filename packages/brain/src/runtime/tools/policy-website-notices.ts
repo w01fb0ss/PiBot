@@ -25,45 +25,67 @@ export function policyWebsiteGuidance(
   local: LocalService,
   context: ToolRunContext,
   prepared: PreparedTool,
-) {
+  retrySignal?: AbortSignal,
+): { help: string; retry?: Promise<boolean> } {
+  const conversationId = context.conversationId;
   const input = prepared.call.input as { outsideSandbox?: unknown; docker?: unknown };
   if (
     prepared.call.tool !== "run_command" ||
     prepared.result.decision !== "deny" ||
     prepared.result.reason !== "domain_not_allowed" ||
     prepared.settings.network.allowAll ||
-    !context.conversationId ||
+    !conversationId ||
     prepared.docker ||
     input.docker === true ||
     (prepared.boundary?.location && prepared.boundary.location.target !== "local") ||
     input.outsideSandbox === true
   )
-    return "";
+    return { help: "" };
   const domains = [...new Set(prepared.result.analysis?.domains ?? [])].filter(
     (domain) =>
       !prepared.settings.network.domains.includes(domain) &&
       isWebsitePermissionDomain(domain) &&
       local.deps.redactor.redact(domain) === domain,
   );
-  if (!domains.length) return "";
+  if (!domains.length) return { help: "" };
   const groupId = runPermissionScope(local, context);
   const repo = new ChatNoticesRepo(local.deps.db);
-  for (const domain of domains) {
+  const record = (domain: string, retryUntil?: string) => {
     const key = createHash("sha256").update(domain).digest("hex").slice(0, 16);
-    const notice = repo.addSandboxBlock({
+    return repo.addSandboxBlock({
       botId: context.botId,
       runId: context.runId,
-      conversationId: context.conversationId,
+      conversationId,
       text: `Network settings blocked (run ${context.runId} ${key}): ${domain}`.slice(0, 300),
       sandbox: {
         toolCallId: prepared.call.id,
         kind: "network",
         rule: "domain_not_allowed",
         target: domain,
-        website: { domain, ...(groupId ? { groupId } : {}) },
+        website: { domain, ...(groupId ? { groupId } : {}), ...(retryUntil ? { retryUntil } : {}) },
       },
     });
-    if (notice) local.deps.peer.emit("chat.notice", notice);
+  };
+  const publish = (notice: NonNullable<ReturnType<typeof record>>) =>
+    local.deps.peer.emit("chat.notice", notice);
+  const domain = domains.length === 1 ? domains[0] : undefined;
+  const help = `\n${WEBSITE_RETRY}`;
+  if (
+    domain &&
+    retrySignal &&
+    prepared.commandSkill &&
+    !context.routineSource &&
+    local.deps.platform !== "win32" &&
+    !(prepared.call.input as { background?: boolean }).background
+  ) {
+    return {
+      help,
+      retry: local.websiteRetries.wait(retrySignal, (until) => record(domain, until), publish),
+    };
   }
-  return `\n${WEBSITE_RETRY}`;
+  for (const candidate of domains) {
+    const notice = record(candidate);
+    if (notice) publish(notice);
+  }
+  return { help };
 }

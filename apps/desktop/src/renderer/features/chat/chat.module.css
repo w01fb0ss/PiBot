@@ -177,6 +177,8 @@
   white-space: nowrap;
 }
 .headerSubline {
+  --subtitle-trigger-chevron-size: 12px;
+  --subtitle-trigger-radius: 6px;
   display: flex;
   align-items: center;
   min-width: 0;
@@ -188,6 +190,33 @@
   flex: 0 1 auto;
   /* A short topic keeps its own width; only a long one reserves 8em before the folder shrinks. */
   min-width: calc-size(max-content, min(size, 8em + 22px));
+}
+.modelOverride {
+  position: relative;
+  margin-inline-start: 6px;
+  min-width: 0;
+  max-width: 18rem;
+  -webkit-app-region: no-drag;
+}
+.headerSubline .modelOverride {
+  margin-inline-start: 0;
+  /* Keep the chevron visible when the model name truncates. */
+  min-width: calc(var(--subtitle-trigger-chevron-size) + 11px);
+}
+.modelOverrideError {
+  display: block;
+  color: var(--danger);
+  font-size: 12px;
+  white-space: normal;
+}
+.headerSubline .modelOverrideError {
+  position: absolute;
+  z-index: 2;
+  top: 100%;
+  min-width: 14em;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--card);
 }
 .headerSeparator {
   flex: none;
@@ -697,6 +726,19 @@
   overflow-wrap: anywhere;
   color: var(--danger);
   margin: 0 0 10px;
+}
+.errorDetails {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--text2);
+}
+.errorDetails summary {
+  cursor: pointer;
+  user-select: none;
+}
+.errorDetails p {
+  margin: 6px 0 0;
+  color: var(--text2);
 }
 .actions {
   display: flex;

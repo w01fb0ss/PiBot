@@ -6,7 +6,9 @@ import { useExecutionWorkspace } from "../../execution/workspace.tsx";
 import { useOfficePreview } from "../../office/preview-context.tsx";
 import { useBrowserSlot } from "../../side-pane/BrowserSlot.tsx";
 import { useSidePane } from "../../side-pane/use-side-pane.ts";
+import { useAgentCommandMenu } from "../composer/AgentCommandMenu.tsx";
 import { useNextReplySuggestion } from "../composer/NextReplySuggestion.tsx";
+import { useSkillCommands } from "../composer/SkillCommands.tsx";
 import type { ConnectedChatProps } from "./chat-screen-model.ts";
 import type { useChatMessages } from "./use-chat-messages.tsx";
 import type { useChatState } from "./use-chat-state.tsx";
@@ -24,12 +26,15 @@ export function useChatWorkspace({
   panelOpen,
   actualTopicId,
   isDraft,
+  draftMode,
+  agentCommands,
   textarea,
   editText,
   scroll,
   atBottom,
   anchor,
   notices,
+  waiting,
   runId,
   busy,
   sendingBlocked,
@@ -52,6 +57,28 @@ export function useChatWorkspace({
       sidePane.show("tasks");
     },
   );
+  const agentBot = state.bot?.kind === "agent";
+  const composerDisabled = disconnected || state.pending || state.loading || attachments.reading;
+  const owners = state.bot && state.bot.category !== "image" && !agentBot ? [state.bot] : [];
+  const skillMenu = useSkillCommands({
+    owners,
+    connectionOwners: owners,
+    readOnly: (isDraft ? draftMode : execution.topics[0]?.settings?.mode) === "plan",
+    text,
+    edit: editText,
+    textarea,
+    disabled: composerDisabled,
+  });
+  const agentMenu = useAgentCommandMenu({
+    enabled: agentBot,
+    agentName: state.bot?.name ?? "",
+    commands: agentCommands,
+    text,
+    edit: editText,
+    textarea,
+    disabled: composerDisabled,
+  });
+  const skillCommands = agentBot ? agentMenu : skillMenu;
   // Opening, widening or leaving the sidebar re-wraps the messages without a message commit;
   // keep the newest ones in view when the reader was at the bottom.
   // biome-ignore lint/correctness/useExhaustiveDependencies: re-pin after sidebar layout changes
@@ -69,6 +96,13 @@ export function useChatWorkspace({
     messages: state.messages,
     topics: execution.topics,
     notices: notices.all,
+    completion: skillMenu.helpCompletion,
+    completionHidden:
+      !visible ||
+      sendingBlocked ||
+      attachments.reading ||
+      !!attachments.drafts.length ||
+      !!retryDraft.attachments.length,
     hidden:
       !visible ||
       sendingBlocked ||
@@ -106,10 +140,11 @@ export function useChatWorkspace({
       if (sendingBlocked) return false;
       messageFocus.cancel();
       atBottom.current = true;
-      // While a reply runs, sidebar messages wait for it instead of steering it.
-      return controller.send(value, [], [], runId ? "followUp" : undefined);
+      // While a reply runs, sidebar messages wait for it instead of steering it; when waiting on
+      // an approval card, queue directly as the next turn.
+      return controller.send(value, [], [], waiting ? "queue" : runId ? "followUp" : undefined);
     },
-    [sendingBlocked, controller, runId, messageFocus.cancel],
+    [sendingBlocked, controller, waiting, runId, messageFocus.cancel],
   );
   const captureScroll = () => {
     const container = scroll.current;
@@ -146,6 +181,7 @@ export function useChatWorkspace({
     setSelectedExecutionTask,
     execution,
     executionReplies,
+    skillCommands,
     nextReply,
     changes,
     browserActive,

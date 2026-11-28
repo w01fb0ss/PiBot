@@ -1,4 +1,5 @@
 import {
+  groupTimeline,
   type LiveRunActivity,
   type ReplyReceiptPosition,
   replyReceiptPositions,
@@ -7,6 +8,7 @@ import {
   type Approval,
   answeredOnPhone,
   attachmentContinuationOf,
+  type ChatDependencyNotice,
   type Message,
 } from "@pibot/protocol";
 import { useRouter } from "expo-router";
@@ -20,11 +22,11 @@ import {
   useRef,
   useState,
 } from "react";
-import { ActivityIndicator, FlatList, Pressable, Text, View } from "react-native";
-import { useMobileSelector, useRuntime, useText } from "../../runtime/context.tsx";
+import { ActivityIndicator, Alert, FlatList, Pressable, Text, View } from "react-native";
+import { useMobileSelector, useRuntime, useSharedText, useText } from "../../runtime/context.tsx";
 import { cardShadow } from "../../theme/scale.ts";
 import { avatarColor, onFill, useColors } from "../../theme/use-theme.ts";
-import type { AvatarLook } from "../../ui/avatar.tsx";
+import { type AvatarLook, BotAvatar } from "../../ui/avatar.tsx";
 import { Banner, Button } from "../../ui/controls.tsx";
 import { OfflineBanner } from "../../ui/headers.tsx";
 import { useTimeText } from "../../ui/time.ts";
@@ -33,8 +35,10 @@ import { PendingSend } from "../compose/PendingSend.tsx";
 import { OfflineDivider } from "../offline/OfflineHistory.tsx";
 import { changesTarget } from "./controls/scope.ts";
 import { messageQuestion } from "./controls/use-question.ts";
-import { ApprovalInlineCard, QuestionCard } from "./messages/cards.tsx";
+import { ApprovalInlineCard, QuestionCard, ResultLine } from "./messages/cards.tsx";
 import { DispatchReceiptCards, handedOut } from "./messages/DispatchReceiptCard.tsx";
+import { GroupPlanMessageCard } from "./messages/GroupPlanMessageCard.tsx";
+import { checkedHealth, HealthReportCards } from "./messages/HealthReportCard.tsx";
 import { MessageItem } from "./messages/MessageItem.tsx";
 import { RunChangesCard, wroteFiles } from "./messages/RunChangesCard.tsx";
 import {
@@ -48,6 +52,7 @@ import type { ChatPage } from "./use-chat-page.ts";
 export interface ThreadHandle {
   /** Back to the newest message (after a send). */
   toLatest(): void;
+  focusApproval(id: string): void;
 }
 interface RowActions {
   open(message: Message): void;
@@ -156,17 +161,24 @@ const ThreadRow = memo(
           onPress={() => actions.current.open(message)}
           onRetry={canRetry ? () => actions.current.retry(message) : undefined}
           extra={
-            question && (
-              <QuestionCard
-                pause={question}
-                answered={answered}
-                disabled={questionDisabled}
-                onAnswer={(optionId, label) => actions.current.answer(message, optionId, label)}
-              />
-            )
+            <>
+              {group && <GroupPlanMessageCard message={message} />}
+              {question && (
+                <QuestionCard
+                  pause={question}
+                  answered={answered}
+                  disabled={questionDisabled}
+                  onAnswer={(optionId, label) => actions.current.answer(message, optionId, label)}
+                />
+              )}
+            </>
           }
         />
-        {handedOut(message) && <DispatchReceiptCards messageId={message.id} />}
+        {handedOut(
+          message,
+          activity && activity.phase !== "waiting_model" ? activity.tool : undefined,
+        ) && <DispatchReceiptCards messageId={message.id} />}
+        {checkedHealth(message) && <HealthReportCards messageId={message.id} />}
         {changes && settled && turnWrote ? (
           <RunChangesCard
             runId={message.runId}
@@ -214,7 +226,7 @@ const ThreadRow = memo(
     a.divider === b.divider &&
     a.actions === b.actions,
 );
-const keyOf = (message: Message) => message.id;
+const keyOf = (row: { id: string }) => row.id;
 const sameRun = (a?: Message, b?: Message) =>
   !!a &&
   !!b &&
@@ -277,6 +289,7 @@ const FOCUS_ATTEMPTS = 6;
 export function ChatThread({
   page,
   focus,
+  approvalFocus,
   onMessage,
   onRetry,
   ref,
@@ -284,12 +297,14 @@ export function ChatThread({
   page: ChatPage;
   /** A record opens its topic at this message; consumed by the first positioning. */
   focus?: string;
+  approvalFocus?: string;
   onMessage: (message: Message) => void;
   onRetry: (source: Message) => void;
   ref?: Ref<ThreadHandle>;
 }) {
   const colors = useColors(),
     t = useText(),
+    shared = useSharedText(),
     time = useTimeText(),
     toast = useToast(),
     router = useRouter(),
@@ -301,9 +316,42 @@ export function ChatThread({
       status: s.status,
       reconnecting: !!s.reconnecting,
     }));
-  const list = useRef<FlatList<Message>>(null);
+  const computer = useMobileSelector(
+    (state) => state.devices.find((device) => device.id === state.selectedId)?.name,
+  );
+  const dependencyBanner = (notice: ChatDependencyNotice) => {
+    const values = { computer: computer ?? t("dependencyComputer") };
+    return (
+      <Banner
+        key={notice.id}
+        tone="warn"
+        icon="warning"
+        text={t(`dependency.${notice.dependency}`, values)}
+        action={{
+          title: t("dependencySteps"),
+          onPress: () =>
+            Alert.alert(t("dependencySteps"), t(`dependency.steps.${notice.dependency}`, values), [
+              { text: t("dependencyDone") },
+            ]),
+        }}
+      />
+    );
+  };
+  const list = useRef<FlatList<ReturnType<typeof groupTimeline>[number]>>(null);
   const [jump, setJump] = useState({ away: false, count: 0 });
   const { chat, runInfo } = page;
+  const noticesByReply = new Map<string, ChatDependencyNotice[]>();
+  const latestReplyByRun = new Map<string, string>();
+  for (const message of chat.messages)
+    if (message.role === "assistant" && message.runId)
+      latestReplyByRun.set(message.runId, message.id);
+  const pendingNotices = [];
+  for (const notice of chat.dependencyNotices) {
+    const reply = latestReplyByRun.get(notice.runId);
+    if (reply) noticesByReply.set(reply, [...(noticesByReply.get(reply) ?? []), notice]);
+    else if (!chat.messages[0] || notice.createdAt >= chat.messages[0].createdAt)
+      pendingNotices.push(notice);
+  }
   const seenIds = useRef(chat.messages.map((message) => message.id));
   const stored = new Set(chat.messages.map((message) => message.id));
   const outboxRows = page.composer.outbox.filter(
@@ -316,11 +364,18 @@ export function ChatThread({
   const lateKey = [...lateRuns].join(",");
   // biome-ignore lint/correctness/useExhaustiveDependencies: lateKey stands for lateRuns.
   const [data, late] = useMemo(() => {
-    const ordered = [...chat.messages].reverse();
-    if (!lateRuns.size) return [ordered, [] as Message[]];
+    const ordered = chat.messages.filter(
+      (message) => !message.imported || !!message.content || !!message.attachments?.length,
+    );
     const after = (message: Message) => !!message.runId && lateRuns.has(message.runId);
-    return [ordered.filter((message) => !after(message)), chat.messages.filter(after)];
-  }, [chat.messages, lateKey]);
+    return [
+      groupTimeline(
+        ordered.filter((message) => !after(message)),
+        page.timelineApprovals ?? [],
+      ).reverse(),
+      chat.messages.filter(after),
+    ];
+  }, [chat.messages, lateKey, page.timelineApprovals]);
   const changes = useMemo(() => page.scope && changesTarget(page.scope), [page.scope]);
   const turns = useMemo(() => turnPositions(chat.messages), [chat.messages]);
   const receipts = useMemo(() => replyReceiptPositions(chat.messages), [chat.messages]);
@@ -337,6 +392,12 @@ export function ChatThread({
   };
   useImperativeHandle(ref, () => ({
     toLatest: () => list.current?.scrollToOffset({ offset: 0, animated: true }),
+    focusApproval: (id) => {
+      clearTimeout(focusTimer.current);
+      focusId.current = `approval:${id}`;
+      attempts.current = 0;
+      requestAnimationFrame(() => positionRef.current());
+    },
   }));
   // A different topic opens at its newest message.
   const topicId = page.scope?.topicId;
@@ -358,15 +419,20 @@ export function ChatThread({
     seenIds.current = ids;
   }, [chat.messages, jump.away]);
   // Only a record's jump hides the thread until it sits at the message it points to.
-  const focusId = useRef(focus);
-  const [positioned, setPositioned] = useState(!focus);
+  const focusId = useRef(approvalFocus ? `approval:${approvalFocus}` : focus);
+  const [positioned, setPositioned] = useState(!focus && !approvalFocus);
   const attempts = useRef(0);
   const retrying = useRef(false);
+  const focusTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(focusTimer.current), []);
   const position = () => {
     const target = focusId.current;
-    if (!target || !data.length) return;
-    const index = data.findIndex((message) => message.id === target);
+    if (!target) return;
+    const index = data.findIndex((row) => row.id === target);
     if (index < 0) {
+      if (target.startsWith("approval:") && !page.groupApprovalsReady && page.online && !page.error)
+        return;
+      if (!data.length && !target.startsWith("approval:")) return;
       // Not in the loaded page (older than it, or gone): the topic's end instead.
       focusId.current = undefined;
       setPositioned(true);
@@ -379,16 +445,85 @@ export function ChatThread({
     list.current?.scrollToIndex({ index, viewPosition: 1, viewOffset: -12, animated: false });
     if (!retrying.current) requestAnimationFrame(() => setPositioned(true));
   };
+  const positionRef = useRef(position);
+  positionRef.current = position;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: new rows or an unavailable link can finish the initial focus.
+  useEffect(() => {
+    if (!focusId.current || retrying.current) return;
+    const frame = requestAnimationFrame(() => positionRef.current());
+    return () => cancelAnimationFrame(frame);
+  }, [data, page.groupApprovalsReady, page.online, page.error]);
   const budget = runInfo.budget;
   const stats = budget
     ? t(budget.unknownCostRequests ? "statsLineNoCost" : "statsLine", {
-        requests: budget.requests,
+        requests: shared("receipt.chip.requests", { count: budget.requests }),
         time: time.duration(budget.activeMillis),
         cost: budget.knownCostUsd.toFixed(2),
       })
     : undefined;
-  const allow = async (approval: Approval) => {
-    if ((await page.approvals.resolve(approval, "allow")) !== undefined) toast(t("allowedToast"));
+  const decide = async (approval: Approval, decision: "allow" | "deny", remember = false) => {
+    const outcome = await page.approvals.resolve(approval, decision, { remember });
+    if (outcome !== undefined) {
+      void page.refreshGroupApprovals();
+      toast(
+        t(
+          outcome === "superseded"
+            ? "supersededToast"
+            : outcome === "allow"
+              ? "allowedToast"
+              : "deniedToast",
+        ),
+      );
+    }
+  };
+  const renderApproval = (approval: Approval, group: boolean) => {
+    const name = page.lookFor(approval.botId)?.name ?? t("gpMember");
+    const look = page.lookFor(approval.botId) ?? {
+      name,
+      shape: "blob",
+      color: "gray",
+      eyes: "dot",
+    };
+    return (
+      <View key={approval.id} style={{ gap: 8 }}>
+        {approval.status !== "pending" ? (
+          <ResultLine
+            icon={approval.status === "allowed" ? "check" : "shield"}
+            ok={approval.status === "allowed"}
+            text={`${name} · ${shared(approval.superseded ? "approval.superseded" : `approval.${approval.status}`)}`}
+          />
+        ) : (
+          <>
+            {group && (
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                <BotAvatar bot={look} size={26} />
+                <Text style={{ color: colors.text2, fontWeight: "600" }}>{name}</Text>
+              </View>
+            )}
+            <ApprovalInlineCard
+              approval={approval}
+              disabled={!page.online || page.approvals.action.busy}
+              onView={() => router.push(`/approval/${approval.id}`)}
+              onAllow={() => void decide(approval, "allow")}
+              onAlways={() => void decide(approval, "allow", true)}
+              onDeny={() => void decide(approval, "deny")}
+            />
+            {page.approvals.unsent?.approval.id === approval.id && (
+              <Banner
+                tone="warn"
+                icon="warning"
+                text={t("approvalNotSent")}
+                action={
+                  page.online && !page.approvals.action.busy
+                    ? { title: t("pendingRetry"), onPress: () => void page.approvals.retryUnsent() }
+                    : undefined
+                }
+              />
+            )}
+          </>
+        )}
+      </View>
+    );
   };
   // A private chat's own bubbles take the Bot's colour; a group's are violet, as on the desktop.
   const userColor = page.kind === "bot" ? (page.entry?.looks[0]?.color ?? "violet") : "violet";
@@ -399,7 +534,7 @@ export function ChatThread({
     const turn = turns.get(message.id);
     const failed = message.role === "error" || message.status === "error";
     const look = page.lookFor(message.botId);
-    return (
+    const row = (
       <ThreadRow
         message={message}
         group={page.kind === "group"}
@@ -421,6 +556,15 @@ export function ChatThread({
         actions={actions}
       />
     );
+    const notices = noticesByReply.get(message.id);
+    return notices ? (
+      <View style={{ gap: 8 }}>
+        {row}
+        {notices.map(dependencyBanner)}
+      </View>
+    ) : (
+      row
+    );
   };
   // Between 已送达 and the reply's first words (seconds with a slow model) nothing showed
   // that the Bot had started. While the run is on and the newest message is still the user's,
@@ -439,7 +583,11 @@ export function ChatThread({
     );
   // Inverted: the list header is drawn at the bottom of the screen, the footer at the top.
   const bottom =
-    outboxRows.length || typing || page.stopNotice || page.pending.length ? (
+    outboxRows.length ||
+    typing ||
+    page.stopNotice ||
+    page.pending.length ||
+    pendingNotices.length ? (
       <View style={{ gap: 16 }}>
         {outboxRows.map((pending) => (
           <PendingSend
@@ -482,29 +630,9 @@ export function ChatThread({
             onPress={() => undefined}
           />
         )}
+        {pendingNotices.map(dependencyBanner)}
         {page.stopNotice && <Banner tone="warn" icon="warning" text={t("stopNotice")} />}
-        {page.pending.map((approval) => (
-          <View key={approval.id} style={{ gap: 8 }}>
-            <ApprovalInlineCard
-              approval={approval}
-              disabled={!page.online || page.approvals.action.busy}
-              onView={() => router.push(`/approval/${approval.id}`)}
-              onAllow={() => void allow(approval)}
-            />
-            {page.approvals.unsent?.approval.id === approval.id && (
-              <Banner
-                tone="warn"
-                icon="warning"
-                text={t("approvalNotSent")}
-                action={
-                  page.online && !page.approvals.action.busy
-                    ? { title: t("pendingRetry"), onPress: () => void page.approvals.retryUnsent() }
-                    : undefined
-                }
-              />
-            )}
-          </View>
-        ))}
+        {page.pending.map((approval) => renderApproval(approval, page.kind === "group"))}
       </View>
     ) : undefined;
   const top =
@@ -542,7 +670,9 @@ export function ChatThread({
         inverted
         data={data}
         keyExtractor={keyOf}
-        renderItem={({ item: message }) => renderRow(message)}
+        renderItem={({ item }) =>
+          item.approval ? renderApproval(item.approval, true) : renderRow(item.message)
+        }
         ListHeaderComponent={bottom}
         ListFooterComponent={top}
         ListEmptyComponent={empty}
@@ -567,7 +697,8 @@ export function ChatThread({
         windowSize={9}
         onContentSizeChange={() => {
           // Android may report the content size before the list's own layout; settle first.
-          if (!positioned && focusId.current) requestAnimationFrame(position);
+          if (!positioned && focusId.current && !retrying.current)
+            requestAnimationFrame(() => positionRef.current());
         }}
         onScrollToIndexFailed={(info) => {
           // The target is beyond the rows measured so far: jump near it, then aim again.
@@ -578,8 +709,12 @@ export function ChatThread({
           if (++attempts.current < FOCUS_ATTEMPTS) {
             retrying.current = true;
             focusId.current = data[info.index]?.id;
-            setTimeout(position, 60);
-          } else setPositioned(true);
+            clearTimeout(focusTimer.current);
+            focusTimer.current = setTimeout(() => positionRef.current(), 60);
+          } else {
+            retrying.current = false;
+            setPositioned(true);
+          }
         }}
         onScroll={(event) => {
           const away =

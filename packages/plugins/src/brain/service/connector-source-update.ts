@@ -30,18 +30,12 @@ export function sourceUpdate(
   redact: (value: string) => string = (value) => value,
   fileChanges?: ConnectorImportFileChanges,
   previewSecrets: readonly string[] = [],
+  allowedSites?: ReadonlyMap<string, readonly string[]>,
 ) {
   const before = new Map(previous.servers.map((server) => [server.id, server]));
   if (before.size !== next.servers.length || next.servers.some((server) => !before.has(server.id)))
     throw new RpcError(RpcErrorCodes.invalidParams, "source_update_server_set_changed");
   const pairs = next.servers.map((server) => [before.get(server.id) as Server, server] as const);
-  const manifest = {
-    ...next,
-    servers: pairs.map(([old, now]) => ({
-      ...now,
-      networkDomains: [...new Set([...old.networkDomains, ...now.networkDomains])],
-    })),
-  } as ConnectorManifest;
   // Values can also be embedded in argv. Remove both versions before returning display data.
   const manifestValues = [...previous.servers, ...next.servers].flatMap((server) =>
     server.transport === "stdio"
@@ -71,13 +65,14 @@ export function sourceUpdate(
         return value.startsWith("-") && !/[=:]/u.test(value) ? value : "[redacted]";
       return safe(value);
     });
-  const finalServers = new Map(manifest.servers.map((server) => [server.id, server]));
   const details: ConnectorSourceDetails = {
     servers: pairs.map(([old, now]) => {
       const oldNames = names(old),
         newNames = names(now);
-      const priorDomains = websites(old);
-      const finalDomains = websites(finalServers.get(now.id) as Server);
+      const saved = allowedSites?.get(now.id);
+      const priorDomains = old.transport === "stdio" && saved ? [...saved].sort() : websites(old);
+      const finalDomains =
+        now.transport === "stdio" && allowedSites ? [...(saved ?? [])].sort() : websites(now);
       return {
         id: safe(now.id),
         ...(old.transport === "stdio" && now.transport === "stdio"
@@ -110,7 +105,7 @@ export function sourceUpdate(
   const count = (changed: (old: Server, now: Server) => boolean) =>
     pairs.filter(([old, now]) => changed(old, now)).length;
   return {
-    manifest,
+    manifest: next,
     details,
     changes: {
       commands: count(
@@ -123,7 +118,9 @@ export function sourceUpdate(
       ),
       envNames: count((old, now) => !same(names(old), names(now))),
       websites: count(
-        (old, now) => old.transport === "http" && now.transport === "http" && old.url !== now.url,
+        (old, now) =>
+          (old.transport === "http" ? old.url : undefined) !==
+          (now.transport === "http" ? now.url : undefined),
       ),
       files,
     },

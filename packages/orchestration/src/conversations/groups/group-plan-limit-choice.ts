@@ -70,7 +70,10 @@ export async function resolvePlanLimit(
       const ledger = service.deps.local.budgets.repo.get(budgetRootRunId);
       if (!ledger || service.deps.local.budgets.repo.reason(ledger))
         throw new RpcError(-32602, "group_plan_budget_unavailable");
-      await service.model(bot.id, controller);
+      await service.model(bot.id, controller, undefined, {
+        groupId: group.id,
+        conversationId: source.conversationId,
+      });
     }
     // The answer itself never becomes a group message on this path (the choice is stored in the
     // card's pause), so the continuation prompt has to carry it; otherwise the coordinator's next

@@ -73,14 +73,13 @@ export function latestFinished(finished: readonly RoutineRun[]) {
 }
 export function routineCounts(
   center: TaskCenter | undefined,
-  approvalRunIds: readonly (string | null | undefined)[],
+  waiting: number,
   now = new Date(),
 ): TaskCounts {
   const { active } = routineRuns(center);
-  const routineRunIds = new Set((center?.routines ?? []).map((run) => run.runId).filter(Boolean));
   return {
     working: active.filter((run) => run.status === "running").length,
-    waiting: approvalRunIds.filter((id) => !!id && routineRunIds.has(id)).length,
+    waiting,
     doneToday: doneToday(center, now),
   };
 }

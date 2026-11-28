@@ -72,7 +72,7 @@ export function useSkillResources(
     botId,
     revision + request,
     "resources",
-    enabled && request > 0,
+    enabled,
   );
   return { ...read, load: () => setRequest((value) => value + 1) };
 }

@@ -92,6 +92,8 @@ const settings: PermissionsSettings = {
     agent_delegation: "ask",
     bot_management: "ask",
     work_dispatch: "ask",
+    pi_repair: "ask",
+    settings_change: "ask",
     run_command: "ask",
     computer: "never",
     read_file: "always",

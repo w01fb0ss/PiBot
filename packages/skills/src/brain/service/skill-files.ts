@@ -291,7 +291,10 @@ export async function readSupportingFile(
     const stat = await file.stat();
     if (!stat.isFile() || stat.size > SKILL_IMPORT_FILE_MAX_BYTES)
       throw new Error("skill_file_invalid");
-    return textOf(await file.readFile({ signal })) ?? null;
+    const data = await file.readFile({ signal });
+    return name.toLowerCase() === ".env.example"
+      ? envExampleFilter()(data)
+      : (textOf(data) ?? null);
   } finally {
     await file.close();
   }

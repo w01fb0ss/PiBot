@@ -44,10 +44,13 @@ export const externalAgentsZh = {
   "externalAgents.create.runWindows":
     "Windows 上没有命令沙箱：它会直接在这台电脑上运行，只靠它自己的审批；要动手前仍会在 Pi Bot 里弹审批卡",
   "externalAgents.create.keychain": "钥匙串文件（只读）",
+  "externalAgents.create.readOnlyPath": "{path}（只读）",
   "externalAgents.create.dnsSocket":
     "系统 DNS 通道（它自己解析域名；沙箱里的代码可借此对外查询域名）",
   "externalAgents.create.localPorts":
     "本机端口（它通过本机端口和自己通信；沙箱里的代码也能连到这台电脑上的其他本机服务）",
+  "externalAgents.create.pty":
+    "终端设备（它在伪终端里运行每条命令；沙箱里的代码也能打开你这台电脑上其他终端窗口的设备）",
   "externalAgents.noPerCommandAsk":
     "{name} 执行命令前不会逐条询问你：它在 Pi Bot 的沙箱里运行，只能写这个话题的文件夹、只能连放行的网络；选「手动」模式也不能让它逐条询问。",
   "externalAgents.create.adapter":
@@ -199,13 +202,15 @@ export const externalAgentsZh = {
   "externalAgents.receipt.plan": "{name} 的计划",
   "errors.agent_unavailable":
     "这个外部 Agent 现在启动不了：程序、适配器或沙箱不可用。请到这个 Bot 资料的「Agent」标签查看。",
+  "errors.agent_group_task_required":
+    "这轮群聊没有分配任务。请在群聊中 @ 这个外部 Agent，或让统筹在计划里给它分配一个步骤。",
   "errors.agent_folder_required": "先给这个话题选一个工作文件夹，外部 Agent 只在你的文件夹里工作。",
   "errors.agent_login_required":
     "这个外部 Agent 还没登录。请在终端运行它自己的登录命令（用你自己的账号或 API Key），登录好后再发一次。",
   "errors.agent_unconfirmed":
     "在 Windows 上使用前，请先在这个 Bot 资料的「Agent」标签确认不隔离运行。",
   "errors.agent_auth_failed":
-    "外部 Agent 的登录或凭据已失效。请在终端运行它自己的登录命令（如 opencode auth login、codex login 或 claude /login），然后再试。",
+    "外部 Agent 的登录或凭据已失效。请在终端运行它自己的登录命令（如 opencode auth login、codex login、claude /login 或 agy），然后再试。",
   "errors.agent_quota": "外部 Agent 的账号额度或套餐已用尽。请升级套餐、充值或更换账号后再试。",
   "errors.agent_rate_limited":
     "外部 Agent 请求过于频繁，服务商正在限流。请稍后再试，不会自动重复发送这一轮。",
@@ -263,10 +268,13 @@ export const externalAgentsEn: { [K in keyof typeof externalAgentsZh]: string } 
   "externalAgents.create.runWindows":
     "Windows has no command sandbox: it runs directly on this computer, guarded only by its own approvals; it still asks in Pi Bot before it acts",
   "externalAgents.create.keychain": "keychain file (read-only)",
+  "externalAgents.create.readOnlyPath": "{path} (read-only)",
   "externalAgents.create.dnsSocket":
     "system DNS channel (it resolves names itself; code in the sandbox could use it to look names up)",
   "externalAgents.create.localPorts":
     "local ports (it talks to itself over a local port; code in the sandbox can also reach other local services on this computer)",
+  "externalAgents.create.pty":
+    "terminal devices (it runs every command in a pseudo-terminal; code in the sandbox can also open the devices of your other terminal windows on this computer)",
   "externalAgents.noPerCommandAsk":
     "{name} runs commands without asking you each time. It runs inside Pi Bot's sandbox, so it writes only the topic's folder and reaches only the allowed network; Manual mode cannot make it ask.",
   "externalAgents.create.adapter":
@@ -428,6 +436,8 @@ export const externalAgentsEn: { [K in keyof typeof externalAgentsZh]: string } 
   "externalAgents.receipt.plan": "{name}'s plan",
   "errors.agent_unavailable":
     "This external agent cannot start right now: its program, adapter or sandbox is unavailable. See the Agent tab of this Bot's panel.",
+  "errors.agent_group_task_required":
+    "This group turn had no assigned task. Mention the external agent in the group or have the coordinator assign it a plan step.",
   "errors.agent_folder_required":
     "Choose a working folder for this topic first; external agents only work in your own folders.",
   "errors.agent_login_required":
@@ -435,7 +445,7 @@ export const externalAgentsEn: { [K in keyof typeof externalAgentsZh]: string } 
   "errors.agent_unconfirmed":
     "On Windows, first confirm running it without isolation in the Agent tab of this Bot's panel.",
   "errors.agent_auth_failed":
-    "The external agent's sign-in or credential is no longer valid. Run its own sign-in command in a terminal (such as opencode auth login, codex login or claude /login), then try again.",
+    "The external agent's sign-in or credential is no longer valid. Run its own sign-in command in a terminal (such as opencode auth login, codex login, claude /login or agy), then try again.",
   "errors.agent_quota":
     "The external agent's account quota or plan limit has been reached. Upgrade, add credit or switch accounts, then try again.",
   "errors.agent_rate_limited":

@@ -1,12 +1,13 @@
 // Selects eligible conversation boundaries using stored ownership and message provenance.
 import type { DatabaseSync } from "node:sqlite";
+import { visibleImportedRows } from "../conversations/conversations.ts";
 import { memoryHumanMessageSql } from "./memory-extraction-origin.ts";
 
 const topicOwner = `
   FROM conversations c
   LEFT JOIN groups g ON g.id=c.group_id AND g.archived_at IS NULL
   JOIN bots b ON b.id=COALESCE(c.bot_id,g.coordinator_bot_id)
-  WHERE c.import_id IS NULL AND c.kind IN ('dm','group') AND c.internal_task_id IS NULL
+  WHERE ${visibleImportedRows("c.import_id")} AND c.kind IN ('dm','group') AND c.internal_task_id IS NULL
     AND b.archived_at IS NULL AND b.memory_extraction=1 AND b.kind IS NOT 'agent'
     AND (c.kind='dm' OR EXISTS (
       SELECT 1 FROM group_members gm WHERE gm.group_id=g.id AND gm.bot_id=b.id AND gm.left_at IS NULL
@@ -59,7 +60,7 @@ export function boundaryTopics(
     .prepare(
       `WITH topics AS (
       SELECT c.id AS conversationId, b.id AS botId, c.group_id AS groupId,
-        (SELECT id FROM messages WHERE conversation_id=c.id ORDER BY rowid DESC LIMIT 1)
+        (SELECT id FROM messages WHERE conversation_id=c.id AND import_id IS NULL ORDER BY rowid DESC LIMIT 1)
           AS sourceMessageId
       ${topicOwner}
       AND c.id ${explicit ? "=" : ">"} ?
@@ -126,16 +127,16 @@ export function legacyDueTopics(
           COALESCE(c.bot_id, g.coordinator_bot_id) AS botId,
           c.group_id AS groupId,
           c.archived_at AS archivedAt,
-          (SELECT m.id FROM messages m WHERE m.conversation_id=c.id
+          (SELECT m.id FROM messages m WHERE m.conversation_id=c.id AND m.import_id IS NULL
             ORDER BY m.rowid DESC LIMIT 1) AS lastMessageId,
-          (SELECT m.created_at FROM messages m WHERE m.conversation_id=c.id
+          (SELECT m.created_at FROM messages m WHERE m.conversation_id=c.id AND m.import_id IS NULL
             ORDER BY m.rowid DESC LIMIT 1) AS lastAt,
-          (SELECT m.id FROM messages m WHERE m.conversation_id=c.id AND m.role='user'
+          (SELECT m.id FROM messages m WHERE m.conversation_id=c.id AND m.import_id IS NULL AND m.role='user'
             AND m.status='done' ORDER BY m.rowid DESC LIMIT 1) AS lastUserId,
-          (SELECT COUNT(*) FROM messages m WHERE m.conversation_id=c.id AND m.role='user'
+          (SELECT COUNT(*) FROM messages m WHERE m.conversation_id=c.id AND m.import_id IS NULL AND m.role='user'
             AND m.status='done') AS userCount
         FROM conversations c LEFT JOIN groups g ON g.id=c.group_id
-        WHERE c.import_id IS NULL AND c.kind IN ('dm','group')
+        WHERE ${visibleImportedRows("c.import_id")} AND c.kind IN ('dm','group')
       )
       SELECT t.conversationId, t.botId, t.groupId, t.lastMessageId, t.lastUserId, t.lastAt
       FROM t JOIN bots b ON b.id=t.botId AND b.memory_extraction=1 AND b.archived_at IS NULL

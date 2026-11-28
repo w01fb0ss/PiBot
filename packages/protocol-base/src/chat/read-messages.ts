@@ -1,9 +1,18 @@
 import { z } from "zod";
 import { IdSchema } from "../core/ids.ts";
-import { AttachmentSchema, MAX_REPLY_ATTACHMENTS } from "./attachments.ts";
-import { ReadMessagesSearchInputSchema, ReadMessagesSearchResultSchema } from "./chat-search.ts";
+import { optionalPageBefore } from "../tools/pagination.ts";
+import { AttachmentSchema } from "./attachments.ts";
+import {
+  ReadHistoryImportSchema,
+  ReadMessagesSearchInputSchema,
+  ReadMessagesSearchResultSchema,
+} from "./chat-search.ts";
+import { MAX_GENERATED_IMAGES } from "./media.ts";
 
-const page = { before: IdSchema.optional(), limit: z.number().int().min(1).max(50).optional() };
+const page = {
+  before: optionalPageBefore,
+  limit: z.number().int().min(1).max(50).optional(),
+};
 export const ReadMessagesInputSchema = z.discriminatedUnion("mode", [
   z.strictObject({ mode: z.literal("list"), ...page }),
   z.strictObject({ mode: z.literal("messages"), conversationId: IdSchema, ...page }),
@@ -13,6 +22,7 @@ export const ReadConversationSchema = z.strictObject({
   id: IdSchema,
   kind: z.enum(["dm", "group", "thread"]),
   title: z.string().max(200),
+  importedFrom: ReadHistoryImportSchema.optional(),
   groupId: IdSchema.nullable(),
   threadOf: IdSchema.nullable(),
 });
@@ -22,8 +32,9 @@ export const ReadMessageSchema = z.strictObject({
   botId: IdSchema.nullable(),
   content: z.string().max(4000),
   createdAt: z.iso.datetime(),
+  importedFrom: ReadHistoryImportSchema.optional(),
   truncated: z.boolean(),
-  attachments: z.array(AttachmentSchema).max(MAX_REPLY_ATTACHMENTS),
+  attachments: z.array(AttachmentSchema).max(MAX_GENERATED_IMAGES),
 });
 export const ReadMessagesResultSchema = z.discriminatedUnion("mode", [
   ReadMessagesSearchResultSchema,

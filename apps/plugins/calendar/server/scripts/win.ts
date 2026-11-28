@@ -74,7 +74,9 @@ try {
     $calendars = ReadableCalendars $session
     $selected = @($calendars | Where-Object { $null -eq $ids -or $ids -ccontains $_.id })
     if ($null -ne $ids -and $selected.Count -ne $ids.Count) { throw 'not_found' }
-    $offset = 0; if ($null -ne $a.cursor) { if ([string]$a.cursor -notmatch '^[0-9]{1,6}$') { throw 'invalid_arguments' }; $offset = [int]$a.cursor }
+    $offset = 0
+    $cursor = ([string]$a.cursor).Trim()
+    if ($cursor -match '^[0-9]{1,6}$' -and [int]$cursor -le 100000) { $offset = [int]$cursor }
     $limit = 50; if ($null -ne $a.limit) { $limit = [int]$a.limit }; if ($offset -lt 0 -or $offset -gt 100000 -or $limit -lt 1 -or $limit -gt 100) { throw 'invalid_arguments' }
     $filter = "[Start] < '" + $end.LocalDateTime.ToString('g', [cultureinfo]::GetCultureInfo('en-US')) + "' AND [End] > '" + $start.LocalDateTime.ToString('g', [cultureinfo]::GetCultureInfo('en-US')) + "'"
     $events = [System.Collections.Generic.List[object]]::new()

@@ -112,6 +112,9 @@ export function pumpStep(this: RunQueueOperations): void {
       current: [input.text],
       references: [],
     };
+    const usage = source?.usage;
+    const sourceUsage =
+      usage && typeof usage === "object" && !Array.isArray(usage) ? usage : undefined;
     run.projectBackground = !!input.userInitiated && !input.routine;
     run.finished = generateRun(
       { ...this.deps, finished: () => {} },
@@ -121,6 +124,14 @@ export function pumpStep(this: RunQueueOperations): void {
       input.bot,
       input.images ?? [],
       memoryRecallQuery(request, taskPrompt.current),
+      input.userInitiated &&
+        !record.automatic &&
+        sourceUsage?.inputOrigin !== "acp" &&
+        !sourceUsage?.forward &&
+        !sourceUsage?.dispatch &&
+        !sourceUsage?.systemEvent
+        ? request
+        : undefined,
     )
       .then(async () => {
         entry.drained = true;

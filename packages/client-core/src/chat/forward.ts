@@ -1,5 +1,10 @@
 import type { createTranslator } from "@pibot/i18n";
-import { type Message, type MessageForward, messageForward } from "@pibot/protocol";
+import {
+  type Message,
+  type MessageForward,
+  messageForward,
+  messageQuestionAnswerText,
+} from "@pibot/protocol";
 import { planSystemText } from "./plan-system-text.ts";
 import { routineTriggerText } from "./routine-trigger-text.ts";
 import { displayTopicTitle } from "./topic-title.ts";
@@ -24,9 +29,8 @@ export interface ForwardCard {
 }
 
 /**
- * FORWARD-DISPLAY: the user's bubble text for a message. A forward shows its note, or a neutral
- * count when there is none; a routine's trigger message shows what started it (its content is
- * written for the model); everything else shows its content unchanged.
+ * Model input can contain a routine's trigger instructions or the context of a choice card.
+ * The bubble uses the display facts so that those instructions are not attributed to the user.
  */
 export function messageBubbleText(
   message: Pick<Message, "content" | "usage"> &
@@ -34,6 +38,10 @@ export function messageBubbleText(
   t: Translate,
 ) {
   if (message.routineTrigger) return routineTriggerText(message.routineTrigger, t);
+  if (message.role === "user") {
+    const answer = messageQuestionAnswerText(message);
+    if (answer !== undefined) return answer;
+  }
   const forward = messageForward(message);
   if (!forward) return planSystemText(message, t);
   return forward.note || t("messages.forwardedCount", { count: forward.messageCount });

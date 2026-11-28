@@ -11,6 +11,8 @@ export type TokensSlot = (controls: {
   formOpen(open: boolean): void;
   /** Connection tokens are listed above, so the slot's empty state must not claim there are none. */
   others: number;
+  /** Optional shared secret name to open directly for updating its value. */
+  initialSecret?: string;
 }) => ReactNode;
 
 /**
@@ -18,7 +20,15 @@ export type TokensSlot = (controls: {
  * and commands. Tokens a connection carries (typed when connecting or brought over) are listed
  * here; the ones the person added come from the credentials capability through `secrets`.
  */
-export function TokensDialog({ secrets, close }: { secrets: TokensSlot; close(): void }) {
+export function TokensDialog({
+  secrets,
+  initialSecret,
+  close,
+}: {
+  secrets: TokensSlot;
+  initialSecret?: string;
+  close(): void;
+}) {
   const t = useT();
   const navigation = useNavigation();
   const read = useCallback(
@@ -122,7 +132,8 @@ export function TokensDialog({ secrets, close }: { secrets: TokensSlot; close():
             </>
           )
         )}
-        {!replacing && secrets({ create, formOpen: setSecretForm, others: items.length })}
+        {!replacing &&
+          secrets({ create, formOpen: setSecretForm, others: items.length, initialSecret })}
       </div>
       {!formOpen && (
         <div className={styles.dialogFoot}>

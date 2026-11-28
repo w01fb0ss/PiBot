@@ -39,8 +39,12 @@ export async function start(this: ChatSession) {
       // A phone's offline turns joining this Bot's topic arrive with no run, so
       // the import's sidebar change is the only sign the open thread has new messages.
       const botId = this.target.botId ?? this.state.bot?.id;
-      if (botId && event.conversationKey === `dm:${botId}` && !this.state.pending)
-        void this.refreshHistory();
+      if (
+        botId &&
+        event.conversationKey === `dm:${botId}` &&
+        (!this.state.pending || event.resetHistory)
+      )
+        void this.refreshHistory(false, false, event.resetHistory);
     }),
     this.peer.on("bots.changed", (event) => {
       if (event.botId === (this.target.botId ?? this.state.bot?.id)) void this.refreshMetadata();

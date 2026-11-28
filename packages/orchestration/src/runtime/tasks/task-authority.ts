@@ -1,14 +1,16 @@
-import { lstatSync, realpathSync } from "node:fs";
+import { lstatSync } from "node:fs";
 import { AgentError } from "@pibot/agent";
 import type { LocalService, ToolRunContext } from "@pibot/brain/orchestration-kit";
 import {
   CONTINUATION_ROOT_CAPACITY,
+  canonicalExistingPathSync,
   continuedMode,
   groupAuthorization,
   intersectTaskPermissions,
   matchesFileIdentity,
   resolveRunWorkplace,
   runPermissions,
+  samePathSpelling,
   taskPermissionsNarrowed,
   topicWorkplaceSnapshot,
 } from "@pibot/brain/orchestration-kit";
@@ -172,7 +174,7 @@ export class TaskAuthorityService {
       if (
         !stat.isDirectory() ||
         stat.isSymbolicLink() ||
-        realpathSync(root.path) !== root.canonicalPath ||
+        !samePathSpelling(canonicalExistingPathSync(root.path), root.canonicalPath) ||
         !matchesFileIdentity(stat, root)
       )
         throw new RpcError(-32602, "task_workplace_changed");

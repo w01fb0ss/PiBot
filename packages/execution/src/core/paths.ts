@@ -1,8 +1,14 @@
 // Keep filesystem authorization tied to canonical paths and roots.
+import { realpathSync } from "node:fs";
 import { lstat, readlink, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
 import { ExecError } from "./types.ts";
-import { windowsPathName, windowsWithin } from "./windows-paths.ts";
+import { windowsMappedPath, windowsPathName, windowsWithin } from "./windows-paths.ts";
+
+/** Synchronous identity checks must agree with fs.promises.realpath on Windows. */
+export function canonicalExistingPathSync(path: string): string {
+  return process.platform === "win32" ? realpathSync.native(path) : realpathSync(path);
+}
 
 export function within(root: string, path: string): boolean {
   // Windows reaches one file under several names (a drive, an admin-share UNC alias, a `\\?\`
@@ -14,12 +20,21 @@ export function within(root: string, path: string): boolean {
   return !isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`);
 }
 
-function sameSpelling(left: string, right: string): boolean {
+export function samePathSpelling(left: string, right: string): boolean {
   if (process.platform !== "win32") return left === right;
   const driveSpelling = (path: string) =>
     win32.normalize(path).replace(/^[a-z](?=:)/i, (letter) => letter.toUpperCase());
   // Case-sensitive NTFS directories can contain separate names differing only by case.
   return driveSpelling(left) === driveSpelling(right);
+}
+
+/** A drive mapping may change the prefix, but a junction or symlink below it may not. */
+export async function matchesPathSpelling(path: string, canonical: string): Promise<boolean> {
+  return (
+    samePathSpelling(path, canonical) ||
+    (process.platform === "win32" &&
+      samePathSpelling(await windowsMappedPath(path, realpath), canonical))
+  );
 }
 
 export function missing(error: unknown): boolean {
@@ -30,7 +45,13 @@ export function missing(error: unknown): boolean {
 export async function canonicalPath(path: string, cwd: string): Promise<string> {
   if (process.platform === "win32" && /^[a-z]:(?![\\/])/i.test(path))
     throw new ExecError("invalid_input");
-  const absolute = resolve(cwd, path);
+  return resolveCanonical(resolve(cwd, path));
+}
+
+async function resolveCanonical(
+  absolute: string,
+  resolveParent: (path: string) => Promise<string> = resolveCanonical,
+): Promise<string> {
   try {
     return await realpath(absolute);
   } catch (error) {
@@ -43,7 +64,7 @@ export async function canonicalPath(path: string, cwd: string): Promise<string> 
     }
     const parent = dirname(absolute);
     if (parent === absolute) throw new ExecError("file_failed", "path_canonicalization_failed");
-    return join(await canonicalPath(parent, cwd), relative(parent, absolute));
+    return join(await resolveParent(parent), relative(parent, absolute));
   }
 }
 
@@ -55,7 +76,8 @@ export async function writablePath(
 ): Promise<string> {
   const target = await canonicalPath(path, cwd);
   const lexical = resolve(cwd, path);
-  if (!sameSpelling(target, lexical)) throw new ExecError("outside_workplace", "write_path_alias");
+  if (!(await matchesPathSpelling(lexical, target)))
+    throw new ExecError("outside_workplace", "write_path_alias");
   if (denied.some((root) => within(root, target) || within(root, lexical)))
     throw new ExecError("outside_workplace", "write_path_protected");
   try {
@@ -76,10 +98,13 @@ export async function writablePath(
  * exists instead of failing: one broken link in the home directory used to make the whole sandbox
  * configuration throw, so isolation reported "unavailable".
  */
-export async function denyTargets(path: string): Promise<string[]> {
+export async function denyTargets(
+  path: string,
+  canonicalize: (path: string) => Promise<string> = (path) => canonicalPath(path, dirname(path)),
+): Promise<string[]> {
   const name = resolve(path);
   try {
-    return [name, await canonicalPath(name, dirname(name))];
+    return [name, await canonicalize(name)];
   } catch (error) {
     if (!(error instanceof ExecError && error.code === "file_failed")) throw error;
     let link: string;
@@ -91,7 +116,7 @@ export async function denyTargets(path: string): Promise<string[]> {
     }
     const target = resolve(dirname(name), link);
     try {
-      return [name, await canonicalPath(target, dirname(target))];
+      return [name, await canonicalize(target)];
     } catch {
       // A link onto another dangling link: deny both names as written.
       return [name, target];
@@ -99,10 +124,23 @@ export async function denyTargets(path: string): Promise<string[]> {
   }
 }
 
+/** Missing credential paths often share the same ancestors. Reuse probes within one expansion. */
+export function createDenyTargetResolver() {
+  const paths = new Map<string, Promise<string>>();
+  function canonicalize(path: string): Promise<string> {
+    const cached = paths.get(path);
+    if (cached) return cached;
+    const pending = resolveCanonical(path, canonicalize);
+    paths.set(path, pending);
+    return pending;
+  }
+  return (path: string) => denyTargets(path, canonicalize);
+}
+
 /** Approval supplies canonical roots; replacing a root with a link cannot redefine that permission. */
 export async function checkedRoot(path: string): Promise<string> {
   const canonical = await realpath(path);
-  if (!sameSpelling(canonical, resolve(path)))
+  if (!samePathSpelling(canonical, resolve(path)))
     throw new ExecError("outside_workplace", "workspace_root_alias");
   return canonical;
 }

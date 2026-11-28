@@ -100,7 +100,33 @@ export function PanelFrame({
         const edge = event.shiftKey ? nodes[0] : nodes.at(-1);
         if (document.activeElement === edge) {
           event.preventDefault();
-          (event.shiftKey ? nodes.at(-1) : nodes[0])?.focus();
+          if (event.shiftKey) {
+            const lastTarget = nodes.at(-1);
+            const regions = root.current?.querySelectorAll<HTMLElement>(
+              "[data-virtual-focus-region]",
+            );
+            if (regions) {
+              for (let index = regions.length - 1; index >= 0; index--) {
+                const region = regions[index];
+                if (!region || !region.getClientRects().length) continue;
+                const coversLast =
+                  !lastTarget ||
+                  region.contains(lastTarget) ||
+                  (lastTarget.compareDocumentPosition(region) &
+                    Node.DOCUMENT_POSITION_FOLLOWING) !==
+                    0;
+                if (!coversLast) break;
+                const focusEdge = new CustomEvent("pibot:focus-virtual-edge", {
+                  cancelable: true,
+                  detail: { edge: "last" },
+                });
+                if (!region.dispatchEvent(focusEdge)) return;
+              }
+            }
+            lastTarget?.focus();
+            return;
+          }
+          nodes[0]?.focus();
         }
       }}
     >

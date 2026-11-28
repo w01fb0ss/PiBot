@@ -41,6 +41,13 @@ export function ComputerApprovalResult({
       active = false;
     };
   }, [peer, approval.status, approval.runId, approval.createdAt]);
+  // A paused card closed after the conversation moved on reads the same as every other card.
+  if (approval.superseded)
+    return (
+      <div className={approvalStyles.result} role="status">
+        {t("approval.superseded")}
+      </div>
+    );
   if (approval.status === "denied")
     return (
       <div className={approvalStyles.result} role="status">

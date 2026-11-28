@@ -1,5 +1,5 @@
-import { DomainSchema } from "@pibot/plugins-contract/full";
-import { SettingsLine, SettingsRow, SettingsSection, useSettings } from "@pibot/renderer-kit";
+import { ConnectorAllowedSiteSchema } from "@pibot/plugins-contract/full";
+import { SettingsFold, SettingsLine, useSettings } from "@pibot/renderer-kit";
 import { Button, Chip } from "@pibot/ui";
 import { useState } from "react";
 import styles from "./connections/drawer.module.css";
@@ -29,23 +29,23 @@ export function ConnectorNetworkEditor({
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
-  const parsed = entries.map((entry) => DomainSchema.safeParse(entry));
+  const parsed = entries.map((entry) => ConnectorAllowedSiteSchema.safeParse(entry));
   const valid = entries.length <= 64 && parsed.every((entry) => entry.success);
   const normalized = [...new Set(parsed.flatMap((entry) => (entry.success ? [entry.data] : [])))];
   const changed = JSON.stringify(normalized) !== JSON.stringify(domains);
   return (
-    <SettingsSection title={t("connections.drawer.sites")}>
-      <SettingsRow
-        icon="globe"
-        tone="blue"
-        label={t(domains.length ? "connections.drawer.sitesNote" : "connections.drawer.sitesNone")}
-      >
-        {!editing && editable && (
-          <Button variant="secondary" disabled={disabled} onClick={() => setEditing(true)}>
+    <SettingsFold title={t("connectors.network.advanced")}>
+      {!editing && (
+        <div className={styles.stackedControl}>
+          <Button
+            variant="secondary"
+            disabled={disabled || !editable}
+            onClick={() => setEditing(true)}
+          >
             {t("connections.drawer.sitesEdit")}
           </Button>
-        )}
-      </SettingsRow>
+        </div>
+      )}
       {!editing && domains.length > 0 && (
         <div className={styles.stackedControl}>
           <span className={`${styles.siteChips} ${styles.start}`}>
@@ -72,7 +72,7 @@ export function ConnectorNetworkEditor({
           </label>
           {!valid && (
             <span role="alert" className={styles.fieldError}>
-              {t("connectors.network.invalid")}
+              {t("connectors.network.invalid")} {t("connectors.paste.siteExample")}
             </span>
           )}
           {confirming && (
@@ -111,6 +111,6 @@ export function ConnectorNetworkEditor({
           </div>
         </div>
       )}
-    </SettingsSection>
+    </SettingsFold>
   );
 }

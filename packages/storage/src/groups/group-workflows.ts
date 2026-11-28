@@ -206,6 +206,17 @@ export class GroupWorkflowsRepo {
     return row ? run(row) : undefined;
   }
 
+  /** The plan's newest program progress line in a conversation, if it came after `afterMessageId`. */
+  statusLineAfter(conversationId: string, workflowRunId: string, afterMessageId: string) {
+    const row = this.db
+      .prepare(`SELECT m.id FROM messages m WHERE m.conversation_id=?
+      AND json_extract(m.usage,'$.groupWorkflowStatus.workflowRunId')=?
+      AND m.rowid>(SELECT after.rowid FROM messages after WHERE after.id=?)
+      ORDER BY m.rowid DESC LIMIT 1`)
+      .get(conversationId, workflowRunId, afterMessageId);
+    return row ? String(row.id) : undefined;
+  }
+
   /** Whether any plan of a chain (one budget root) still runs: its step workspaces are in use. */
   chainActive(budgetRootRunId: string) {
     return !!this.db
@@ -225,11 +236,12 @@ export class GroupWorkflowsRepo {
   }
 
   /** A group's running or waiting plans (any cycle), for the chat's pause and continue words. */
-  activeForGroup(groupId: string, limit = 20) {
+  activeForGroup(groupId: string, limit = 20, cycleId?: string) {
     return this.db
       .prepare(`SELECT ${runColumns} FROM group_workflow_runs
-        WHERE group_id=? AND status IN ('running','waiting') ORDER BY rowid LIMIT ?`)
-      .all(groupId, Math.min(Math.max(limit, 1), 100))
+        WHERE group_id=? AND status IN ('running','waiting') AND (? IS NULL OR cycle_id=?)
+        ORDER BY rowid LIMIT ?`)
+      .all(groupId, cycleId ?? null, cycleId ?? null, Math.min(Math.max(limit, 1), 100))
       .map(run);
   }
 

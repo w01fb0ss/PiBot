@@ -18,6 +18,8 @@ export const groupPlanZh = {
   gpPlanPending: "等你确认 · 在电脑上查看并开始",
   gpPlanReady: "已校验，尚未开始",
   gpPlanStarting: "已确认，启动还没核对完成",
+  gpPlanStarted: "已开始",
+  gpOpenPlan: "打开",
   gpPlanModify: "等待修改意见 · 在电脑上修改",
   gpPlanRunning: "进行中",
   gpPlanWaiting: "进行中 · 等你处理",
@@ -43,6 +45,20 @@ export const groupPlanZh = {
   gpStepResult: "结果",
   gpNoResult: "还没有结果。",
   gpResultLoading: "正在读取结果…",
+  gpHeldTitle: "计划等你选择",
+  gpHeldReplanLimit:
+    "重新规划次数已用完，已完成的步骤和产物都保留。可以按剩下的步骤继续；或者结束这个计划，再新开一个。",
+  gpHeldFixSkipped:
+    "修复已跳过，不会自动复验；{steps} 保持不通过。按现状接受后继续后面的步骤，或者停止计划。",
+  gpHeldContinue: "按剩下的步骤继续",
+  gpHeldContinued: "已按剩下的步骤继续",
+  gpHeldNewPlan: "新开计划",
+  gpHeldNewPlanDone: "计划已结束，原来的目标已放进输入框，改好后发送",
+  gpHeldAccept: "按现状接受",
+  gpHeldAccepted: "已按现状接受，继续后面的步骤",
+  gpHeldStop: "停止计划",
+  gpHeldStopped: "计划已停止，产物都保留",
+  gpHeldOpen: "打开群聊",
 } as const;
 export const groupPlanEn: Record<keyof typeof groupPlanZh, string> = {
   gpChip: "Tasks {done}/{total}",
@@ -63,6 +79,8 @@ export const groupPlanEn: Record<keyof typeof groupPlanZh, string> = {
   gpPlanPending: "Waiting for you · review and start it on the computer",
   gpPlanReady: "Validated, not started yet",
   gpPlanStarting: "Confirmed; its start has not been checked yet",
+  gpPlanStarted: "Started",
+  gpOpenPlan: "Open",
   gpPlanModify: "Waiting for changes · edit it on the computer",
   gpPlanRunning: "In progress",
   gpPlanWaiting: "In progress · waiting for you",
@@ -89,4 +107,18 @@ export const groupPlanEn: Record<keyof typeof groupPlanZh, string> = {
   gpStepResult: "Result",
   gpNoResult: "No result yet.",
   gpResultLoading: "Loading the result…",
+  gpHeldTitle: "A plan needs your choice",
+  gpHeldReplanLimit:
+    "No replans left; completed steps and outputs are kept. Continue with the remaining steps, or end this plan and start a new one.",
+  gpHeldFixSkipped:
+    "The repair was skipped, so there is no automatic recheck; {steps} keeps its FAIL verdict. Accept it as is and go on with the remaining steps, or stop the plan.",
+  gpHeldContinue: "Continue with the remaining steps",
+  gpHeldContinued: "Continuing with the remaining steps",
+  gpHeldNewPlan: "Start a new plan",
+  gpHeldNewPlanDone: "Plan ended; the original goal is in the input box to edit and send",
+  gpHeldAccept: "Accept as is",
+  gpHeldAccepted: "Accepted as is; the remaining steps go on",
+  gpHeldStop: "Stop plan",
+  gpHeldStopped: "Plan stopped; outputs are kept",
+  gpHeldOpen: "Open the group chat",
 };

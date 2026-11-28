@@ -9,9 +9,11 @@ import {
   type GroupWorkflowStepRecord,
   MessagesRepo,
 } from "@pibot/storage";
+import { groupPlanText } from "@pibot/teams-contract/i18n";
 import { z } from "zod";
 import { fileItemId } from "./group-handoff-check.ts";
 import { planFilenameRequest } from "./group-plan-filenames.ts";
+import { planMarkdownText, planStepTitles } from "./group-plan-summary.ts";
 import type { GroupService } from "./group-service.ts";
 import { type StoredWorkflow, workflowOf } from "./group-workflow-snapshot.ts";
 
@@ -224,54 +226,51 @@ export function supplementStep(before: GroupPlan, card: GroupPlanCard) {
   return extra.id;
 }
 
-export function reviewConclusion(review: DeliveryReview | undefined, zh: boolean) {
+export function reviewConclusion(
+  review: DeliveryReview | undefined,
+  record: GroupWorkflowRunRecord,
+  language: "zh" | "en",
+) {
   if (
     !review?.coverage ||
     review.unavailable ||
+    !review.requirements.length ||
     review.coverage.length !== review.requirements.length
   )
-    return [
-      zh
-        ? "没有逐条核对原始需求是否都已覆盖：统筹的总结里没有可用的逐条对照。"
-        : "The original request was not checked item by item: the coordinator's summary had no usable item list.",
-    ];
-  return review.requirements.map((requirement, index) => {
-    const ref = review.coverage?.[index];
-    return ref
-      ? `${zh ? "协调者判为覆盖" : "Coordinator marked covered"}: ${requirement} → ${ref}`
-      : `${zh ? "未覆盖" : "Uncovered"}: ${requirement}`;
+    return groupPlanText(language, "group.plan.summary.coverageMissing");
+  const steps = workflowOf(record).contract.steps;
+  const title = planStepTitles(steps, language);
+  const definitions = new Map(steps?.map((step) => [step.id, step]));
+  const rows = review.requirements.map((text, index) => {
+    const requirement = planMarkdownText(text);
+    const [stepId, outputId] = review.coverage?.[index]?.split(":") ?? [];
+    if (!stepId) return groupPlanText(language, "group.plan.summary.uncovered", { requirement });
+    const path = definitions.get(stepId)?.deliverables.find((file) => file.id === outputId)?.path;
+    const name = path?.split(/[\\/]/u).at(-1);
+    const output = planMarkdownText(name ? `${title(stepId)} · ${name}` : title(stepId));
+    return groupPlanText(language, "group.plan.summary.covered", { requirement, output });
   });
+  return [
+    groupPlanText(language, "group.plan.summary.coverage"),
+    "",
+    ...rows.map((row) => `- ${row}`),
+  ].join("\n");
 }
 
-/** A member's supplement contributes check evidence, never a semantic coverage claim. */
+/** Show program checks only; the supplement's own prose does not decide coverage. */
 export function supplementConclusion(
   service: GroupService,
   record: GroupWorkflowRunRecord,
   state: GroupWorkflowStepRecord,
-  zh: boolean,
+  language: "zh" | "en",
 ) {
-  const handoff = supplementHandoff(service, record, state);
-  const items = handoff?.result?.items ?? [];
-  if (!items.length)
-    return zh ? "补做：没有程序检查结果。" : "Supplement: no program check result.";
-  const passed = items.filter((item) => item.status === "pass").length;
-  const files = (handoff?.spec.files ?? []).filter((path, index) =>
-    items.some(
-      (item) =>
-        item.id === fileItemId(index) &&
-        item.check === "exists" &&
-        item.status === "pass" &&
-        item.deliverable === path,
-    ),
-  );
-  return [
-    zh
-      ? `补做程序检查：通过 ${passed}/${items.length} 项；此结果不代表需求覆盖。`
-      : `Supplement program checks: ${passed}/${items.length} passed; this does not verify requirement coverage.`,
-    ...(files.length
-      ? [zh ? "程序确认的补做产物：" : "Supplement outputs confirmed by checks:", ...files]
-      : []),
-  ].join("\n");
+  const items = supplementHandoff(service, record, state)?.result?.items ?? [];
+  return items.length
+    ? groupPlanText(language, "group.plan.summary.supplement", {
+        passed: items.filter((item) => item.status === "pass").length,
+        total: items.length,
+      })
+    : groupPlanText(language, "group.plan.summary.supplementMissing");
 }
 
 /** Coverage comes from the structured, validated review; step checks alone prove no coverage. */

@@ -5,6 +5,9 @@ import {
   RpcErrorCodes,
 } from "@pibot/plugins-contract/full";
 import { z } from "zod";
+import { READ_TOOLS, SEARCH_TOOLS } from "../../store/notion-tools.ts";
+
+export { ACCOUNT_TOOL, READ_TOOLS, SEARCH_TOOLS, WRITE_TOOLS } from "../../store/notion-tools.ts";
 
 // A Notion workspace is reached through the person's own remote MCP connection, never
 // through a Notion token Pi Bot keeps. Search and read therefore go through the connector call
@@ -19,17 +22,6 @@ const MAX_SNIPPET_CHARS = 300;
 // A read is one page of knowledge, not a document dump: past this the answer stops being useful
 // context and starts costing the whole run's budget.
 const MAX_PAGE_CHARS = 60_000;
-
-/**
- * Notion's hosted MCP server names its tools `search` and `fetch`; self-hosted servers in the wild
- * expose the API operation names. Both are accepted so a connection the person imported themselves
- * keeps working, and anything else fails closed instead of guessing which tool might be a search.
- */
-export const SEARCH_TOOLS = ["search", "notion_search", "API-post-search"];
-export const READ_TOOLS = ["fetch", "notion_fetch", "API-retrieve-a-page"];
-
-/** Notion's hosted MCP tool that answers the bot user and the workspace it is connected to. */
-export const ACCOUNT_TOOL = "notion-get-self";
 
 export interface NotionAccountText {
   workspace: string | null;
@@ -147,6 +139,9 @@ export interface NotionPage {
   text: string;
   /** The page is longer than one read returns. */
   truncated: boolean;
+  version?: string;
+  object?: "page" | "database" | "data_source";
+  markdown?: string;
 }
 
 export async function searchNotion(query: string, access: NotionAccess): Promise<NotionSearch> {
@@ -164,11 +159,39 @@ export async function readNotion(ref: string, access: NotionAccess): Promise<Not
   const tool = pickTool(access, READ_TOOLS, "knowledge_notion_read_tool_missing");
   // Notion's hosted server names the argument `id`; the API-shaped fallback keeps the API's
   // `page_id`. Sending both would fail schema validation on either server.
+  return fetchNotionPage(id, access, tool);
+}
+
+export async function fetchNotionPage(
+  id: string,
+  access: NotionAccess,
+  tool: string,
+): Promise<NotionPage> {
   const args = tool === "API-retrieve-a-page" ? { page_id: id } : { id };
-  const payload = payloadOf(await access.call(tool, args, access.signal));
+  const value = await access.call(tool, args, access.signal);
+  assertNotionReply(value);
+  const payload = payloadOf(value);
   access.signal.throwIfAborted();
   const row = record(payload.value);
+  const metadata = record(row?.metadata);
   const raw = bodyText(payload.value);
+  const version = z.iso
+    .datetime({ offset: true })
+    .safeParse(
+      row?.page_last_edited_at ?? metadata?.page_last_edited_at ?? row?.last_edited_time,
+    ).data;
+  const object = z
+    .enum(["page", "database", "data_source"])
+    .safeParse(metadata?.type ?? row?.object ?? row?.type).data;
+  const markdown =
+    typeof row?.markdown === "string"
+      ? row.markdown
+      : (/(?:^|\n)<content>\r?\n([\s\S]*?)(?:\r?\n)?<\/content>(?:\r?\n<\/page>)?\s*$/u.exec(
+          raw,
+        )?.[1] ??
+        (object === "page" && typeof row?.text === "string" && !raw.includes("<properties>")
+          ? row.text
+          : undefined));
   return {
     ref: id,
     title: titleOf(row) ?? firstHeading(raw) ?? titleFromText(raw) ?? id,
@@ -176,7 +199,16 @@ export async function readNotion(ref: string, access: NotionAccess): Promise<Not
     text: raw.length > MAX_PAGE_CHARS ? raw.slice(0, MAX_PAGE_CHARS) : raw,
     // The host's guard truncates before this module sees the answer; a page cut there is just as
     // incomplete as one cut at MAX_PAGE_CHARS, even when JSON parsing failed and `raw` is a prefix.
-    truncated: payload.truncated || raw.length > MAX_PAGE_CHARS,
+    truncated: payload.truncated || row?.truncated === true || raw.length > MAX_PAGE_CHARS,
+    version,
+    object,
+    markdown:
+      markdown !== undefined &&
+      markdown.length <= MAX_PAGE_CHARS &&
+      !payload.truncated &&
+      row?.truncated !== true
+        ? markdown
+        : undefined,
   };
 }
 
@@ -199,7 +231,7 @@ function pickTool(access: NotionAccess, candidates: readonly string[], missing: 
  * answers in prose still counts as an answer. Anything else is treated as "no results" rather than
  * an error, because an empty search is a real outcome.
  */
-function payloadOf(value: unknown): { value: unknown; truncated: boolean } {
+export function payloadOf(value: unknown): { value: unknown; truncated: boolean } {
   const result = record(value);
   if (!result) return { value, truncated: false };
   const guard = record(record(result.details)?.outputGuard);
@@ -306,6 +338,29 @@ function parseJson(text: string): unknown {
   }
 }
 
+export class NotionBusy extends Error {
+  constructor(readonly retryAfter?: number) {
+    super("knowledge_busy");
+  }
+}
+
+export function assertNotionReply(value: unknown): void {
+  const body = record(payloadOf(value).value);
+  const error = record(body?.error);
+  const code = error?.code ?? body?.code;
+  if (code === "rate_limited" || code === "rate_limited_error")
+    throw new NotionBusy(z.number().nonnegative().safeParse(error?.retry_after_seconds).data);
+  if (record(value)?.isError === true || error) {
+    const unavailable = ["restricted_resource", "object_not_found", "unauthorized", "forbidden"];
+    throw new RpcError(
+      RpcErrorCodes.unsupported,
+      typeof code === "string" && unavailable.includes(code)
+        ? "knowledge_write_unavailable"
+        : "knowledge_notion_failed",
+    );
+  }
+}
+
 function stripGuardNotice(text: string): string {
   return text.replace(/\n\n\[MCP text output truncated:[^\]]*\]\s*$/, "");
 }
@@ -334,13 +389,13 @@ function pageUrl(id: string): string {
   return `https://www.notion.so/${id.replaceAll("-", "")}`;
 }
 
-function record(value: unknown): Record<string, unknown> | undefined {
+export function record(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
 }
 
-function stringOf(value: unknown): string | undefined {
+export function stringOf(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 

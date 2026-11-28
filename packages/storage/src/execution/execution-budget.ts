@@ -152,7 +152,8 @@ export class BudgetRepo {
           value.unknownUsageRequests--;
         }
         if (usage?.costUsd !== undefined) {
-          value.knownCostUsd += usage.costUsd;
+          // A negative "cost" is an unknown price leaking through, never a refund to the budget.
+          value.knownCostUsd += Number.isFinite(usage.costUsd) ? Math.max(0, usage.costUsd) : 0;
           value.unknownCostRequests--;
         }
         if (value.limits.costUsd !== null && usage?.costUsd === undefined)

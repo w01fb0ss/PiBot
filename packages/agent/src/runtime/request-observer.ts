@@ -21,9 +21,10 @@ const tokenUsageSchema = z.object({
 });
 const usageSchema = tokenUsageSchema.extend({
   totalTokens: amount.optional(),
-  // `totalFromProvider` distinguishes the provider's billed total from a catalog estimate.
-  cost: z.object({ total: amount, totalFromProvider: z.boolean().optional() }).optional(),
+  cost: z.unknown().optional(),
 });
+// `totalFromProvider` distinguishes the provider's billed total from a catalog estimate.
+const usageCostSchema = z.object({ total: amount, totalFromProvider: z.boolean().optional() });
 /** result() is the SDK's shared final promise; observing it does not consume streaming events. */
 export class RequestAccounting {
   readonly managesRetries = true;
@@ -53,6 +54,7 @@ export class RequestAccounting {
     },
     kind: "response" | "compaction" | "auxiliary",
     toolSet?: ToolSetSnapshot,
+    estimatedCostUsd?: number,
   ) {
     if (this.failure) throw this.failure;
     const id = randomUUID();
@@ -67,6 +69,7 @@ export class RequestAccounting {
         provider: model.provider,
         model: model.id,
         pricingKnown,
+        ...(estimatedCostUsd === undefined ? {} : { estimatedCostUsd }),
         ...(toolSet ? { toolSet } : {}),
       });
     } catch (error) {
@@ -99,8 +102,10 @@ export class RequestAccounting {
           : undefined;
         // Aborted/error SDK messages can carry billed partial usage, or merely default zeroes.
         const knownTokens = tokens !== undefined && (complete || tokens > 0);
+        // Reject an invalid cost independently of token usage. Pi can price unknown rates at -1.
+        const parsedCost = usageCostSchema.safeParse(usage?.cost).data;
         const reportedCost =
-          pricingKnown || usage?.cost?.totalFromProvider === true ? usage?.cost?.total : undefined;
+          pricingKnown || parsedCost?.totalFromProvider === true ? parsedCost?.total : undefined;
         const partialCost =
           !complete && knownTokens && usage && pricingKnown
             ? (usage.input * knownRate(model.cost.input) +
@@ -121,18 +126,20 @@ export class RequestAccounting {
           !failure.outputObserved &&
           (result.usage === undefined ||
             (usage !== undefined &&
+              (usage.cost === undefined || parsedCost !== undefined) &&
               [
                 usage.input,
                 usage.output,
                 usage.cacheRead,
                 usage.cacheWrite,
                 usage.totalTokens ?? 0,
-                usage.cost?.total ?? 0,
+                parsedCost?.total ?? 0,
               ].every((value) => value === 0))) &&
           !!transientRequestError(failure.error);
         this.observer?.settled({
           id,
           complete,
+          ...(failure?.outputObserved ? { outputObserved: true } : {}),
           ...(unbilled
             ? { usage: { tokens: 0, costUsd: 0 } }
             : knownTokens || knownCost

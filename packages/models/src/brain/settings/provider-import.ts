@@ -154,6 +154,7 @@ function importConfig(providers: ProviderStore, request: ProviderImportRequest) 
         existing.api !== api ||
         existing.baseUrl !== baseUrl ||
         !!existing.imageApi ||
+        !!existing.videoModels?.length ||
         !!existing.imageModels?.length ||
         !!existing.compat ||
         providers.secrets.has(providerScope(stable), "apiKey") ||

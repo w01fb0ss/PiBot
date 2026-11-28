@@ -19,7 +19,10 @@ const readableConfig = new Set([
   "core.ignorecase",
   "core.logallrefupdates",
 ]);
-export function gitFacts(args: string[]): ArgumentFacts {
+export function gitFacts(
+  args: string[],
+  paths: Pick<typeof posix, "isAbsolute"> = posix,
+): ArgumentFacts {
   const global = parseOptions(args, gitGlobalOptions);
   const [subcommand = "", ...given] = global.operands;
   const rest = subcommand === "log" || subcommand === "show" ? countShorthand(given) : given;
@@ -29,9 +32,9 @@ export function gitFacts(args: string[]): ArgumentFacts {
   const parsed = parseOptions(rest, spec ?? {});
   let root = ".";
   for (const path of optionValues(global, "-C"))
-    root = posix.isAbsolute(path) || path.startsWith("~") ? path : `${root}/${path}`;
+    root = paths.isAbsolute(path) || path.startsWith("~") ? path : `${root}/${path}`;
   const atRoot = (path: string) =>
-    posix.isAbsolute(path) || path.startsWith("~") ? path : `${root}/${path}`;
+    paths.isAbsolute(path) || path.startsWith("~") ? path : `${root}/${path}`;
   const result = optionFacts(parsed);
   const metadata = global.reads;
   result.reads = [root, ...metadata, ...parsed.reads.map(atRoot)];

@@ -2,6 +2,7 @@ import {
   type Bot,
   type BotCategory,
   type BuiltinRoleView,
+  type ModelPreference,
   RpcError,
   RpcErrorCodes,
 } from "@pibot/protocol";
@@ -19,6 +20,7 @@ import { useEffect, useState } from "react";
 import { useCatalog } from "../profile/catalog.ts";
 import { useImageCatalog } from "../profile/image-catalog.ts";
 import { normalizedThinking } from "../profile/ModelFields.tsx";
+import { useVideoCatalog } from "../profile/video-catalog.ts";
 
 const appearances = avatarShapes.flatMap((avatarShape) =>
   avatarColors.map((avatarColor) => ({ avatarShape, avatarColor })),
@@ -51,6 +53,8 @@ export function useNewBot() {
   const defaults = useSettings().settings?.defaultModel;
   const task = useAction();
   const [role, setRoleState] = useState<BuiltinRoleView | "custom">();
+  const videos = useVideoCatalog(role === "custom");
+  const [videoChoice, setVideoChoice] = useState<ModelPreference>();
   const [description, setDescription] = useState("");
   const [appearance, setAppearance] = useState(() => rollAppearance(data.bots));
   const [name, setName] = useState("");
@@ -101,6 +105,7 @@ export function useNewBot() {
               category,
               ...appearance,
               model: { provider: model.provider, id: model.id },
+              ...(videoChoice ? { defaultVideoModel: videoChoice } : {}),
               ...(category === "chat" && preference !== null ? { thinkingLevel: preference } : {}),
             },
             { timeoutMs: 120_000 },
@@ -127,6 +132,9 @@ export function useNewBot() {
     imageChoice,
     setImageChoice,
     selectedImageModel,
+    videos,
+    videoChoice,
+    setVideoChoice,
     task,
     role,
     setRole,

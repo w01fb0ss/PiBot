@@ -1,4 +1,5 @@
 import type { GroupWorkflowRunRecord, GroupWorkflowStepRecord } from "@pibot/storage";
+import { planStepTitles } from "./group-plan-summary.ts";
 import { progressOf } from "./group-workflow-progress.ts";
 import { workflowOf } from "./group-workflow-snapshot.ts";
 import { verdictFailureLines } from "./group-workflow-verdicts.ts";
@@ -46,14 +47,12 @@ export function workflowStopText(
       : zh
         ? `计划已停止：${reasons[reason] ?? "需要检查执行状态"}。请检查步骤交付与预算后决定下一步。`
         : `Plan stopped: ${reasons[reason] ?? "execution needs review"}. Review step deliveries and limits before continuing.`;
-  const definitions = new Map(
-    workflowOf(record).contract.steps?.map((step) => [step.id, step.title]),
-  );
+  const stepTitle = planStepTitles(workflowOf(record).contract.steps, language);
   const unfinished = steps.filter((step) => !["passed", "skipped"].includes(step.status));
   return [
     title,
-    ...verdictFailureLines(progressOf(record), zh),
+    ...verdictFailureLines(progressOf(record), zh, stepTitle),
     zh ? "未完成步骤：" : "Unfinished steps:",
-    ...unfinished.map((step) => `- ${definitions.get(step.stepId) ?? step.stepId}`),
+    ...unfinished.map((step) => `- ${stepTitle(step.stepId)}`),
   ].join("\n");
 }

@@ -7,7 +7,7 @@ import { bundledGit, bundledGitReady } from "../git/bundled-git.ts";
 import { commandPaths } from "./command-paths.ts";
 
 /**
- * Windows has no command sandbox: every command is an approved "unisolated run", so the
+ * Windows has no command sandbox: permitted commands run directly, so the
  * user's own PATH is no wider than what the user just approved. Without it Git, Node, Python and
  * winget-installed tools are not found at all, because Windows has no fixed /usr/local/bin
  * equivalent. Entries come after System32 so system tools keep precedence; only existing

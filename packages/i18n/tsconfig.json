@@ -53,6 +53,9 @@
       "path": "../teams-contract"
     },
     {
+      "path": "../videos-contract"
+    },
+    {
       "path": "../workspaces-contract"
     }
   ],

@@ -33,19 +33,30 @@ export function GroupPlanProgressView({
   card,
   titles,
   bots,
+  fillComposer,
+  onProgress,
 }: {
   card: GroupPlanCard;
   titles: ReadonlyMap<string, string>;
   bots?: ReadonlyMap<string, GroupSnapshot["bots"][number]>;
+  /** 「新开计划」 puts the old plan's request in the group's input (editable, never sent here). */
+  fillComposer?(text: string): void;
+  /** The card's header badge follows the plan's live state (finished, stopped, waiting). */
+  onProgress?(progress: Progress): void;
 }) {
   const t = useT();
   const { peer } = useRpc();
   const changes = useChangesLink();
   const [progress, setProgress] = useState<Progress>();
+  const reported = useRef(onProgress);
+  reported.current = onProgress;
+  useEffect(() => {
+    if (progress) reported.current?.(progress);
+  }, [progress]);
   const [failed, setFailed] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [stopping, setStopping] = useState(false);
-  const [newPlan, setNewPlan] = useState(false);
+  const [newPlan, setNewPlan] = useState<"done" | "filled">();
   const [revision, setRevision] = useState(0);
   const stopRequest = useRef<AbortController | undefined>(undefined);
   useEffect(() => {
@@ -199,11 +210,11 @@ export function GroupPlanProgressView({
               />
             )}
             <span className={styles.stepLine}>
-              {titles.get(step.stepId) ?? step.stepId} ·{" "}
+              {titles.get(step.stepId) ?? t("group.plan.step.untitled")} ·{" "}
               {step.verdictResolution
                 ? t(`group.plan.verdict.${step.verdictResolution.kind}`, {
                     step:
-                      titles.get(step.verdictResolution.stepId) ?? step.verdictResolution.stepId,
+                      titles.get(step.verdictResolution.stepId) ?? t("group.plan.step.untitled"),
                   })
                 : step.verdict
                   ? t(`group.plan.verdict.${step.verdict.verdict}`, {
@@ -249,14 +260,23 @@ export function GroupPlanProgressView({
           groupId={card.groupId}
           progress={{ ...progress, choice }}
           titles={titles}
-          changed={(value, chosen) => {
+          changed={({ newPlanGoal, ...value }, chosen) => {
             setProgress(value);
-            if (chosen === "new_plan") setNewPlan(true);
+            if (chosen !== "new_plan") return;
+            const fill = newPlanGoal ? fillComposer : undefined;
+            fill?.(newPlanGoal ?? "");
+            setNewPlan(fill ? "filled" : "done");
           }}
         />
       )}
       {newPlan && !live(progress) && (
-        <p className={styles.note}>{t("group.plan.choice.newPlanDone")}</p>
+        <p className={styles.note}>
+          {t(
+            newPlan === "filled"
+              ? "group.plan.choice.newPlanFilled"
+              : "group.plan.choice.newPlanDone",
+          )}
+        </p>
       )}
       {live(progress) &&
         !choice &&

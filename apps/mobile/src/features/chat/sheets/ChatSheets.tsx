@@ -30,11 +30,13 @@ export function ChatSheets({
   sheet,
   setSheet,
   onBrowser,
+  onApproval,
 }: {
   page: ChatPage;
   sheet: SheetState | undefined;
   setSheet: (sheet: SheetState | undefined) => void;
   onBrowser: () => void;
+  onApproval: (id: string) => void;
 }) {
   const close = () => {
     if (sheet?.kind === "retry") page.retry.dismiss();
@@ -51,7 +53,7 @@ export function ChatSheets({
       case "plan":
         return <PlanSheet page={page} onClose={close} />;
       case "tasks":
-        return <GroupPlanSheet page={page} onClose={close} />;
+        return <GroupPlanSheet page={page} onClose={close} onApproval={onApproval} />;
       case "changes":
         return (
           <ChangesSheet

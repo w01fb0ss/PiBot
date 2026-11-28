@@ -78,6 +78,14 @@ export class BuiltinBaselinesRepo {
       GroupBaselineSchema,
     );
   }
+  hasActiveGroup(templateId: string): boolean {
+    return !!this.db
+      .prepare(
+        `SELECT 1 FROM builtin_group_baselines b JOIN groups g ON g.id=b.group_id
+       WHERE b.template_id=? AND g.archived_at IS NULL LIMIT 1`,
+      )
+      .get(templateId);
+  }
   setBot(botId: string, roleIdValue: string, version: number, baseline: BotBaseline) {
     this.db
       .prepare(

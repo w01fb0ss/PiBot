@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { connectorDigest } from "@pibot/brain/kit";
+import { abortable, connectorDigest } from "@pibot/brain/kit";
 import type { BuiltinAppConnect } from "@pibot/plugins-contract/full";
 import {
   type Connector,
@@ -10,9 +10,11 @@ import {
   RpcErrorCodes,
 } from "@pibot/plugins-contract/full";
 import type { AuditRepo, SecretStore } from "@pibot/storage";
+import { z } from "zod";
 import type { ConnectorOperationsRepo, ConnectorsRepo, PluginsRepo } from "../../store/index.ts";
 import type { PluginRegistry } from "../apps/registry.ts";
 import { importSecretPrefix, USER_SECRET_SCOPE } from "./connector-import.ts";
+import { connectorWebsites } from "./connector-network.ts";
 
 interface AppDeps {
   registry: PluginRegistry;
@@ -27,6 +29,7 @@ interface AppDeps {
   cancellationTimeoutMs?: number;
   openExternal?(url: string): Promise<void>;
   registerSecret?(value: string): void;
+  commitInteractiveOAuth?(connectorId: string, commit: () => void): void;
   beforeEnable(connector: Connector): Promise<void>;
   start(operation: ReturnType<ConnectorOperationsRepo["request"]>): Promise<void>;
   changed(connectorId: string): void;
@@ -38,8 +41,17 @@ interface AppDeps {
     signal: AbortSignal,
   ): Promise<void>;
 }
+const storedOAuth = z.strictObject({ origin: z.string(), state: z.string() });
+const storedRemoteKey = z.strictObject({ endpoint: z.string(), token: z.string().min(1) });
+
+export const canConfigureRemoteKey = (server: ConnectorServer) =>
+  server.transport === "http" &&
+  server.auth.kind === "none" &&
+  !Object.keys(server.headers).some((name) => name.toLowerCase() === "authorization");
+
 const unavailable = () =>
   new RpcError(RpcErrorCodes.connectorUnavailable, "Connector authorization unavailable");
+type AuthorizationStatus = "succeeded" | "failed" | "cancelled";
 
 /** Every `${secret:NAME}` a connection's configuration reads (headers, env, URL). */
 function referencedSecretNames(server: ConnectorServer | undefined): Set<string> {
@@ -62,6 +74,18 @@ function importedTokenName(connector: Connector, server: ConnectorServer, name: 
   return referenced.has(name) ? name : undefined;
 }
 
+function authorizationReference(server: ConnectorServer) {
+  if (server.transport !== "http") return;
+  const headers = Object.entries(server.headers).filter(
+    ([key]) => key.toLowerCase() === "authorization",
+  );
+  if (headers.length !== 1) return;
+  const match = /^(?:(Bearer|Basic|Token|ApiKey) +)?\$\{secret:([A-Z][A-Z0-9_]{0,63})\}$/i.exec(
+    headers[0]?.[1] ?? "",
+  );
+  if (match?.[2]) return { scheme: match[1], name: match[2] };
+}
+
 function replacementTokenName(
   connector: Connector,
   server: ConnectorServer,
@@ -69,11 +93,7 @@ function replacementTokenName(
 ): string | undefined {
   let name: string | undefined;
   if (server.transport === "http") {
-    const headers = Object.entries(server.headers).filter(
-      ([key]) => key.toLowerCase() === "authorization",
-    );
-    if (headers.length !== 1) return;
-    name = /^Bearer \$\{secret:([A-Z][A-Z0-9_]{0,63})\}$/i.exec(headers[0]?.[1] ?? "")?.[1];
+    name = authorizationReference(server)?.name;
     const references = Object.values(server.headers).flatMap((value) =>
       [...value.matchAll(/\$\{secret:([A-Z][A-Z0-9_]{0,63})\}/g)].map((match) => match[1]),
     );
@@ -104,7 +124,11 @@ function replacementTokenName(
 export class ConnectorAppService {
   private readonly authorizations = new Map<
     string,
-    { connectorId: string; controller: AbortController; promise: Promise<void> }
+    { connectorId: string; controller: AbortController; promise: Promise<AuthorizationStatus> }
+  >();
+  private readonly authorizationOutcomes = new Map<
+    string,
+    { status: AuthorizationStatus; expiresAt: number }
   >();
   private readonly connecting = new Set<string>();
   constructor(private readonly deps: AppDeps) {}
@@ -248,7 +272,13 @@ export class ConnectorAppService {
     }
   }
 
-  oauthStorage(connectorId: string, verify: () => void = () => undefined): ConnectorOAuthStorage {
+  oauthStorage(
+    connectorId: string,
+    endpoint: string,
+    verify: () => void = () => undefined,
+    interactive = false,
+  ): ConnectorOAuthStorage {
+    const origin = new URL(endpoint).origin;
     const register = (value: string) => {
       const state = JSON.parse(value) as {
         tokens?: { access_token?: string; refresh_token?: string };
@@ -260,28 +290,54 @@ export class ConnectorAppService {
         state.client?.client_secret,
       ])
         if (secret) this.deps.registerSecret?.(secret);
+      return Boolean(state.tokens?.access_token);
     };
     return {
       load: async () => {
         verify();
         const value = await this.deps.secrets.get(`connector:${connectorId}`, "oauth");
         verify();
-        if (value) register(value);
-        return value;
+        if (!value) return;
+        try {
+          const grant = storedOAuth.safeParse(JSON.parse(value));
+          // A legacy grant has no verified destination and may predate a source update.
+          if (!grant.success || grant.data.origin !== origin) return;
+          register(grant.data.state);
+          return grant.data.state;
+        } catch {
+          // A corrupt stored grant is unusable; a fresh sign-in replaces it.
+          return;
+        }
       },
       save: async (value) => {
         verify();
         // Register individual credentials as well as the encrypted blob before any SDK diagnostics.
-        register(value);
+        const hasTokens = register(value);
         const commit = await this.deps.secrets.prepareSet(
           `connector:${connectorId}`,
           "oauth",
-          value,
+          JSON.stringify({ origin, state: value }),
         );
         verify();
-        commit();
+        if (interactive && hasTokens && this.deps.commitInteractiveOAuth)
+          this.deps.commitInteractiveOAuth(connectorId, commit);
+        else commit();
       },
     };
+  }
+
+  async remoteKey(connectorId: string, endpoint: string) {
+    const value = await this.deps.secrets.get(`connector:${connectorId}`, "remote-bearer");
+    if (!value) return;
+    try {
+      const entry = storedRemoteKey.safeParse(JSON.parse(value));
+      if (entry.success && entry.data.endpoint === new URL(endpoint).href) {
+        this.deps.registerSecret?.(entry.data.token);
+        return entry.data.token;
+      }
+    } catch {
+      // Invalid stored data is never forwarded to a service.
+    }
   }
 
   async authorize(input: {
@@ -289,10 +345,19 @@ export class ConnectorAppService {
     expectedRevision: number;
     token?: string;
     tokenName?: string;
+    fresh?: boolean;
   }) {
     const connector = this.deps.connectors.get(input.id);
     const server = connector && this.deps.connectors.configuration(connector.id);
     if (!connector || !server || connector.revision !== input.expectedRevision) throw unavailable();
+    if (server.transport === "http") {
+      const websites = connectorWebsites(this.deps, connector);
+      if (websites.mode === "remote" && !websites.remote.allowed)
+        throw new RpcError(
+          RpcErrorCodes.connectorUnavailable,
+          "connector_website_approval_required",
+        );
+    }
     if ([...this.authorizations.values()].some((item) => item.connectorId === input.id))
       throw new RpcError(RpcErrorCodes.busy, "Authorization in progress");
     const authorizationId = randomUUID();
@@ -305,7 +370,21 @@ export class ConnectorAppService {
     const tokenName = input.tokenName
       ? importedTokenName(connector, server, input.tokenName)
       : replacementTokenName(connector, server, this.deps.registry.fromInstallation(installation));
-    if (server.auth.kind !== "oauth" && (!input.token || !tokenName))
+    const canRecover = canConfigureRemoteKey(server);
+    const remoteBearer =
+      server.transport === "http" && canRecover && !input.tokenName && input.token;
+    if (remoteBearer && /[\s\0]/.test(remoteBearer))
+      throw new RpcError(RpcErrorCodes.invalidParams, "connector_paste_keyRequired");
+    const remoteOAuth =
+      server.transport === "http" &&
+      (server.auth.kind === "oauth" ||
+        (canRecover && connector.status === "needs_auth" && !input.token));
+    if (
+      server.auth.kind !== "oauth" &&
+      !remoteOAuth &&
+      !remoteBearer &&
+      (!input.token || !tokenName)
+    )
       throw new RpcError(
         RpcErrorCodes.connectorUnavailable,
         "connector_credential_requires_secret_settings",
@@ -316,7 +395,7 @@ export class ConnectorAppService {
       !!installation &&
       !!this.deps.registry.fromInstallation(installation)?.mcp?.oauthStartTool;
     if (
-      server.auth.kind === "oauth" &&
+      (server.auth.kind === "oauth" || remoteOAuth) &&
       (input.token ||
         (!builtinOauth &&
           (server.transport !== "http" ||
@@ -325,36 +404,116 @@ export class ConnectorAppService {
     )
       throw unavailable();
     if (builtinOauth && !this.deps.authorizeBuiltinOAuth) throw unavailable();
+    const preserveWorking = Boolean(
+      input.fresh &&
+        server.auth.kind === "oauth" &&
+        server.transport === "http" &&
+        connector.enabled &&
+        (connector.status === "ready" || connector.status === "idle"),
+    );
     const job = Promise.resolve()
-      .then(async () => {
+      .then(async (): Promise<AuthorizationStatus> => {
         let operation: ReturnType<ConnectorOperationsRepo["request"]> | undefined;
+        const outcome = (): AuthorizationStatus => {
+          if (controller.signal.aborted) return "cancelled";
+          const live = this.deps.connectors.get(input.id);
+          return live?.enabled && (live.status === "ready" || live.status === "idle")
+            ? "succeeded"
+            : "failed";
+        };
         try {
-          if (input.token && tokenName) {
-            // Encrypt first; both lifecycle CAS and credential write then happen without an await.
-            const commit = await this.deps.secrets.prepareSet(
-              USER_SECRET_SCOPE,
-              tokenName,
-              input.token,
-            );
-            controller.signal.throwIfAborted();
+          if (preserveWorking && server.transport === "http") {
+            // Re-authorizing an already signed-in connection must not disrupt its active status or
+            // tokens until new tokens are actually issued; cancelling keeps the existing login intact.
+            const verifyWorking = () => {
+              controller.signal.throwIfAborted();
+              const live = this.deps.connectors.get(input.id);
+              if (!live?.enabled || live.revision !== connector.revision) throw unavailable();
+              return live;
+            };
+            await this.deps.factory.authorizeOAuth?.({
+              url: server.url,
+              storage: this.oauthStorage(input.id, server.url, verifyWorking, true),
+              signal: controller.signal,
+              openExternal: (url) => this.deps.openExternal?.(url) ?? Promise.reject(unavailable()),
+              fresh: true,
+            });
+            const live = verifyWorking();
             operation = this.deps.operations.request(
               {
                 id: input.id,
-                expectedRevision: input.expectedRevision,
-                kind: connector.enabled ? "restart" : "enable",
+                expectedRevision: live.revision,
+                kind: "restart",
               },
               this.deps.actorBotId,
             );
+            this.deps.changed(input.id);
+            await this.deps.start(operation);
+            return outcome();
+          }
+          let replacement = input.token;
+          const reference = authorizationReference(server);
+          if (
+            replacement &&
+            reference &&
+            reference.name === tokenName &&
+            tokenName.startsWith(importSecretPrefix(connector.pluginInstallationId))
+          ) {
+            // Older imports stored the entire header in the encrypted value. Keep that format
+            // on rotation; newer imports carry the scheme in the header template instead.
+            const storedScheme =
+              !reference.scheme &&
+              /^(Bearer|Basic|Token|ApiKey) +/i.exec(
+                (await this.deps.secrets.get(USER_SECRET_SCOPE, tokenName)) ?? "",
+              );
+            const scheme = reference.scheme ?? (storedScheme ? storedScheme[1] : undefined);
+            if (scheme) {
+              const supplied = /^(Bearer|Basic|Token|ApiKey) +/i.exec(replacement);
+              if (supplied?.[1]?.toLowerCase() === scheme.toLowerCase())
+                replacement = replacement.slice(supplied[0].length);
+              if (storedScheme) replacement = `${storedScheme[0]}${replacement}`;
+            }
+          }
+          const credential =
+            remoteBearer && server.transport === "http"
+              ? {
+                  scope: `connector:${connector.id}`,
+                  name: "remote-bearer",
+                  value: JSON.stringify({
+                    endpoint: new URL(server.url).href,
+                    token: remoteBearer,
+                  }),
+                }
+              : replacement && tokenName
+                ? { scope: USER_SECRET_SCOPE, name: tokenName, value: replacement }
+                : undefined;
+          // Encrypt first; the lifecycle CAS and credential write then happen without an await.
+          const commit = credential
+            ? await this.deps.secrets.prepareSet(
+                credential.scope,
+                credential.name,
+                credential.value,
+              )
+            : undefined;
+          controller.signal.throwIfAborted();
+          operation = this.deps.operations.request(
+            {
+              id: input.id,
+              expectedRevision: input.expectedRevision,
+              kind: connector.enabled ? "restart" : "enable",
+            },
+            this.deps.actorBotId,
+          );
+          if (commit && credential) {
             commit();
-          } else
-            operation = this.deps.operations.request(
-              {
-                id: input.id,
-                expectedRevision: input.expectedRevision,
-                kind: connector.enabled ? "restart" : "enable",
-              },
-              this.deps.actorBotId,
-            );
+            if (remoteBearer) this.deps.registerSecret?.(remoteBearer);
+            else
+              this.deps.secrets.registerCommittedImport(
+                credential.scope,
+                credential.name,
+                credential.value,
+              );
+          }
           this.deps.changed(input.id);
           const activeOperation = operation;
           const verify = () => {
@@ -375,16 +534,19 @@ export class ConnectorAppService {
               ready.revision,
               controller.signal,
             );
-          } else if (server.auth.kind === "oauth" && server.transport === "http") {
+          } else if (remoteOAuth) {
             await this.deps.factory.authorizeOAuth?.({
               url: server.url,
-              storage: this.oauthStorage(input.id, verify),
+              storage: this.oauthStorage(input.id, server.url, verify, true),
               signal: controller.signal,
               openExternal: (url) => this.deps.openExternal?.(url) ?? Promise.reject(unavailable()),
+              ...(input.fresh ? { fresh: true } : {}),
             });
             verify();
+            this.deps.secrets.remove(`connector:${connector.id}`, "remote-bearer");
           }
           if (!builtinOauth) await this.deps.start(operation);
+          return outcome();
         } catch {
           if (operation) {
             try {
@@ -400,12 +562,33 @@ export class ConnectorAppService {
             }
           }
           this.deps.changed(input.id);
-          if (!controller.signal.aborted) this.deps.needsAuth?.(input.id);
+          if (!preserveWorking && !controller.signal.aborted) this.deps.needsAuth?.(input.id);
+          return controller.signal.aborted ? "cancelled" : "failed";
         }
+      })
+      .then((status) => {
+        // The browser may finish before the renderer starts waiting. Keep a bounded receipt
+        // separate from connection state so a failed reauthorization leaves a good login alone.
+        const now = Date.now();
+        for (const [id, item] of this.authorizationOutcomes)
+          if (item.expiresAt <= now) this.authorizationOutcomes.delete(id);
+        const oldest = this.authorizationOutcomes.keys().next().value;
+        if (oldest && this.authorizationOutcomes.size >= 200)
+          this.authorizationOutcomes.delete(oldest);
+        this.authorizationOutcomes.set(authorizationId, { status, expiresAt: now + 5 * 60_000 });
+        return status;
       })
       .finally(() => this.authorizations.delete(authorizationId));
     this.authorizations.set(authorizationId, { connectorId: input.id, controller, promise: job });
     return { authorizationId, expiresAt };
+  }
+
+  async waitAuthorization(authorizationId: string, signal: AbortSignal) {
+    const active = this.authorizations.get(authorizationId);
+    if (active) return { status: await abortable(active.promise, signal) };
+    const completed = this.authorizationOutcomes.get(authorizationId);
+    if (!completed || completed.expiresAt <= Date.now()) throw unavailable();
+    return { status: completed.status };
   }
 
   /** 访问令牌: connections whose single token Pi Bot stores; bounded to the first 200. */
@@ -503,6 +686,7 @@ export class ConnectorAppService {
   async dispose() {
     for (const item of this.authorizations.values()) item.controller.abort();
     await Promise.all([...this.authorizations.values()].map((item) => item.promise));
+    this.authorizationOutcomes.clear();
   }
 
   removeCredentials(connector: Connector) {
@@ -511,6 +695,7 @@ export class ConnectorAppService {
       connector.pluginInstallationId,
     );
     this.deps.secrets.remove(`connector:${connector.id}`, "oauth");
+    this.deps.secrets.remove(`connector:${connector.id}`, "remote-bearer");
     this.deps.secrets.remove(`connector:${connector.id}`, "windows-ack");
     const prefix = `IMPORT_${connector.pluginInstallationId.replaceAll("-", "").toUpperCase()}_`;
     for (const name of referencedSecretNames(server ?? undefined))

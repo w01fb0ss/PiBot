@@ -16,6 +16,10 @@ const SearchConversationSchema = ConversationSchema.pick({
   readOnly: true,
   importSource: true,
 });
+const SearchMessageSchema = MessageSchema.extend({
+  /** Bounded excerpt around the match; older brains omit it and send full content. */
+  snippet: z.string().max(400).optional(),
+});
 export const SearchMethods = {
   "search.query": {
     params: z.strictObject({
@@ -30,7 +34,7 @@ export const SearchMethods = {
       conversations: z.array(SearchConversationSchema).max(200).optional(),
       bots: z.array(BotSchema).max(200),
       groups: z.array(GroupSchema).max(200),
-      messages: z.array(MessageSchema).max(200),
+      messages: z.array(SearchMessageSchema).max(200),
       /** More (older) messages may match; older brains omit it. */
       nextCursor: z.string().max(256).nullable().optional(),
     }),

@@ -18,6 +18,7 @@
 | [检查更新](#检查更新) | `pibot.space` | 是 |
 | [角色库](#角色库) | `roles.pibot.space` | 你用到时才连 |
 | [模型厂商](#模型厂商) | 你配置的厂商 | 配好模型后才连 |
+| [导入时提炼记忆](#导入时提炼记忆) | 预览中列出的厂商和模型 | 默认关闭，每次导入单独开启 |
 | [ChatGPT 计划](#chatgpt-计划) | `auth.openai.com`、`api.openai.com` 或 `chatgpt.com` | 登录、刷新登录或使用已登录的模型时 |
 | [联网搜索](#联网搜索) | DuckDuckGo、Bing、Brave、Tavily 或你的 SearXNG | 是，第一次使用时会问你 |
 | [Bot 访问的网站](#bot-访问的网站) | 网站本身 | 是 |
@@ -45,7 +46,7 @@ Pi Bot 自己的服务器只走 HTTPS 或 WSS。STUN 是一次很小的 UDP 查�
 - **默认：** 安装版默认开启。
 - **怎么关：** 自动检查没有开关。它只读版本信息；如果你一个请求都不想有，可以在防火墙里屏蔽 `pibot.space`，以后自己下载新版本安装。
 
-**安卓手机 App（从 0.0.4 起）。** App 向 `https://pibot.space/updates/android.json` 发送普通的 HTTPS GET，不带账号、设备或安装标识。服务器能看到你的 IP 地址。自动检查默认开启，在应用启动时检查，每天最多一次。你也可以在「设备」页手动检查。离线模式会跳过这些检查。只有你选择「下载并安装」，App 才会从 `pibot.space` 下载 APK。
+**安卓手机 App（从 0.1.0 起）。** App 向 `https://pibot.space/updates/android.json` 发送普通的 HTTPS GET，不带账号、设备或安装标识。服务器能看到你的 IP 地址。自动检查默认开启，在应用启动时检查，每天最多一次。你也可以在「设备」页手动检查。离线模式会跳过这些检查。只有你选择「下载并安装」，App 才会从 `pibot.space` 下载 APK。
 
 ### 角色库
 
@@ -63,12 +64,18 @@ Pi Bot 自己的服务器只走 HTTPS 或 WSS。STUN 是一次很小的 UDP 查�
 
 - **接收方：** 你在 设置 › 模型与密钥 里配置的厂商：OpenAI、Anthropic、Google、DeepSeek、OpenRouter、云平台（Amazon Bedrock、Azure、Google Vertex AI、Cloudflare）、自定义网关等。每个 Bot 可以用不同的厂商。
 - **发什么：** 模型回复需要的内容：对话、Bot 的人设和指令、用到的记忆、Bot 读到的文件片段和网页内容、工具结果，以及你附上的图片。API Key 只发给对应的厂商。请求里会注明应用名「Pi Bot」（和网址 pibot.space），供厂商做应用归属统计，不加任何用户标识。对支持的厂商，Pi Bot 会请求延长提示缓存（部分 OpenAI 模型最长 24 小时，Anthropic 1 小时），让回复更快、更省钱；这部分缓存按厂商自己的条款处理。
-- **辅助模型：** 整理上下文、交接、翻译、写人设草稿、提炼网页或从对话提炼记忆时，相关内容会发给辅助模型的厂商。默认跟随主模型。
+- **辅助模型：** 整理上下文、交接、翻译、写人设草稿、提炼网页时，相关内容会发给辅助模型的厂商。默认跟随主模型。
+- **记忆维护：** 从对话提炼记忆、整理归位和 Dream 会将相关片段或记忆发给已配置的辅助模型。未设置辅助模型时，使用默认文字模型。如果厂商持续繁忙，Pi Bot 可能将同一份内容发给另一家已配置的模型厂商。Dream 可设为只在本机整理。
 - **什么时候：** Bot 每次回复或用到模型时。「保存并测试」会发一条很短的测试请求；「获取模型列表」会向该厂商（或你填的自定义地址）读取模型列表。云平台还会连它们自己的认证服务，比如 Google Vertex AI 会连 `oauth2.googleapis.com`。
 - **OpenRouter 模型列表：** 在 OpenRouter 页面点「刷新模型列表」，会从 `openrouter.ai` 下载公开的模型列表，不带你的 Key。
+- **OpenRouter 视频生成：** 保存 OpenRouter API Key 后打开 OpenRouter 设置页时，Pi Bot 会携带你的 Key 向 `openrouter.ai/api/v1/videos/models` 查询可用视频模型和价格。你在聊天中确认 OpenRouter 视频生成后，视频提示词及选用的首帧或参考图片会发送给 OpenRouter（`openrouter.ai`）以及所选模型的上游厂商，生成的 MP4 会从 OpenRouter 或其签名存储地址下载。
 - **默认：** 配好模型之前什么都不发。
-- **怎么关：** 用本地模型。Ollama、LM Studio、vLLM 都在你的电脑上运行，Pi Bot 通过 `127.0.0.1` 连接它们，数据不出电脑。欢迎流程会在 `127.0.0.1:11434` 查找 Ollama，同样只在本机。
+- **如何在本机运行：** 只配置本机模型厂商。Ollama、LM Studio 和 vLLM 可以在你的电脑上运行，Pi Bot 通过 `127.0.0.1` 连接它们。欢迎流程会在 `127.0.0.1:11434` 查找 Ollama，同样只在本机。
 - **代理：** 在 设置 › 通用 › 网络代理 里填了代理后，所有厂商请求都走这个代理（本机的模型服务除外）。Pi Bot 不会自己去用系统代理。
+
+### 导入时提炼记忆
+
+默认关闭。预览会显示模型。云端模型还会显示预计 token 数和费用。本机 Ollama 可用且已关闭云功能时，提炼留在本机，免费。否则，在本次导入中打开「提炼记忆」即同意将所选对话中已遮盖密钥的消息文本发给预览列出的厂商和模型。标记为敏感或排除的对话会跳过。本次预算为估算加 20%，价格未知时按 token 限制。导入任务和审计会记录授权及模型信息，不记录消息文本。 长消息附件留在本机，提炼只使用导入对话中显示的消息正文。
 
 ### ChatGPT 计划
 
@@ -143,7 +150,7 @@ Gmail 插件有两种登录方式：
 ### 外部 Agent
 
 - **Codex 和 Claude Agent：** 你点「下载并创建」时，Pi Bot 从 `registry.npmjs.org` 下载固定版本的 ACP 适配器，每个文件都校验 SHA-256。
-- **运行时：** 外部 Agent（Codex、Claude Agent、Cursor、OpenCode）以 Bot 身份加入后，用它自己的账号连它自己家的服务，例如 Codex 连 `api.openai.com` 和 `chatgpt.com`，Claude 连 `api.anthropic.com` 和 `claude.ai`，Cursor 连 `cursor.com`，OpenCode 连 `opencode.ai` 和你在 OpenCode 里配置的厂商。macOS 和 Linux 上，Pi Bot 把每个 Agent 限制在它自家的域名里。它发出的内容按各家自己的条款处理。
+- **运行时：** 外部 Agent（Codex、Claude Agent、Cursor、OpenCode、Antigravity）以 Bot 身份加入后，用它自己的账号连它自己家的服务，例如 Codex 连 `api.openai.com` 和 `chatgpt.com`，Claude 连 `api.anthropic.com` 和 `claude.ai`，Cursor 连 `cursor.com`，OpenCode 连 `opencode.ai` 和你在 OpenCode 里配置的厂商，Antigravity 连 `daily-cloudcode-pa.googleapis.com`、`aicode.googleapis.com` 和 Google 登录（`www.googleapis.com`、`oauth2.googleapis.com`）。macOS 和 Linux 上，Pi Bot 把每个 Agent 限制在它自家的域名里。它发出的内容按各家自己的条款处理。
 - **默认：** 你添加之前不会连。
 
 ## 手机和执行端

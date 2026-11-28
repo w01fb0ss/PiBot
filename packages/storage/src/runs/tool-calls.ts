@@ -31,24 +31,30 @@ export type ToolCallPatch = Partial<
     | "finishedAt"
     | "denialReason"
     | "codeAnalysis"
+    | "settingsAction"
+    | "inputTranslation"
   >
 > & { performance?: ToolPerformance };
-const columns = `t.id, t.message_id AS messageId, t.tool_call_id AS toolCallId, t.tool, t.summary, t.code_analysis AS codeAnalysisJson,
-  t.status, t.exit_code AS exitCode, t.duration_ms AS durationMs, t.log_path AS logPath,
+const columns = `t.id, t.message_id AS messageId, t.tool_call_id AS toolCallId, t.tool, t.summary, t.code_analysis AS codeAnalysisJson, t.settings_action AS settingsActionJson,
+  t.input_translation AS inputTranslation, t.status, t.exit_code AS exitCode, t.duration_ms AS durationMs, t.log_path AS logPath,
   t.created_at AS createdAt, t.finished_at AS finishedAt, t.denial_reason AS denialReason,
   t.yolo_risk AS yoloRisk,
-  a.status AS approvalStatus, a.remembered AS approvalRemembered, a.risk AS approvalRisk, json_extract(a.request, '$.explanation') AS approvalExplanation`;
+  a.status AS approvalStatus, a.remembered AS approvalRemembered, a.risk AS approvalRisk, json_extract(a.request, '$.explanation') AS approvalExplanation,
+  json_extract(a.request, '$.superseded') AS approvalSuperseded`;
 const source = "tool_calls t LEFT JOIN approvals a ON a.id = t.approval_id";
 function parseTool(row: Record<string, unknown>): StoredToolCall {
   const {
     messageId,
     logPath,
     codeAnalysisJson,
+    settingsActionJson,
+    inputTranslation,
     denialReason,
     approvalStatus,
     approvalRemembered,
     approvalRisk,
     approvalExplanation,
+    approvalSuperseded,
     yoloRisk,
     ...record
   } = row;
@@ -57,6 +63,8 @@ function parseTool(row: Record<string, unknown>): StoredToolCall {
     ...ToolCallRecordSchema.parse({
       ...record,
       ...(codeAnalysis ? { codeAnalysis } : {}),
+      ...(settingsActionJson ? { settingsAction: JSON.parse(String(settingsActionJson)) } : {}),
+      ...(inputTranslation ? { inputTranslation } : {}),
       ...(denialReason ? { denialReason: String(denialReason) } : {}),
       ...(yoloRisk ? { yolo: { risk: yoloRisk } } : {}),
       ...(approvalStatus
@@ -68,6 +76,8 @@ function parseTool(row: Record<string, unknown>): StoredToolCall {
               ...(approvalExplanation
                 ? { explanation: JSON.parse(String(approvalExplanation)) }
                 : {}),
+              // json_extract turns the JSON true into SQLite's 1.
+              ...(approvalSuperseded === 1 ? { superseded: true } : {}),
             },
           }
         : {}),
@@ -152,7 +162,7 @@ export class ToolCallsRepo {
       const value = ToolCallRecordSchema.parse({ ...record, ...fields });
       this.db
         .prepare(`UPDATE tool_calls SET summary = ?, status = ?, exit_code = ?, duration_ms = ?,
-      log_path = ?, finished_at = ?, denial_reason = ?, code_analysis = ? WHERE id = ?`)
+      log_path = ?, finished_at = ?, denial_reason = ?, code_analysis = ?, settings_action = ?, input_translation = ? WHERE id = ?`)
         .run(
           value.summary,
           value.status,
@@ -162,6 +172,8 @@ export class ToolCallsRepo {
           value.finishedAt,
           value.denialReason ?? existingDenial ?? null,
           value.codeAnalysis ? JSON.stringify(value.codeAnalysis) : null,
+          value.settingsAction ? JSON.stringify(value.settingsAction) : null,
+          value.inputTranslation ?? null,
           id,
         );
       const updated = this.get(id);

@@ -358,6 +358,43 @@
   border-radius: 12px;
   margin: 0 0 10px;
 }
+.summaryCard {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: var(--card);
+  border: 1px solid var(--b1);
+  margin: 0 0 10px;
+  font-size: 13px;
+}
+.summaryRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.summaryRow > span {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+.setupRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: var(--warnBg);
+  color: var(--warn);
+  font-size: 13px;
+  margin: 0 0 10px;
+}
+.setupRow > span {
+  flex: 1 1 200px;
+  min-width: 0;
+}
 /* Add menu */
 .menuRoot {
   position: relative;
@@ -970,4 +1007,20 @@
   .tileAction:hover:not(:disabled) .tileChevron {
     transform: none;
   }
+}
+
+.tokenField {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0;
+}
+
+.tokenField select {
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--b2);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
 }

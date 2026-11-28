@@ -5,7 +5,7 @@
 // (the Bot's "hand work to external agents" level); everything the agent then does is judged
 // under the agent Bot's own permissions, with its cards shown in the delegating topic.
 import type { LocalToolCall, LocalToolResult } from "@pibot/agent";
-import type { CapabilityContext, ToolRunContext } from "@pibot/brain/kit";
+import { type CapabilityContext, mainDirectTopic, type ToolRunContext } from "@pibot/brain/kit";
 import { agentDelegationTools } from "@pibot/external-agents-contract";
 import { type Bot, type FolderSelection, RpcError } from "@pibot/external-agents-contract/full";
 import { BotsRepo, ConversationsRepo, MessagesRepo, RunsRepo } from "@pibot/storage";
@@ -23,9 +23,26 @@ const START_SLACK_MS = 5 * 60_000;
 const POLL_MS = 3_000;
 
 export function delegationTools(ctx: CapabilityContext, service: ExternalAgentsService) {
-  ctx.tools.executor("delegate_to_agent", (context, call, signal) =>
+  const releasePolicy = ctx.local.provideToolPolicyFor("delegate_to_agent", (context) => {
+    if (!mainDirectTopic(ctx.local, context)) return { requests: [] };
+    return {
+      primary: true,
+      requests: [],
+      refusal: "pi_use_send_to_bot",
+      refusalText: say(
+        context.language,
+        "在 Pi 私聊中，请用 send_to_bot 派活，bot 填 team_directory 里的接手 Bot ID。",
+        "Use send_to_bot in Pi's direct chat with the recipient Bot ID from team_directory.",
+      ),
+    };
+  });
+  const releaseExecutor = ctx.tools.executor("delegate_to_agent", (context, call, signal) =>
     delegate(ctx, service, context, call, signal),
   );
+  return () => {
+    releaseExecutor();
+    releasePolicy();
+  };
 }
 
 /** The agent Bot the model named: its id, or its name when exactly one agent Bot has it. */

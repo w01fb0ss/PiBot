@@ -2,6 +2,7 @@ import {
   type BotPanelTab,
   type MessageFocus,
   NavigationContext,
+  type NavigationValue,
   type SettingsOverlay,
   type SettingsSectionId,
   type SettingsTarget,
@@ -17,6 +18,7 @@ import { useStartupDisplay } from "./startup-display.tsx";
 function returnTarget(view: View): View {
   const target = { ...view };
   delete target.focus;
+  delete target.approvalFocus;
   delete target.groupPanel;
   return target;
 }
@@ -32,11 +34,7 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
   const [settingsOverlay, setSettingsOverlay] = useState<SettingsOverlay>();
   const [dialog, setDialog] = useState<ShellDialog>();
   const [revisions, setRevisions] = useState<Readonly<Record<string, number>>>({});
-  const [botPanel, setBotPanel] = useState<{
-    botId: string;
-    tab: BotPanelTab;
-    skillId?: string;
-  }>();
+  const [botPanel, setBotPanel] = useState<NavigationValue["botPanel"]>();
   const [teamOverlay, setTeamOverlay] = useState<TeamOverlay>();
   const closeTeamOverlay = useCallback(() => setTeamOverlay(undefined), []);
   const navigate = useCallback((next: View) => {
@@ -64,6 +62,17 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
       setBotPanel({ botId, tab, ...(skillId ? { skillId } : {}) });
     },
     [view, navigate],
+  );
+  const openImportedTopic = useCallback(
+    (botId: string, topicId: string, importId?: string) => {
+      navigate({ name: "chat", botId, topicId });
+      setBotPanel(
+        importId
+          ? { botId, tab: "topics", importedBatch: { id: importId, key: crypto.randomUUID() } }
+          : undefined,
+      );
+    },
+    [navigate],
   );
   const closeBotPanel = useCallback(() => setBotPanel(undefined), []);
   const inboxReturn = useRef<View>({ name: "chat" });
@@ -149,6 +158,7 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
         view,
         botPanel,
         openBotPanel,
+        openImportedTopic,
         closeBotPanel,
         openAudit,
         closeAudit,

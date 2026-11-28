@@ -8,10 +8,9 @@ const reasons: Record<string, string> = {
     "结论修复计划不符合要求：保留旧步骤，每个不通过项追加原作者修复和原验证者复验；复验保留原验收合同，依赖修复步骤并引用其产物 / Invalid verdict repair: retain old steps and append one original-author repair plus original-verifier recheck per failed step, preserving recheck requirements and referencing the repair output",
   group_plan_method_inputs_invalid:
     "方法的资料输入不匹配，请核对输入名和位置，或将本次资料作为附件提交；输入不能冲突或超过上限 / Method inputs do not match; check the input name and location or attach the source files to this request, without conflicts or exceeding input limits",
-  group_plan_method_input_empty:
-    "方法所需的资料文件夹是空的，请放入本期资料后再开始计划 / A method's required source folder is empty; add this period's inputs before starting the plan",
+  group_plan_method_input_empty: "方法输入为空 / The method input is empty",
   group_plan_method_input_unavailable:
-    "方法所需的资料文件夹不存在或不可读，请检查工作根下的同名文件夹 / A method's source folder is missing or unreadable; check the same-named folder under the working root",
+    "方法输入不存在或不可读 / The method input is missing or unreadable",
   group_plan_method_unavailable:
     "步骤负责人的方法已不可用，请重新核对方法后提交计划 / The step owner's method is unavailable; check the method and submit the plan again",
   group_plan_workplace_revoked:
@@ -57,9 +56,39 @@ const reasons: Record<string, string> = {
     "群正在处理其他操作，请稍后核对计划状态 / The group is busy; check the plan status shortly",
 };
 
+function methodInputMessage(code: string, input: GroupPlanInputError["input"]) {
+  if (
+    input.required === undefined ||
+    (code !== "group_plan_method_input_empty" && code !== "group_plan_method_input_unavailable")
+  )
+    return undefined;
+  const label = JSON.stringify(input.name);
+  const empty = code === "group_plan_method_input_empty";
+  const statusZh = input.required ? "必填" : "可选";
+  const statusEn = input.required ? "required" : "optional";
+  const action = input.required
+    ? {
+        zh: "如果用户未提供此输入，请改用无需该输入的方法，从计划中移除此输入并重新提交。",
+        en: "If the person did not supply it, choose a method that can run without it, remove the input from the plan, and resubmit.",
+      }
+    : {
+        zh: "如果用户未提供此输入，请从计划中移除此输入并重新提交。",
+        en: "If the person did not supply it, remove the input from the plan and resubmit.",
+      };
+  return {
+    zh: `方法输入 ${label}（${statusZh}）${empty ? "为空" : "不存在或不可读"}。若用户已提供资料，请修正绑定后重新提交。${action.zh}`,
+    en: `Method input ${label} (${statusEn}) is ${empty ? "empty" : "missing or unreadable"}. If the person supplied it, correct the binding and resubmit. ${action.en}`,
+  };
+}
+
 /** Shared by tool feedback and the persisted card; unknown exception text is never exposed. */
 export function groupPlanStartFailure(error: unknown, redact: (value: string) => string) {
-  const reason = error instanceof RpcError ? error.message : "";
+  const reason =
+    error instanceof RpcError
+      ? error.message === "Group workplace unavailable"
+        ? "group_plan_workplace_unavailable"
+        : error.message
+      : "";
   const code = Object.hasOwn(reasons, reason)
     ? reason
     : error instanceof DOMException &&
@@ -68,19 +97,20 @@ export function groupPlanStartFailure(error: unknown, redact: (value: string) =>
       : "group_plan_start_failed";
   const instruction = reasons[code] as string;
   const separator = instruction.indexOf(" / ");
-  const input = error instanceof GroupPlanInputError ? error.input : undefined;
+  const detail = error instanceof GroupPlanInputError ? error.input : undefined;
+  const input = detail && {
+    ...detail,
+    name: redact(detail.name).slice(0, 200),
+    expected: redact(detail.expected).slice(0, 4096),
+    found: detail.found.map((value) => redact(value).slice(0, 4096)),
+  };
   return GroupPlanStartFailureSchema.parse({
     code,
-    message: { zh: instruction.slice(0, separator), en: instruction.slice(separator + 3) },
-    ...(input
-      ? {
-          input: {
-            name: redact(input.name).slice(0, 200),
-            expected: redact(input.expected).slice(0, 4096),
-            found: input.found.map((value) => redact(value).slice(0, 4096)),
-          },
-        }
-      : {}),
+    message: (input && methodInputMessage(code, input)) ?? {
+      zh: instruction.slice(0, separator),
+      en: instruction.slice(separator + 3),
+    },
+    ...(input ? { input } : {}),
   });
 }
 
@@ -130,12 +160,13 @@ export function groupPlanFailure(
     isError: true,
     text: JSON.stringify({
       code,
-      instruction:
-        reasons[code] ??
-        "暂时无法确认计划状态；请先核对现有计划，不要反复改写或重复分派 / Cannot confirm plan status right now; check the existing plan before retrying. Do not repeatedly rewrite or duplicate assignments",
-      ...(failure.input
+      instruction: known
+        ? `${failure.message.zh} / ${failure.message.en}`
+        : (reasons[code] ??
+          "暂时无法确认计划状态；请先核对现有计划，不要反复改写或重复分派 / Cannot confirm plan status right now; check the existing plan before retrying. Do not repeatedly rewrite or duplicate assignments"),
+      ...(failure.input ? { input: failure.input } : {}),
+      ...(failure.input && code === "group_plan_method_inputs_invalid"
         ? {
-            input: failure.input,
             correction:
               "请按期望位置放入资料，或把这些资料作为本次请求的附件重新提交 / Put the inputs at the expected location, or attach them to this request and resubmit",
           }
