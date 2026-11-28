@@ -30,6 +30,25 @@ model provider you choose sees the prompts you send.
 
 Website and downloads: <https://pibot.space> · User guide: [docs/guide](docs/guide/README.md) · Online docs: <https://pibot.space/en/guides/>
 
+## What's new in v0.1.0
+
+Pi Bot's first public beta brings conversation import, task assignment, group collaboration and
+cross-device progress into one workflow.
+
+- **Desktop Live Island and browser.** Keep track of background work while switching windows.
+  Connect the Pi Bot Browser extension to let Pi work with pages and tabs in your own browser.
+- **Conversation import and memory.** Bring in chat exports or local agent sessions, continue an
+  imported topic and review or undo changes to what Pi remembers.
+- **Task assignment and group collaboration.** Ask Pi to assign work to Bots, follow group plans
+  and review approvals from desktop or Android.
+- **Models and media.** Choose models per topic or group step, generate batches of images and run
+  approved video jobs in the background. Try the Media Desk and Image Inspiration Library.
+- **Connections and skills.** Use slash commands to find available apps, skills and MCP servers,
+  and connect local document folders as knowledge libraries.
+
+[v0.1.0 on GitHub](https://github.com/w01fb0ss/PiBot/releases/tag/v0.1.0) ·
+[Full release notes](https://pibot.space/en/releases/#v0.1.0)
+
 ## What it does
 
 - **Bots and roles.** Create Bots with a name, a role (developer, researcher, writer, translator,
