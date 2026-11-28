@@ -1,4 +1,4 @@
-import { mkdirSync, realpathSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { enableCompileCache, flushCompileCache } from "node:module";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
@@ -7,6 +7,7 @@ import { resolveDataDir } from "@pibot/storage/data-dir";
 import { app } from "electron";
 import { bundleIdentity, pruneCompileCache } from "../shared/bundle-identity.ts";
 import { guardConsoleStreams } from "../shared/console-guard.ts";
+import { captureIslandOpens } from "./island/island-open-inbox.ts";
 import { linuxPasswordStore } from "./window/linux-password-store.ts";
 import { captureProviderLinks } from "./window/provider-link-inbox.ts";
 
@@ -33,6 +34,16 @@ app.on("web-contents-created", (_event, contents) => {
 });
 const entryAtMs = Math.round(performance.now());
 const { PIBOT_DATA_DIR_DISPLAY_PATH: inheritedDataDirDisplayPath, ...entryEnv } = process.env;
+if (process.platform === "win32" && app.isPackaged) {
+  try {
+    const metadata = JSON.parse(readFileSync(join(app.getAppPath(), "package.json"), "utf8")) as {
+      pibotBuildMode?: unknown;
+    };
+    if (metadata.pibotBuildMode === "test") entryEnv.PIBOT_TEST_PACKAGE = "1";
+  } catch {
+    // An ordinary development bundle may not contain packaging metadata.
+  }
+}
 // Feed CLI-only launches through the same data-root and child-launch logic as env overrides.
 if (!entryEnv.PIBOT_DATA_DIR && app.commandLine.hasSwitch("user-data-dir"))
   entryEnv.PIBOT_DATA_DIR = app.commandLine.getSwitchValue("user-data-dir");
@@ -124,6 +135,10 @@ if (process.argv.includes("--sandbox-doctor")) {
         | undefined;
       const lifetime = new AbortController();
       const providerLinks = captureProviderLinks(process.argv, lifetime.signal);
+      const islandOpens =
+        !background && !embedded && process.platform === "win32"
+          ? captureIslandOpens(process.argv, lifetime.signal)
+          : undefined;
       const quitGui = () => app.quit();
       if (!background && !embedded) process.on("SIGTERM", quitGui);
       app.once("will-quit", () => {
@@ -214,6 +229,7 @@ if (process.argv.includes("--sandbox-doctor")) {
           originalEnv,
           prelaunch,
           providerLinks,
+          islandOpens,
           compileCache,
           signal: lifetime.signal,
           bootstrap: {

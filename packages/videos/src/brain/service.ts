@@ -3,6 +3,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { auditText, type CapabilityContext, type ToolRunContext } from "@pibot/brain/kit";
 import { createNetworkFetch } from "@pibot/execution";
 import { RpcError, RpcErrorCodes } from "@pibot/protocol-base";
+import { MAGPIE_PROVIDER } from "@pibot/protocol-base/provider-catalog";
 import { MessagesRepo, transaction } from "@pibot/storage";
 import type { GenerateVideo } from "@pibot/videos-contract";
 import { ZodError } from "zod";
@@ -203,7 +204,10 @@ export class VideoService {
           (!quotedModel || JSON.stringify(model) === JSON.stringify(quotedModel)),
       );
     if (!matches()) throw new VideoFailure("provider_changed");
-    const key = await this.ctx.local.models?.getApiKey(job.providerId);
+    const key =
+      job.providerId === MAGPIE_PROVIDER.id
+        ? MAGPIE_PROVIDER.attribution
+        : await this.ctx.local.models?.getApiKey(job.providerId);
     if (!key || !matches()) throw new VideoFailure("provider_changed");
     return new VideoTransport(
       this.network.fetch,

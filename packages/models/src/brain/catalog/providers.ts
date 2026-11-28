@@ -58,10 +58,10 @@ function validMagpieConfig(config: Omit<CustomProvider, "apiKey">): boolean {
     magpiePort(config.baseUrl) !== undefined &&
     config.api === "openai-completions" &&
     !config.headers &&
-    !config.videoApi &&
-    !config.videoModels?.length &&
-    !config.imageApi &&
-    !config.imageModels?.length
+    (!config.videoApi || config.videoApi === "openai-videos") &&
+    (!config.videoModels?.length || config.videoApi === "openai-videos") &&
+    (!config.imageApi || config.imageApi === "openai-images") &&
+    (!config.imageModels?.length || config.imageApi === "openai-images")
   );
 }
 

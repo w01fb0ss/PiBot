@@ -87,7 +87,7 @@ export function MagpieProviderForm({
     const request = new AbortController();
     active.current = request;
     try {
-      const { count } = await rpc.call(
+      const { count, imageCount, videoCount } = await rpc.call(
         "local.configureMagpie",
         { port: portNumber },
         { signal: request.signal },
@@ -95,7 +95,15 @@ export function MagpieProviderForm({
       await refresh();
       if (!request.signal.aborted) {
         setPort(String(portNumber));
-        task.setSuccess(t("models.magpie.saved", { count }));
+        const media = [
+          ...(imageCount ? [t("models.magpie.imageCount", { count: imageCount })] : []),
+          ...(videoCount ? [t("models.magpie.videoCount", { count: videoCount })] : []),
+        ];
+        task.setSuccess(
+          media.length
+            ? t("models.magpie.savedWithMedia", { count, media: media.join(" / ") })
+            : t("models.magpie.saved", { count }),
+        );
       }
     } catch (error) {
       if (error instanceof Error && error.message === "magpie_models_unavailable")

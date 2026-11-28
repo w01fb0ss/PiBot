@@ -210,7 +210,11 @@ export const ModelProviderMethods = {
   "local.configureMagpie": {
     timeoutMs: 15_000,
     params: z.strictObject({ port: magpiePort }),
-    result: z.strictObject({ count: count.positive().max(10000) }),
+    result: z.strictObject({
+      count: count.positive().max(10400),
+      imageCount: count.max(200).optional(),
+      videoCount: count.max(200).optional(),
+    }),
   },
   "local.detectOllama": {
     params: noParams,

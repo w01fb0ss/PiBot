@@ -1,0 +1,12 @@
+{
+  "zh": [
+    "本机 Magpie 网关新增图片和视频模型支持：接入时自动同步 Magpie 的对话、生图与生视频模型列表，可直接在生图和后台视频任务中使用，并绕过系统代理直连本机网关。",
+    "修复 Windows 桌面灵动岛点击后无法可靠切回并聚焦主窗口的问题，改善点击灵动岛跳转收件箱与多实例激活体验。",
+    "新增 Keenable 可选网页搜索服务商，可在设置中填写 API Key 后启用。"
+  ],
+  "en": [
+    "Local Magpie gateway now supports image and video models: configuring Magpie automatically syncs its chat, image, and video catalogs for image generation and approved background video jobs, connecting directly to localhost without routing through a proxy.",
+    "Fixes Windows desktop Live Island activation so clicking the island reliably brings the main window to the foreground and jumps to the inbox.",
+    "Adds Keenable as an optional keyed web search provider in Settings."
+  ]
+}

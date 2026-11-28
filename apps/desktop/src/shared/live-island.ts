@@ -45,11 +45,7 @@ const IslandViewSchema = z.strictObject({
 });
 export const IslandStateSchema = IslandViewSchema.extend({ theme: z.enum(["light", "dark"]) });
 export type IslandState = z.infer<typeof IslandStateSchema>;
-export const IslandPresentationSchema = z.strictObject({
-  title: line,
-  view: IslandViewSchema,
-});
-export type IslandPresentation = z.infer<typeof IslandPresentationSchema>;
+export type IslandPresentation = { title: string; view: z.infer<typeof IslandViewSchema> };
 export const IslandActionSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("open"), key: z.string().min(1).max(200) }),
   // The pill's laid-out size, so the window covers only the pill and not the screen around it.

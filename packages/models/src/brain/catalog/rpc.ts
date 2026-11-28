@@ -14,7 +14,7 @@ import { AuditRepo, BotsRepo, SettingsRepo } from "@pibot/storage";
 import { recordedModelHealth } from "../../store/index.ts";
 import type { ProviderAuth } from "../auth/provider-auth.ts";
 import type { ModelSettings } from "../settings/model-settings.ts";
-import { detectMagpie, fetchMagpieModels } from "./magpie.ts";
+import { detectMagpie, fetchMagpieCatalog, fetchMagpieModels } from "./magpie.ts";
 import { detectOllama } from "./ollama.ts";
 import { type ProviderStore, providerScope } from "./providers.ts";
 
@@ -299,23 +299,34 @@ export function registerModelProviderRpc(
       const deadline = AbortSignal.any([signal, ctx.models.signal(), AbortSignal.timeout(10_000)]);
       const gateway = await detectMagpie(port, deadline);
       if (!gateway.running) throw new RpcError(-32602, "magpie_models_unavailable");
-      const discovered = await fetchMagpieModels(port, deadline);
+      const discovered = await fetchMagpieCatalog(port, deadline);
       await modelSettings.upsert(
         {
           id: MAGPIE_PROVIDER.id,
           name: MAGPIE_PROVIDER.name,
           baseUrl: magpieBaseUrl(port),
           api: "openai-completions",
-          models: discovered.map(({ input, ...model }) => ({
+          models: discovered.models.map(({ input, ...model }) => ({
             ...model,
             ...(input ? { input: [...input] } : {}),
           })),
+          ...(discovered.imageModels.length
+            ? { imageApi: "openai-images" as const, imageModels: discovered.imageModels }
+            : {}),
+          ...(discovered.videoModels.length
+            ? { videoApi: "openai-videos" as const, videoModels: discovered.videoModels }
+            : {}),
         },
         deadline,
       );
       peer.emit("settings.changed", settings.get());
       changed();
-      return { count: discovered.length };
+      return {
+        count:
+          discovered.models.length + discovered.imageModels.length + discovered.videoModels.length,
+        ...(discovered.imageModels.length ? { imageCount: discovered.imageModels.length } : {}),
+        ...(discovered.videoModels.length ? { videoCount: discovered.videoModels.length } : {}),
+      };
     },
   );
   handle("local.detectOllama", async () => detectOllama());

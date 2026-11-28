@@ -1,4 +1,4 @@
-// The repair card: exactly what will change and what cannot be undone,
+// The repair card (A98 manager-card look): exactly what will change and what cannot be undone,
 // and which repairs must show it even under Pi's "always" level or YOLO.
 import type { CapabilityContext, ToolCardDescriber, ToolMustAsk } from "@pibot/brain/kit";
 import type { ApprovalFact } from "@pibot/protocol";

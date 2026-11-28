@@ -20,7 +20,7 @@ This page lists every network connection Pi Bot can make: the desktop app, the A
 | [Model providers](#model-providers) | The provider you configure | Only after you set up a model |
 | [Import memory distillation](#import-memory-distillation) | The provider and model named in the preview | Off. Opt in for each import. |
 | [ChatGPT plan](#chatgpt-plan) | `auth.openai.com`, `api.openai.com` or `chatgpt.com` | When signing in, refreshing sign-in or using a signed-in model |
-| [Web search](#web-search) | DuckDuckGo, Bing, Brave, Tavily or your SearXNG | Yes, asks on first use |
+| [Web search](#web-search) | DuckDuckGo, Bing, Brave, Tavily, Keenable or your SearXNG | Yes, asks on first use |
 | [Websites Bots visit](#websites-bots-visit) | The sites themselves | Yes |
 | [Commands Bots run](#commands-bots-run) | Package registries, your allowed sites, your SSH hosts | Yes, limited |
 | [MCP servers and connected apps](#mcp-servers-and-connected-apps) | The services you connect | No |
@@ -91,9 +91,9 @@ Off by default. The preview names the model. For cloud models, it also shows est
 - **Receiver:** the search service chosen in Settings › Models & API keys › Web search:
   - **No API key (automatic)**, the default: DuckDuckGo (`html.duckduckgo.com`), falling back to Bing (`cn.bing.com` or `www.bing.com`) when DuckDuckGo can't be reached.
   - **DuckDuckGo** or **Bing** on their own.
-  - **Brave Search API** (`api.search.brave.com`) or **Tavily** (`api.tavily.com`), with your API key.
+  - **Brave Search API** (`api.search.brave.com`), **Tavily** (`api.tavily.com`) or **Keenable** (`api.keenable.ai`), with your API key.
   - **Self-hosted SearXNG**: only the address you enter.
-- **What is sent:** the search terms the Bot writes, plus your key for Brave or Tavily.
+- **What is sent:** the search terms the Bot writes, plus your key for Brave, Tavily or Keenable. Pi Bot also sends the app name `Pi Bot` in the `X-Keenable-Title` header on Keenable requests, and nothing about you or your device. Keenable logs search requests (the query and the results, with the request's IP address and user agent) under its default data policy; adding a key does not turn that off. Only an Enterprise zero-data-retention agreement with Keenable changes it. See [Keenable's data and privacy page](https://docs.keenable.ai/data-privacy).
 - **When:** when a Bot searches the web. The keyless services ask in the chat the first time.
 - **To stop it:** set **Visit websites** to **Never** in Settings › Permissions (for all Bots or for one Bot). This also blocks web search.
 

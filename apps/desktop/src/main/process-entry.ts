@@ -8,6 +8,7 @@ import { app, dialog } from "electron";
 import type { prelaunchBackground } from "./background/background-prelaunch.ts";
 import type { prelaunchBrainProcess } from "./brain/brain-process.ts";
 import { monitorMainEventLoop } from "./event-loop-monitor.ts";
+import type { captureIslandOpens } from "./island/island-open-inbox.ts";
 import { createMainStartupTiming } from "./startup-timing.ts";
 import { desktopRegistrationSkipReason } from "./window/login-item-scope.ts";
 import type { ProviderLinkInbox } from "./window/provider-link-inbox.ts";
@@ -25,6 +26,7 @@ export async function startMain(options: {
   compileCache?: Promise<{ status: number; durationMs: number } | undefined>;
   signal: AbortSignal;
   providerLinks: ProviderLinkInbox;
+  islandOpens?: ReturnType<typeof captureIslandOpens>;
   /** The role's file logger, for work the entry point schedules later (the compile-cache flush). */
   onLogger?(logger: { info(message: string): void; warn(message: string): void }): void;
   bootstrap: {
@@ -158,6 +160,7 @@ export async function startMain(options: {
         early,
         systemLocale,
         providerLinks: options.providerLinks,
+        islandOpens: options.islandOpens,
       });
       return;
     }

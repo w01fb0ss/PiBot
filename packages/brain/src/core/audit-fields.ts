@@ -78,6 +78,7 @@ export function auditProviderName(id: string): string | undefined {
       "github-copilot": "GitHub Copilot",
       brave: "Brave",
       tavily: "Tavily",
+      keenable: "Keenable",
       searxng: "SearXNG",
       duckduckgo: "DuckDuckGo",
       bing: "Microsoft Bing",

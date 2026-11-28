@@ -59,17 +59,18 @@ html,body{margin:0;background:transparent;overflow:hidden;font-family:var(--font
 </style></head><body><div id="host" role="status" aria-live="polite"></div></body></html>`;
 
 /**
- * The live island window: always on top and never takes focus. Modelled on the computer-use
- * indicator; `destroy()` closes the window and removes every listener it added.
+ * The live island window shows without taking focus. An explicit Windows open click briefly
+ * activates it to hand foreground permission to the GUI.
  */
 export function createIslandWindow(options: {
   outputDir: string;
   logger: Logger;
-  open(key: string): void;
+  open(key: string): void | Promise<void>;
 }) {
   let window: BrowserWindow | undefined;
   let ready = false;
   let canShow = false;
+  let openRevision = 0;
   let latest: IslandPresentation["view"] | undefined;
   let size = INITIAL;
   const report = (event: "create" | "show" | "failed", reason: string) => {
@@ -113,6 +114,31 @@ export function createIslandWindow(options: {
       show(window);
     }
   };
+  const open = async (clicked: BrowserWindow, key: string) => {
+    const revision = ++openRevision;
+    const resetFocus = () => {
+      if (!clicked.isDestroyed() && clicked.isFocusable()) clicked.setFocusable(false);
+    };
+    try {
+      if (process.platform === "win32") {
+        // Electron's non-focusable windows use WS_EX_NOACTIVATE. Activate only for an
+        // open click so the foreground privilege can pass to the GUI or its launcher.
+        if (!clicked.isFocusable()) {
+          clicked.setFocusable(true);
+          clicked.setSkipTaskbar(true);
+        }
+        clicked.once("blur", resetFocus);
+        clicked.focus();
+      }
+      await options.open(key);
+    } finally {
+      if (process.platform === "win32" && !clicked.isDestroyed()) {
+        clicked.off("blur", resetFocus);
+        // The island may still own focus when the GUI cannot activate or launch.
+        if (revision === openRevision) resetFocus();
+      }
+    }
+  };
   const onAction = (event: Electron.IpcMainEvent, raw: unknown) => {
     if (!latest || !fromWindow(event)) return;
     const parsed = IslandActionSchema.safeParse(raw);
@@ -123,7 +149,8 @@ export function createIslandWindow(options: {
       return;
     }
     const { key } = parsed.data;
-    if (latest.items.some((item) => item.key === key)) options.open(key);
+    if (window && latest.items.some((item) => item.key === key))
+      void open(window, key).catch(() => report("failed", "open_failed"));
   };
   // The work area moves with the menu bar, Dock, taskbar and display changes.
   const onDisplay = () => {

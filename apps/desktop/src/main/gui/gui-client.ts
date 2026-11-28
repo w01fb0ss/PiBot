@@ -30,7 +30,8 @@ import { createStartupWake } from "../background/startup-wake.ts";
 import { createWindowsBackgroundSecurity } from "../background/windows-background-security.ts";
 import { createWindowFramePorts } from "../browser-frames/browser-frames-window.ts";
 import { decodeFrameWire } from "../browser-frames/browser-frames-wire.ts";
-import { createGuiIsland } from "../island/gui-island.ts";
+import { readIslandOpenArgument } from "../island/island-open-argument.ts";
+import type { captureIslandOpens } from "../island/island-open-inbox.ts";
 import { startAppUpdates } from "../updates/update-bridge.ts";
 import { installAppMenu } from "../window/app-menu.ts";
 import { registerAppRestart } from "../window/app-restart.ts";
@@ -56,6 +57,7 @@ export async function startGuiClient(options: {
   early?: EarlyWindow;
   systemLocale?: Promise<string>;
   providerLinks?: ProviderLinkInbox;
+  islandOpens?: ReturnType<typeof captureIslandOpens>;
 }) {
   const controller = new AbortController();
   const startup: { signal: AbortSignal; onQuit?: (event: Electron.Event) => void } = {
@@ -263,37 +265,49 @@ async function runGuiClient(
     if (initialized && disconnected && !quitting)
       void repair().catch(() => options.logger.warn("GUI reconnect unavailable"));
   };
-  let pendingIslandKey: string | undefined;
-  const deliverIslandNavigation = () => {
-    if (!pendingIslandKey || !foreground.isFocused() || !business?.available()) return;
-    const key = pendingIslandKey;
-    pendingIslandKey = undefined;
-    void connection
-      .control({ type: "island-open", key })
+  const islandOpens = options.islandOpens;
+  const attach = { type: "attach", island: islandOpens ? true : undefined } as const;
+  let islandFocusTimer: ReturnType<typeof setTimeout> | undefined;
+  const acknowledgeIslandOpen = () => {
+    void islandOpens
+      ?.acknowledge(
+        (id) => connection.control({ type: "island-opened", id }),
+        () => !quitting && !disconnected && !!business?.available() && foreground.isFocused(),
+      )
       .catch(() => options.logger.warn("Live island navigation unavailable"));
   };
-  const guiIsland =
-    process.platform === "win32"
-      ? createGuiIsland({
-          outputDir: options.outputDir,
-          logger: options.logger,
-          inForeground: foreground.isFocused,
-          open: (key) => {
-            if (quitting || disconnected) return;
-            pendingIslandKey = key;
-            open();
-            deliverIslandNavigation();
-          },
-        })
-      : undefined;
-  const clearIsland = () => {
-    pendingIslandKey = undefined;
-    guiIsland?.dispose();
+  const openFromIsland = () => {
+    if (quitting || window.isDestroyed()) return;
+    clearTimeout(islandFocusTimer);
+    open();
+    acknowledgeIslandOpen();
+    if (foreground.isFocused()) return;
+    // WM_ACTIVATEAPP can follow focus() asynchronously. Raise the window briefly only if the
+    // normal activation still hasn't worked, and keep the click pending for real input focus.
+    islandFocusTimer = setTimeout(() => {
+      if (quitting || window.isDestroyed() || foreground.isFocused()) return;
+      const topmost = window.isAlwaysOnTop();
+      if (!topmost) window.setAlwaysOnTop(true);
+      try {
+        window.focus();
+      } finally {
+        if (!topmost) window.setAlwaysOnTop(false);
+      }
+      acknowledgeIslandOpen();
+      islandFocusTimer = setTimeout(() => {
+        if (!quitting && !foreground.isFocused())
+          options.logger.warn(
+            JSON.stringify({ module: "live-island", event: "failed", reason: "gui_focus_denied" }),
+          );
+      }, 150);
+    }, 150);
   };
+  const stopIslandOpens = islandOpens?.subscribe(openFromIsland);
   window.once("closed", () => {
     startup.signal.removeEventListener("abort", hideForStartupQuit);
     ipcMain.off("pibot:renderer-ready", ready);
-    clearIsland();
+    clearTimeout(islandFocusTimer);
+    stopIslandOpens?.();
   });
   const menuNavigation = (
     target: Parameters<typeof installAppMenu>[1] extends (target: infer T) => void ? T : never,
@@ -357,8 +371,8 @@ async function runGuiClient(
             .control({ type: "ui-ready" })
             .catch(() => options.logger.warn("GUI navigation unavailable"));
         break;
-      case "island":
-        if (!quitting) guiIsland?.receive(message.presentation);
+      case "island-open":
+        islandOpens?.offer(message.id);
         break;
       case "quit":
         // Before attach this GUI is a relaunch: a quit broadcast by an owner that is already
@@ -424,7 +438,6 @@ async function runGuiClient(
             JSON.stringify({ module: "gui", event: "background_connection_lost" }),
           );
         disconnected = true;
-        clearIsland();
         ownerWake.notify();
         status = "stopped";
         frames.reset();
@@ -480,7 +493,6 @@ async function runGuiClient(
             () => {
               if (accepted && candidate === connection) {
                 disconnected = true;
-                clearIsland();
                 status = "stopped";
                 frames.reset();
                 business?.disconnected();
@@ -503,7 +515,7 @@ async function runGuiClient(
       }
       try {
         connection = candidate;
-        await candidate.control({ type: "attach", island: true }, deadline);
+        await candidate.control(attach, deadline);
         accepted = true;
         disconnected = false;
         status = "ready";
@@ -598,7 +610,7 @@ async function runGuiClient(
         timing.lifecycles[state.lifecycle] ??= sinceStart();
         if (state.lifecycle === "ready") {
           timing.launchPhases.attach_requested ??= Math.round(performance.now());
-          await connection.control({ type: "attach", island: true }, signal);
+          await connection.control(attach, signal);
           timing.launchPhases.attach_received = Math.round(performance.now());
           attached = true;
           status = "ready";
@@ -654,23 +666,24 @@ async function runGuiClient(
       void connection
         .control({ type: "ui-ready" })
         .catch(() => options.logger.warn("GUI navigation unavailable"));
-      deliverIslandNavigation();
+      // A cold Windows launch can create or minimize the native window after the first open.
+      // Retry the pending activation once the renderer can receive the matching navigation.
+      if (islandOpens?.hasPending() && !foreground.isFocused()) openFromIsland();
+      else acknowledgeIslandOpen();
     },
     failed: () => options.logger.warn("GUI business channel unavailable"),
   });
   if (rendererWaiting) business.ready();
   const focused = () => {
     if (!quitting && foreground.isFocused()) {
-      guiIsland?.refresh();
       pendingFocus = new Date().toISOString();
       void sendFocus().catch(() => options.logger.warn("GUI focus delivery unavailable"));
-      deliverIslandNavigation();
+      acknowledgeIslandOpen();
     }
   };
   window.on("focus", focused);
   const backgrounded = () => {
     if (!quitting) {
-      guiIsland?.refresh();
       pendingFocus = undefined;
       void connection
         .control({ type: "blur" })
@@ -796,7 +809,9 @@ async function runGuiClient(
           .catch(() => options.logger.warn("GUI app URL navigation unavailable"));
     }
   };
-  app.on("second-instance", (_event, argv) => reopen(...argv));
+  app.on("second-instance", (_event, argv) => {
+    if (!islandOpens || !readIslandOpenArgument(argv)) reopen(...argv);
+  });
   app.on("activate", () => reopen());
   // macOS delivers pibot:// links here; Windows / Linux arrive as a second instance.
   app.on("open-url", (event, url) => {

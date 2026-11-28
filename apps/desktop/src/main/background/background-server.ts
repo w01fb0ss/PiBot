@@ -441,15 +441,13 @@ export async function createBackgroundServer(options: {
         frameAcks.delete(listener);
       };
     },
-    sendToClient(id: string, message: BackgroundWire) {
-      const client = clients.get(id);
-      if (!client) return false;
+    openIsland(clientId: string, id: string) {
+      const client = clients.get(clientId);
+      if (!client?.attached) return;
       try {
-        client.wire.send(message);
-        return true;
+        client.wire.send({ kind: "island-open", id });
       } catch {
-        drop(client.socket, "client_send_failed");
-        return false;
+        drop(client.socket, "island_open_failed");
       }
     },
     broadcast(message: BackgroundWire) {

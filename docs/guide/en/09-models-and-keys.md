@@ -96,7 +96,7 @@ Video models are available to the Bot's video tool and are separate from its cha
 
 - **No API key (automatic)**: tries DuckDuckGo first, then Bing if it can't connect. Keyless services also ask in chat on the first search.
 - **DuckDuckGo**, **Bing**: no account needed; may be rate-limited.
-- **Brave Search API**, **Tavily**: enter an API key.
+- **Brave Search API**, **Tavily**, **Keenable**: enter an API key. These are optional; nothing changes unless you pick one.
 - **Self-hosted SearXNG**: enter your service address; only that address is allowed.
 
 ## A different model per Bot

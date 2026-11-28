@@ -104,9 +104,10 @@ export function createRuntimeContext(deps: AgentRuntimeDeps) {
         (magpiePort(parsed.data.baseUrl) === undefined ||
           parsed.data.api !== "openai-completions" ||
           parsed.data.headers ||
-          parsed.data.videoModels?.length ||
-          parsed.data.imageApi ||
-          parsed.data.imageModels?.length)
+          (parsed.data.videoApi && parsed.data.videoApi !== "openai-videos") ||
+          (parsed.data.videoModels?.length && parsed.data.videoApi !== "openai-videos") ||
+          (parsed.data.imageApi && parsed.data.imageApi !== "openai-images") ||
+          (parsed.data.imageModels?.length && parsed.data.imageApi !== "openai-images"))
       )
         throw new AgentError("internal");
       ids.add(parsed.data.id);

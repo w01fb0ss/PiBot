@@ -26,7 +26,10 @@ import { createComputerGuard } from "../computer/computer-guard-adapter.ts";
 import { createComputerHost } from "../computer/computer-host.ts";
 import { createHostCapabilities } from "../host/host-capabilities.ts";
 import { createSecureStorage } from "../host/secure-storage.ts";
+import { createIslandOpen } from "../island/island-open.ts";
+import { islandOpenArgument } from "../island/island-open-argument.ts";
 import { createLiveIsland } from "../island/live-island.ts";
+import { grantIslandForeground } from "../island/windows-island-foreground.ts";
 import type { MainStartupTiming } from "../startup-timing.ts";
 import { createUpdateProxy } from "../updates/update-proxy.ts";
 import { isAppUrl, parseAppUrl } from "../window/app-url.ts";
@@ -38,6 +41,7 @@ import { createBackgroundBrainCycle } from "./background-brain-cycle.ts";
 import { createBackgroundClientLifetime } from "./background-client-lifetime.ts";
 import { reserveDescriptor } from "./background-directory.ts";
 import type { EarlyOwnerPreparation } from "./background-early.ts";
+import { processAlive } from "./background-exit.ts";
 import { GUI_LAUNCH_FLAG } from "./background-launch.ts";
 import { applyLoginPolicy } from "./background-login-policy.ts";
 import { createBackgroundManagement } from "./background-management.ts";
@@ -113,18 +117,12 @@ export async function startBackgroundOwner(options: {
   // The window whose focus hides the live island. Another client (a second window, the CLI)
   // leaving must not bring the island over a Pi Bot window that is still in front.
   let focusedClient: string | undefined;
-  let islandClient: string | undefined;
   const setForeground = (client: string, focused: boolean) => {
     if (focused) focusedClient = client;
     else if (focusedClient !== client) return;
     else focusedClient = undefined;
     foreground = focused;
     island?.foreground(focused);
-  };
-  const releaseIsland = (client: string) => {
-    if (islandClient !== client) return;
-    islandClient = undefined;
-    if (!stopped) island?.presentThrough();
   };
   let pendingNavigation: UiNavigation | undefined;
   let preferences = BackgroundPreferencesSchema.parse({});
@@ -337,26 +335,57 @@ export async function startBackgroundOwner(options: {
       clients: clients.size,
       management: managementState,
     });
-  const open = () => {
-    if (stopped) return;
+  const wakeGui = () => {
     if (sleepOwner)
       void sleepOwner.wake("gui").catch(() => options.logger.warn("GUI wake unavailable"));
-    if (clients.size) {
-      server?.broadcast({ kind: "open" });
-      return;
-    }
-    const child = spawn(process.execPath, options.dev ? [app.getAppPath()] : [], {
+  };
+  const launchGui = (argument?: string) => {
+    const args = options.dev ? [app.getAppPath()] : [];
+    if (argument) args.push(argument);
+    const env = desktopLaunchEnvironment(
+      { dev: options.dev, env: options.originalEnv },
+      options.dataDir,
+      options.dataDirDisplayPath,
+    );
+    // Keep an isolated Windows GUI attached to the same owner across a cold launch, even if its
+    // launcher reconstructs the environment. The entry point accepts this same root from CLI.
+    if (process.platform === "win32" && env.PIBOT_DATA_DIR)
+      args.push(`--user-data-dir=${env.PIBOT_DATA_DIR}`);
+    const child = spawn(process.execPath, args, {
       detached: true,
       stdio: "ignore",
-      env: desktopLaunchEnvironment(
-        { dev: options.dev, env: options.originalEnv },
-        options.dataDir,
-        options.dataDirDisplayPath,
-      ),
+      env,
     });
     child.on("error", () => options.logger.warn("GUI launch unavailable"));
     child.unref();
+    return child;
   };
+  const open = () => {
+    if (stopped) return;
+    wakeGui();
+    if (clients.size) server?.broadcast({ kind: "open" });
+    else launchGui();
+  };
+  const islandOpen = createIslandOpen({
+    launch: (id) => launchGui(islandOpenArgument(id)),
+    alive: processAlive,
+    grantForeground: (pid, signal) =>
+      grantIslandForeground(
+        options.originalEnv.SystemRoot ?? options.originalEnv.SYSTEMROOT,
+        pid,
+        signal,
+      ),
+    notify: (client, id) => server?.openIsland(client, id),
+    failed: (reason) =>
+      options.logger.warn(
+        JSON.stringify({
+          module: "live-island",
+          event: "failed",
+          platform: process.platform,
+          reason,
+        }),
+      ),
+  });
   // Sign-in default / repair, once per owner after the brain and its settings are ready.
   let loginPolicyStarted = false;
   const runLoginPolicy = () => {
@@ -444,6 +473,7 @@ export async function startBackgroundOwner(options: {
         }),
       );
       stopped = true;
+      islandOpen.dispose();
       lifecycle = "stopping";
       tray?.updateBackground({ lifecycle, brainPhase });
       clearTimeout(startupTimer);
@@ -610,11 +640,11 @@ export async function startBackgroundOwner(options: {
       disconnected: async (client, pid) => {
         providerImport.dismiss(client);
         setForeground(client, false);
-        releaseIsland(client);
+        islandOpen.detach(client);
         await clients.disconnected(client, pid);
         syncTray();
       },
-      control: (client, control: z.infer<typeof BackgroundControlSchema>) => {
+      control: (client, control: z.infer<typeof BackgroundControlSchema>, pid) => {
         if (control.type === "restart-brain") {
           const wasStandby = sleepOwner?.phase === "standby";
           return ensureWorking("host").then(() => {
@@ -691,28 +721,7 @@ export async function startBackgroundOwner(options: {
             case "attach":
               if (!current || !cycle) throw new Error("background_not_ready");
               await cycle.desktopClient(true, () => clients.attach(client));
-              // Only the desktop window takes the island: a later SDK, CLI or bridge client that
-              // attaches must not take it away from the window the person sees.
-              if (process.platform === "win32" && control.island && islandClient !== client) {
-                // Only the process receiving the island click can reliably activate its window.
-                if (islandClient)
-                  ownedServer.sendToClient(islandClient, { kind: "island", presentation: null });
-                islandClient = client;
-                island?.presentThrough((presentation) => {
-                  if (
-                    !ownedServer.sendToClient(client, { kind: "island", presentation }) &&
-                    presentation
-                  )
-                    options.logger.warn(
-                      JSON.stringify({
-                        module: "live-island",
-                        event: "failed",
-                        platform: process.platform,
-                        reason: "gui_presentation_delivery_failed",
-                      }),
-                    );
-                });
-              }
+              if (control.island) islandOpen.attach(client, pid);
               // After the attach reply: the window answers on this same socket, whose messages
               // wait behind this handler, so awaiting it here deadlocked every window start.
               setImmediate(() => {
@@ -733,7 +742,7 @@ export async function startBackgroundOwner(options: {
             case "detach":
               providerImport.dismiss(client);
               setForeground(client, false);
-              releaseIsland(client);
+              islandOpen.detach(client);
               await clients.detach(client, control.stop === true);
               syncTray();
               return state();
@@ -752,6 +761,12 @@ export async function startBackgroundOwner(options: {
                 pendingNavigation = undefined;
               }
               return null;
+            case "island-opened": {
+              if (!current) throw new Error("background_not_ready");
+              const target = islandOpen.opened(client, pid, control.id);
+              if (target) current.navigate(target);
+              return null;
+            }
             case "provider-import":
               providerImport.offer(control.intent, client);
               return null;
@@ -766,11 +781,6 @@ export async function startBackgroundOwner(options: {
               if (!current) throw new Error("background_not_ready");
               current.navigate(control.target);
               return null;
-            case "island-open": {
-              const target = client === islandClient ? island?.target(control.key) : undefined;
-              if (target && current) current.navigate(target);
-              return null;
-            }
             case "preferences": {
               // The sign-in policy may still be writing the same preferences.
               await managementWork;
@@ -931,7 +941,12 @@ export async function startBackgroundOwner(options: {
       logger: options.logger,
       platform: process.platform,
       env: options.originalEnv,
-      open: (target) => navigate(target),
+      open: (target) => {
+        if (stopped) return;
+        if (process.platform !== "win32") return navigate(target);
+        wakeGui();
+        return islandOpen.open(target);
+      },
     });
     island = ownedIsland;
     lifetime.own(() => {

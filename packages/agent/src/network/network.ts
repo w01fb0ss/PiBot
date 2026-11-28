@@ -257,12 +257,24 @@ export function installAgentNetwork(
               generateImages: async (
                 ...args: Parameters<NonNullable<Provider["generateImages"]>>
               ) => {
+                const [model] = args;
+                const magpie = model.provider === MAGPIE_PROVIDER.id;
+                const base = magpie ? model.baseUrl.replace(/\/$/, "") : undefined;
+                if (
+                  base !== undefined &&
+                  magpiePort(base) === undefined &&
+                  base !== new URL(magpieBaseUrl(80)).href
+                )
+                  throw new AgentError("provider_error");
                 const state: {
+                  pinnedOrigin?: string;
                   proxyFailure?:
                     | "proxy_unavailable"
                     | "proxy_credentials_unavailable"
                     | "proxy_auth_failed";
-                } = {};
+                } = {
+                  ...(magpie ? { pinnedOrigin: new URL(model.baseUrl).origin } : {}),
+                };
                 const result = await scope.run(state, () => generateImages(...args));
                 if (result.stopReason === "error" && state.proxyFailure)
                   return { ...result, errorMessage: state.proxyFailure };

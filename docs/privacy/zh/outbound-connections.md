@@ -20,7 +20,7 @@
 | [模型厂商](#模型厂商) | 你配置的厂商 | 配好模型后才连 |
 | [导入时提炼记忆](#导入时提炼记忆) | 预览中列出的厂商和模型 | 默认关闭，每次导入单独开启 |
 | [ChatGPT 计划](#chatgpt-计划) | `auth.openai.com`、`api.openai.com` 或 `chatgpt.com` | 登录、刷新登录或使用已登录的模型时 |
-| [联网搜索](#联网搜索) | DuckDuckGo、Bing、Brave、Tavily 或你的 SearXNG | 是，第一次使用时会问你 |
+| [联网搜索](#联网搜索) | DuckDuckGo、Bing、Brave、Tavily、Keenable 或你的 SearXNG | 是，第一次使用时会问你 |
 | [Bot 访问的网站](#bot-访问的网站) | 网站本身 | 是 |
 | [Bot 跑的命令](#bot-跑的命令) | 软件包仓库、你允许的网站、你的 SSH 主机 | 是，有限制 |
 | [MCP 服务器和连接的应用](#mcp-服务器和连接的应用) | 你连接的服务 | 否 |
@@ -91,9 +91,9 @@ Pi Bot 自己的服务器只走 HTTPS 或 WSS。STUN 是一次很小的 UDP 查�
 - **接收方：** 设置 › 模型与密钥 ›「联网搜索」里选的服务：
   - **免 Key（自动）**（默认）：先用 DuckDuckGo（`html.duckduckgo.com`），连不上时换 Bing（`cn.bing.com` 或 `www.bing.com`）。
   - 单独选 **DuckDuckGo** 或 **Bing**。
-  - **Brave Search API**（`api.search.brave.com`）或 **Tavily**（`api.tavily.com`），需要填你的 API Key。
+  - **Brave Search API**（`api.search.brave.com`）、**Tavily**（`api.tavily.com`）或 **Keenable**（`api.keenable.ai`），需要填你的 API Key。
   - **自建 SearXNG**：只连你填的地址。
-- **发什么：** Bot 写的查询词；用 Brave 或 Tavily 时还有你的 Key。
+- **发什么：** Bot 写的查询词；用 Brave、Tavily 或 Keenable 时还有你的 Key。用 Keenable 时，请求头 `X-Keenable-Title` 里只带应用名 `Pi Bot`，不带任何关于你或你设备的信息。Keenable 在默认数据政策下会记录搜索请求（查询词、结果，以及请求的 IP 地址和 user agent），填 Key 不会关闭记录；只有与 Keenable 签订企业版零数据留存协议才会不同。详见 [Keenable 的数据与隐私说明](https://docs.keenable.ai/data-privacy)。
 - **什么时候：** Bot 联网搜索时。免 Key 服务第一次使用会在聊天里问你。
 - **怎么关：** 在 设置 › 权限 里把「访问网站」设为「不允许」（可以对全部 Bot，也可以只对某个 Bot），搜索也会一起被拦下。
 

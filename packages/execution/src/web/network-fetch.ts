@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { isIP } from "node:net";
 import type { Dispatcher, RequestInit } from "undici";
 import {
   isProxyAuthenticationFailure,
@@ -8,6 +9,13 @@ import {
   ProxyUnavailableError,
   proxyAgent,
 } from "./network-proxy.ts";
+
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (host === "localhost" || host.endsWith(".localhost")) return true;
+  if (isIP(host) === 4) return host.startsWith("127.");
+  return host === "::1" || /^::ffff:(?:127\.|7f[0-9a-f]{2}:)/.test(host);
+}
 
 /** One brain owns every dispatcher until its response is consumed, cancelled or shutdown. */
 export function createNetworkFetch(
@@ -28,7 +36,11 @@ export function createNetworkFetch(
       lifetime.signal,
       AbortSignal.timeout(1_200_000),
     ]);
-    const selected = proxy();
+    const targetUrl = new URL(request.url);
+    const loopback = isLoopbackHost(targetUrl.hostname);
+    // Literal loopback servers (e.g. local Magpie) must never route through an outbound proxy,
+    // and must reject redirects so a loopback request cannot escape without the proxy.
+    const selected = loopback ? undefined : proxy();
     const timeouts = { headersTimeout: responseTimeoutMs, bodyTimeout: responseTimeoutMs };
     const agent = selected
       ? proxyAgent(selected, timeouts)
@@ -70,7 +82,7 @@ export function createNetworkFetch(
         headers: [...request.headers],
         ...(request.body ? { body: request.body, duplex: "half" } : {}),
         signal,
-        redirect: request.redirect,
+        redirect: loopback && request.redirect !== "manual" ? "error" : request.redirect,
         dispatcher: agent,
       } as RequestInit);
       if (!response.body) {

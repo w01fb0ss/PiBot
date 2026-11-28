@@ -21,6 +21,8 @@ export const settingsPagesZh = {
   "search.sends.bing": "查询词发给 Microsoft Bing（bing.com）。",
   "search.sends.brave": "查询词发给 Brave Search（api.search.brave.com），用你的 API Key。",
   "search.sends.tavily": "查询词发给 Tavily（api.tavily.com），用你的 API Key。",
+  "search.sends.keenable":
+    "查询词发给 Keenable（api.keenable.ai），用你的 API Key。Keenable 在默认数据政策下会记录搜索请求；填 Key 不会关闭记录。",
   "search.sends.searxng": "查询词只发给你填的 SearXNG 服务地址。",
   "search.rechoose": "查询词会发给 {provider}；再点一次上面选中的这项即同意并启用。",
   "search.detail.keyless": "先试 DuckDuckGo，不通时换 Bing。",
@@ -28,6 +30,7 @@ export const settingsPagesZh = {
   "search.detail.bing": "不用注册；可能被限流。",
   "search.detail.brave": "填好 API Key，离开输入框就保存。",
   "search.detail.tavily": "填好 API Key，离开输入框就保存。",
+  "search.detail.keenable": "填好 API Key，离开输入框就保存。",
   "search.detail.searxng": "填好服务地址，离开输入框就保存；只放行这一个地址。",
   "permissions.isolationOn": "命令在隔离环境里运行（已开启）",
   "permissions.advanced": "高级",
@@ -103,6 +106,8 @@ export const settingsPagesEn = {
   "search.sends.bing": "Search terms go to Microsoft Bing (bing.com).",
   "search.sends.brave": "Search terms go to Brave Search (api.search.brave.com) with your API key.",
   "search.sends.tavily": "Search terms go to Tavily (api.tavily.com) with your API key.",
+  "search.sends.keenable":
+    "Search terms go to Keenable (api.keenable.ai) with your API key. Keenable logs search requests under its default data policy; adding a key does not turn logging off.",
   "search.sends.searxng": "Search terms go only to the SearXNG address you enter.",
   "search.rechoose":
     "Search terms will go to {provider}; click the selected option above again to agree and turn it on.",
@@ -111,6 +116,7 @@ export const settingsPagesEn = {
   "search.detail.bing": "No account needed; may be rate-limited.",
   "search.detail.brave": "Enter an API key; it saves when you leave the field.",
   "search.detail.tavily": "Enter an API key; it saves when you leave the field.",
+  "search.detail.keenable": "Enter an API key; it saves when you leave the field.",
   "search.detail.searxng":
     "Enter the service address; it saves when you leave the field. Only that address is allowed.",
   "permissions.isolationOn": "Commands run in an isolated environment (on)",

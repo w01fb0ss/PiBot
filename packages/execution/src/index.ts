@@ -234,7 +234,7 @@ export { DuckDuckGoError, duckduckgoSearch } from "./web/duckduckgo.ts";
 export { createNetworkFetch } from "./web/network-fetch.ts";
 export * from "./web/network-proxy.ts";
 export { PublicDownloadError, withPublicDownload } from "./web/public-download.ts";
-export { searchJson } from "./web/search-http.ts";
+export { SearchStatusError, searchJson } from "./web/search-http.ts";
 export type { BlockedPageReason } from "./web/web.ts";
 export { blockedPage, fetchPage } from "./web/web.ts";
 export { assertPublicWebTarget } from "./web/web-address.ts";

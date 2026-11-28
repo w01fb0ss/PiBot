@@ -214,7 +214,10 @@ export async function dispatchModels(
   for (const [provider, config] of custom) {
     for (const video of config.videoModels ?? []) {
       const model = { provider, id: video.id };
-      const reason = availability(model, providers.secrets.has(providerScope(provider), "apiKey"));
+      const reason = availability(
+        model,
+        provider === MAGPIE_PROVIDER.id || providers.secrets.has(providerScope(provider), "apiKey"),
+      );
       rows.set(key(model), {
         ...model,
         name: video.id,

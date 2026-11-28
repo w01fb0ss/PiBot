@@ -698,7 +698,7 @@ export async function runVideoScenario(root: string): Promise<AcceptanceResult> 
       assert.equal(f.blocked(), 0);
       return {
         scenario:
-          "Video providers, progress, playback bytes, cancel, failure, timeout, cap, restart and .mov",
+          "A104 video providers, progress, playback bytes, cancel, failure, timeout, cap, restart and .mov",
         status: "脚本化通过",
         requests: f.counts(),
         nonFixtureNetworkAttempts: f.blocked(),

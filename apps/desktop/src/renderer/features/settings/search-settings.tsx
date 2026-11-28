@@ -15,7 +15,15 @@ import { requirePeer, writeCredential } from "./operations.ts";
 import css from "./search-settings.module.css";
 
 type SearchProvider = SearchConfig["provider"];
-const PROVIDERS = ["keyless", "duckduckgo", "bing", "brave", "tavily", "searxng"] as const;
+const PROVIDERS = [
+  "keyless",
+  "duckduckgo",
+  "bing",
+  "brave",
+  "tavily",
+  "keenable",
+  "searxng",
+] as const;
 const keyFree = (provider: SearchProvider): provider is "keyless" | "duckduckgo" | "bing" =>
   provider === "keyless" || provider === "duckduckgo" || provider === "bing";
 
@@ -152,7 +160,7 @@ export function SearchSettings() {
           ))}
         </fieldset>
       </SettingsRow>
-      {(provider === "brave" || provider === "tavily") && (
+      {(provider === "brave" || provider === "tavily" || provider === "keenable") && (
         <form
           className={layoutStyles.row}
           onSubmit={(event) => {

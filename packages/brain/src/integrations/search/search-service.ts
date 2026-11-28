@@ -17,11 +17,16 @@ import { abortable } from "../../core/abort.ts";
 import { endpoint } from "../../core/endpoint.ts";
 import { SearchCircuit } from "./search-circuit.ts";
 
+const KEENABLE_SEARCH_URL = "https://api.keenable.ai/v1/search";
+// Providers that take an API key (stored like the Brave and Tavily keys).
+const keyedProviders = ["brave", "tavily", "keenable"] as const;
 const row = z.object({
   title: z.string().max(8192),
   url: z.string().max(32768),
   description: z.string().max(65536).optional(),
   content: z.string().max(65536).optional(),
+  // Keenable returns the page text in `snippet`; its `description` is always empty.
+  snippet: z.string().max(65536).optional(),
 });
 export type SearchRecipient = Exclude<SearchConfig["provider"], "keyless">;
 export interface SearchResult {
@@ -119,7 +124,11 @@ export class SearchService {
                   this.secrets.has(`search:${input.provider}`, "apiKey"),
                 disclosed: false,
               };
-      if ((input.provider === "brave" || input.provider === "tavily") && input.apiKey)
+      if (
+        (keyedProviders as readonly string[]).includes(input.provider) &&
+        "apiKey" in input &&
+        input.apiKey
+      )
         await this.secrets.set(`search:${input.provider}`, "apiKey", input.apiKey);
       const result = this.repo.set(config);
       this.generation++;
@@ -155,7 +164,7 @@ export class SearchService {
   }
   remove() {
     transaction(this.db, () => {
-      for (const p of ["brave", "tavily"]) this.secrets.remove(`search:${p}`, "apiKey");
+      for (const p of keyedProviders) this.secrets.remove(`search:${p}`, "apiKey");
       this.repo.remove();
     });
     this.generation++;
@@ -210,7 +219,9 @@ export class SearchService {
           ? "https://html.duckduckgo.com/html/"
           : config.provider === "brave"
             ? "https://api.search.brave.com/res/v1/web/search"
-            : "https://api.tavily.com/search";
+            : config.provider === "keenable"
+              ? KEENABLE_SEARCH_URL
+              : "https://api.tavily.com/search";
   }
   policyRequest(recipient = this.recipient()): PolicyRequest {
     const config = this.get();
@@ -298,6 +309,12 @@ export class SearchService {
       headers["X-Subscription-Token"] = key ?? "";
       url.searchParams.set("q", query);
       url.searchParams.set("count", String(count));
+    } else if (config.provider === "keenable") {
+      headers["X-API-Key"] = key ?? "";
+      headers["Content-Type"] = "application/json";
+      // Only this app name goes out; no user or device information.
+      headers["X-Keenable-Title"] = "Pi Bot";
+      body = JSON.stringify({ query, max_results: Math.min(count, 50), snippet_max_length: 1000 });
     } else if (config.provider === "tavily") {
       headers.authorization = `Bearer ${key}`;
       headers["Content-Type"] = "application/json";
@@ -334,7 +351,7 @@ export class SearchService {
             title: r.title.slice(0, 500),
             url: url.href,
             proxy: this.proxy(),
-            snippet: (r.description ?? r.content ?? "").slice(0, 2000),
+            snippet: (r.snippet || r.description || r.content || "").slice(0, 2000),
           },
         ];
       } catch {

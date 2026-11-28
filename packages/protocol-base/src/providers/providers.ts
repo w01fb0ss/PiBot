@@ -2,6 +2,7 @@ import { z } from "zod";
 import { CustomImageModelSchema, ImageApiSchema } from "../chat/media.ts";
 import { CustomVideoApiSchema, CustomVideoModelSchema } from "../chat/video-models.ts";
 import { SafeSecretSchema, WebUrlSchema } from "../core/values.ts";
+import { MAGPIE_PROVIDER } from "./catalog-options.ts";
 
 const name = z.string().min(1);
 const count = z.number().int().nonnegative().safe();
@@ -162,7 +163,10 @@ export function configuredVideoProviders<
     ): provider is T & {
       videoApi: NonNullable<T["videoApi"]>;
       videoModels: NonNullable<T["videoModels"]>;
-    } => !!provider.videoApi && !!provider.videoModels?.length && hasKey(provider.id),
+    } =>
+      !!provider.videoApi &&
+      !!provider.videoModels?.length &&
+      (provider.id === MAGPIE_PROVIDER.id || hasKey(provider.id)),
   );
 }
 export type CustomProviderInfo = z.infer<typeof CustomProviderInfoSchema>;

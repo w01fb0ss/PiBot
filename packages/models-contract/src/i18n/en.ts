@@ -18,6 +18,9 @@ export const providersEn: { [K in keyof typeof providersZh]: string } = {
   "models.magpie.port": "Magpie port",
   "models.magpie.portHint": "Connects to 127.0.0.1. The default port is 3425.",
   "models.magpie.saved": "Saved {count} Magpie models",
+  "models.magpie.savedWithMedia": "Saved {count} Magpie models (including {media})",
+  "models.magpie.imageCount": "{count} image",
+  "models.magpie.videoCount": "{count} video",
   "models.magpie.modelsUnavailable":
     "Could not get Magpie models. Check the port and make sure the gateway has models available.",
   "models.health.unavailable": "This model is unavailable now: {reason}",

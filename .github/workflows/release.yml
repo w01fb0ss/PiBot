@@ -1,8 +1,9 @@
 # End-to-end free build, staging, RC, and production release pipeline for Pi Bot.
 #
 # Triggers:
-#   - Push tag `vX.Y.Z-rc.N` -> parallel 3-platform + Runner + Android builds -> Draft/Pre-release
-#     on GitHub -> automatic R2 upload (`downloads/X.Y.Z-rc.N/`) + `PiBot_web` `/updates/rc/` deploy.
+#   - Push tag `vX.Y.Z-rc.N` -> parallel 3-platform + Runner + Android builds -> GitHub Pre-release
+#     + SHA256SUMS + feed dry-run validation (local testing/acceptance only; never touches R2 or
+#     the public website).
 #   - Push tag `vX.Y.Z` -> parallel builds -> GitHub Draft Release (download & test locally) ->
 #     manual Approve in GitHub `production` environment -> R2 multipart upload + public ETag/SHA-256
 #     verification -> automatic `PiBot_web` update & Cloudflare deploy -> publish GitHub Release.
@@ -284,6 +285,8 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Enable unprivileged user namespaces for Electron sandbox on Ubuntu 24.04
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Package Linux x64 release
         run: xvfb-run -a pnpm --filter @pibot/desktop package -- --release --linux --x64
       - name: Install fpm for Linux Runner .deb
@@ -502,106 +505,6 @@ jobs:
           path: |
             release-stage/**
             release-assets/SHA256SUMS
-
-  publish-rc:
-    name: Publish RC to Cloudflare R2 & RC feed
-    needs: [prepare, stage-release, build-android]
-    if: always() && needs.prepare.outputs.is_rc == 'true' && needs.stage-release.result == 'success'
-    runs-on: ubuntu-latest
-    environment: rc
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-          cache: pnpm
-      - uses: android-actions/setup-android@v3
-        if: needs.build-android.result == 'success'
-      - run: pnpm install --frozen-lockfile
-      - uses: actions/download-artifact@v4
-        with:
-          name: desktop-mac-arm64
-          path: apps/desktop/dist/release/mac-arm64
-      - uses: actions/download-artifact@v4
-        with:
-          name: desktop-mac-x64
-          path: apps/desktop/dist/release/mac-x64
-      - uses: actions/download-artifact@v4
-        with:
-          name: desktop-win-x64
-          path: apps/desktop/dist/release/win-x64
-      - uses: actions/download-artifact@v4
-        with:
-          name: desktop-linux-x64
-          path: apps/desktop/dist/release/linux-x64
-      - uses: actions/download-artifact@v4
-        if: needs.prepare.outputs.desktop_only != 'true' && needs.prepare.outputs.skip_runner != 'true'
-        with:
-          name: runner-mac-x64
-          path: dist/runner
-      - uses: actions/download-artifact@v4
-        if: needs.prepare.outputs.desktop_only != 'true' && needs.prepare.outputs.skip_runner != 'true'
-        with:
-          name: runner-win-x64
-          path: dist/runner/installer
-      - uses: actions/download-artifact@v4
-        if: needs.prepare.outputs.desktop_only != 'true' && needs.prepare.outputs.skip_runner != 'true'
-        with:
-          name: runner-linux-x64
-          path: dist/runner/installer
-      - uses: actions/download-artifact@v4
-        if: needs.build-android.result == 'success'
-        with:
-          name: android-apk
-          path: apps/mobile/android/app/build/outputs/apk/release
-      - name: Upload RC installers to Cloudflare R2 & verify public URLs
-        env:
-          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ${{ vars.R2_BUCKET || 'pibot-releases' }}
-          FOLDER: ${{ needs.prepare.outputs.download_folder }}
-          DESKTOP_ONLY: ${{ needs.prepare.outputs.desktop_only }}
-          UPDATE_ONLY: ${{ needs.prepare.outputs.update_only }}
-        run: |
-          if [ -n "${ANDROID_HOME:-}" ] && [ -d "${ANDROID_HOME}/build-tools" ]; then
-            BUILD_TOOLS="$(ls -d "${ANDROID_HOME}/build-tools/"* | sort -V | tail -n 1)"
-            export AAPT="${BUILD_TOOLS}/aapt"
-          fi
-          ARGS=(--channel rc --tag "$FOLDER" --out-dir release-out --reuse-large-uploads)
-          [ "$DESKTOP_ONLY" = "true" ] && ARGS+=(--desktop-only)
-          [ "$UPDATE_ONLY" = "true" ] && ARGS+=(--update-only)
-          node tools/release/publish.mjs "${ARGS[@]}"
-      - name: Dispatch RC update feeds to PiBot_web
-        env:
-          PIBOT_WEB_REPO: ${{ vars.PIBOT_WEB_REPO }}
-          PIBOT_WEB_DISPATCH_TOKEN: ${{ secrets.PIBOT_WEB_DISPATCH_TOKEN }}
-        run: |
-          if [ -z "$PIBOT_WEB_REPO" ] || [ -z "$PIBOT_WEB_DISPATCH_TOKEN" ]; then
-            echo "::warning::PIBOT_WEB_REPO or PIBOT_WEB_DISPATCH_TOKEN not set; skipping automatic website deploy."
-            exit 0
-          fi
-          node - <<'EOF'
-          import { readFileSync } from "node:fs";
-          const payload = JSON.parse(readFileSync("release-out/web-dispatch.json", "utf8"));
-          const res = await fetch(`https://api.github.com/repos/${process.env.PIBOT_WEB_REPO}/dispatches`, {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${process.env.PIBOT_WEB_DISPATCH_TOKEN}`,
-              Accept: "application/vnd.github+json",
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ event_type: "pibot-release-publish", client_payload: payload }),
-          });
-          if (!res.ok) throw new Error(`PiBot_web dispatch failed (${res.status}): ${await res.text()}`);
-          console.log(`Dispatched RC update feeds to ${process.env.PIBOT_WEB_REPO}`);
-          EOF
-      - uses: actions/upload-artifact@v4
-        with:
-          name: rc-publish-receipts
-          path: release-out/**
 
   publish-production:
     name: Publish Stable to R2, PiBot_web & GitHub Release

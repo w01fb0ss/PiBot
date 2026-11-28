@@ -52,7 +52,7 @@ export function createLiveIsland(options: {
   platform: NodeJS.Platform;
   env: Readonly<Record<string, string | undefined>>;
   /** Bring the main window forward and open this place. */
-  open(target: UiNavigation): void;
+  open(target: UiNavigation): void | Promise<void>;
 }) {
   const support = liveIslandSupport(options.platform, options.env);
   if (support !== "supported")
@@ -65,7 +65,6 @@ export function createLiveIsland(options: {
   let guardVisible = false;
   let disposed = false;
   let shown: LiveActivityItem[] = [];
-  let presentInGui: ((value: IslandPresentation | null) => void) | undefined;
   let reported: string | undefined;
   const target = (key: string) => shown.find((entry) => entry.key === key)?.target;
 
@@ -81,13 +80,10 @@ export function createLiveIsland(options: {
           ? "activity_filtered"
           : guardVisible
             ? "computer_guard_visible"
-            : // The GUI decides using its own window's focus when it hosts the presenter.
-              foreground && !presentInGui
+            : foreground
               ? "gui_focused"
               : undefined;
-    const reason = items.length
-      ? (hidden ?? (presentInGui ? "gui_presenter" : "owner_presenter"))
-      : undefined;
+    const reason = items.length ? (hidden ?? "owner_presenter") : undefined;
     if (reason && reason !== reported && options.platform === "win32")
       options.logger.info(
         JSON.stringify({
@@ -99,8 +95,7 @@ export function createLiveIsland(options: {
       );
     reported = reason;
     if (hidden) {
-      if (presentInGui) presentInGui(null);
-      else window?.hide();
+      window?.hide();
       return;
     }
     const t = createTranslator(language);
@@ -126,16 +121,12 @@ export function createLiveIsland(options: {
       })),
     };
     const presentation = { title: t("liveIsland.windowTitle"), view };
-    if (presentInGui) {
-      presentInGui(presentation);
-      return;
-    }
     window ??= createIslandWindow({
       outputDir: options.outputDir,
       logger: options.logger,
       open: (key) => {
         const navigation = target(key);
-        if (navigation) options.open(navigation);
+        if (navigation) return options.open(navigation);
       },
     });
     window.show(presentation);
@@ -143,13 +134,6 @@ export function createLiveIsland(options: {
 
   return {
     support,
-    target,
-    presentThrough(present?: typeof presentInGui) {
-      presentInGui = present;
-      window?.destroy();
-      window = undefined;
-      render();
-    },
     activity(value: LiveActivity) {
       items = value.items;
       render();
@@ -162,7 +146,7 @@ export function createLiveIsland(options: {
     foreground(value: boolean) {
       if (foreground === value) return;
       foreground = value;
-      if (!presentInGui) render();
+      render();
     },
     guardVisible(value: boolean) {
       if (guardVisible === value) return;

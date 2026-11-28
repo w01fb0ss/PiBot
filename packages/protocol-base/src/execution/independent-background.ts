@@ -221,7 +221,7 @@ export const AcpChannelSchema = z.discriminatedUnion("type", [
 export type AcpChannel = z.infer<typeof AcpChannelSchema>;
 
 export const BackgroundControlSchema = z.discriminatedUnion("type", [
-  /** `island` marks the desktop window; only it may show the Windows live island. */
+  /** `island` marks the Windows desktop window that acknowledges a live island click. */
   z.strictObject({ type: z.literal("attach"), island: z.literal(true).optional() }),
   z.strictObject({ type: z.literal("acp-attach"), client: AcpClientSchema }),
   z.strictObject({ type: z.literal("acp-detach") }),
@@ -231,8 +231,8 @@ export const BackgroundControlSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("brain-state") }),
   z.strictObject({ type: z.literal("diagnostics") }),
   z.strictObject({ type: z.literal("ui-ready") }),
+  z.strictObject({ type: z.literal("island-opened"), id: z.uuid() }),
   z.strictObject({ type: z.literal("navigate"), target: UiNavigationSchema }),
-  z.strictObject({ type: z.literal("island-open"), key: z.string().min(1).max(200) }),
   z.strictObject({ type: z.literal("provider-import"), intent: ProviderImportIntentSchema }),
   z.strictObject({
     type: z.literal("provider-import-decide"),
@@ -302,8 +302,7 @@ export const BackgroundWireSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("status"), state: z.unknown() }),
   z.strictObject({ kind: z.literal("settings"), settings: z.unknown() }),
   z.strictObject({ kind: z.literal("open") }),
-  // Desktop-only presentation, validated by the receiving GUI before it reaches the island.
-  z.strictObject({ kind: z.literal("island"), presentation: z.unknown() }),
+  z.strictObject({ kind: z.literal("island-open"), id: IdSchema }),
   z.strictObject({ kind: z.literal("quit"), stop: z.boolean().optional() }),
   // Overlay frames (owner → GUI main) and their acknowledgements. Frames bypass the
   // business request queue; the GUI main validates `message` before it reaches the window.

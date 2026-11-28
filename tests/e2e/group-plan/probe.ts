@@ -76,10 +76,25 @@ function records(f: Fixture) {
   return dbRead(f, (db) =>
     db
       .prepare(
-        "SELECT id,status,workflow_json,budget_root_run_id FROM group_workflow_runs WHERE json_extract(workflow_json,'$.progress.implementation') IS NULL ORDER BY rowid",
+        `SELECT id,status,workflow_json,budget_root_run_id,cycle_id,finished_at,
+          json_extract(workflow_json,'$.progress.stoppedReason') AS stopped_reason,
+          json_extract(workflow_json,'$.progress.roundHold.limitId') AS round_limit_id,
+          json_extract(workflow_json,'$.progress.roundHold.status') AS before_round_hold
+        FROM group_workflow_runs
+        WHERE json_extract(workflow_json,'$.progress.implementation') IS NULL ORDER BY rowid`,
       )
       .all(),
-  ) as { id: string; status: string; workflow_json: string; budget_root_run_id: string }[];
+  ) as {
+    id: string;
+    status: string;
+    workflow_json: string;
+    budget_root_run_id: string;
+    cycle_id: string;
+    finished_at: string | null;
+    stopped_reason: string | null;
+    round_limit_id: string | null;
+    before_round_hold: string | null;
+  }[];
 }
 function stepRows(f: Fixture) {
   return dbRead(f, (db) =>
@@ -795,9 +810,11 @@ async function scenario(root: string, kind: Kind) {
                 step.status === "blocked" &&
                 !!step.decision_message_id,
             )
-          : ["round-limit", "budget"].includes(kind)
-            ? rows.at(-1)?.status === "failed"
-            : rows.at(-1)?.status === "passed"),
+          : kind === "round-limit"
+            ? rows.at(-1)?.status === "waiting" && rows.at(-1)?.stopped_reason === "round_limit"
+            : kind === "budget"
+              ? rows.at(-1)?.status === "failed"
+              : rows.at(-1)?.status === "passed"),
     );
     assert.equal(
       new Set(result.map((r) => r.budget_root_run_id)).size,
@@ -823,19 +840,24 @@ async function scenario(root: string, kind: Kind) {
         assert.equal(proposals, 3, "initial plan plus exactly two coordinator dispositions");
       }
       if (kind === "round-limit") {
-        assert.equal((await f.client.call("groups.state", { groupId: group.id })).limited, true);
+        const cycle = await f.client.call("groups.state", { groupId: group.id });
+        assert(cycle.limited && cycle.roundLimitId, "the live cycle exposes a recoverable stop");
+        assert.equal(cycle.rounds, 1);
         const last = result.at(-1);
         assert(last);
+        assert.equal(last.cycle_id, cycle.cycleId);
+        assert.equal(last.round_limit_id, cycle.roundLimitId, "hold belongs to the live stop");
+        assert(
+          last.before_round_hold === "running" || last.before_round_hold === "waiting",
+          "the hold retains the plan status used on continuation",
+        );
+        assert.equal(last.finished_at, null, "a held plan still owns its unfinished work");
         const progress = await f.client.call("groups.plan.progress", {
           groupId: group.id,
           workflowRunId: last.id,
         });
-        assert.equal(progress.status, "failed");
-        assert.equal(
-          progress.stoppedReason,
-          "round_limit",
-          "only the real cycle cap ends this case",
-        );
+        assert.equal(progress.status, "waiting");
+        assert.equal(progress.stoppedReason, "round_limit");
       }
     }
     if (kind === "progress") {

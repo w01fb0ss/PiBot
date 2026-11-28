@@ -68,7 +68,9 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      - name: Enable unprivileged user namespaces for Electron sandbox on Ubuntu 24.04
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Renderer & owner smoke
         run: |
           xvfb-run -a pnpm --filter @pibot/desktop smoke:renderer
-          pnpm --filter @pibot/desktop smoke:owner
+          xvfb-run -a pnpm --filter @pibot/desktop smoke:owner
