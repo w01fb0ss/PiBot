@@ -121,6 +121,7 @@ export async function startEmbeddedDesktop(options: {
     window,
     logger,
     appImage: undefined,
+    channel: originalEnv.PIBOT_UPDATE_CHANNEL === "rc" ? "rc" : "stable",
     shutdown: async () => {
       if (quitting) return false;
       quitting = true;

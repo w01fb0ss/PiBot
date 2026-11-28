@@ -221,6 +221,7 @@ async function runGuiClient(
     window,
     logger: options.logger,
     appImage: options.originalEnv.APPIMAGE,
+    channel: options.originalEnv.PIBOT_UPDATE_CHANNEL === "rc" ? "rc" : "stable",
     shutdown: shutdownForUpdate,
   });
   let rendererWaiting = false;

@@ -1,0 +1,714 @@
+# End-to-end free build, staging, RC, and production release pipeline for Pi Bot.
+#
+# Triggers:
+#   - Push tag `vX.Y.Z-rc.N` -> parallel 3-platform + Runner + Android builds -> Draft/Pre-release
+#     on GitHub -> automatic R2 upload (`downloads/X.Y.Z-rc.N/`) + `PiBot_web` `/updates/rc/` deploy.
+#   - Push tag `vX.Y.Z` -> parallel builds -> GitHub Draft Release (download & test locally) ->
+#     manual Approve in GitHub `production` environment -> R2 multipart upload + public ETag/SHA-256
+#     verification -> automatic `PiBot_web` update & Cloudflare deploy -> publish GitHub Release.
+#   - Manual `workflow_dispatch` supports hotfixes (`desktop_only`, `update_only`) or partial skips.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.1.1-rc.1 or v0.1.1)"
+        required: true
+        type: string
+      channel:
+        description: "Release channel"
+        required: true
+        default: rc
+        type: choice
+        options:
+          - rc
+          - stable
+      desktop_only:
+        description: "Ship desktop installers only (skip Runner and Android APK)"
+        default: false
+        type: boolean
+      update_only:
+        description: "In-app update hotfix only (skip macOS DMG and website download buttons)"
+        default: false
+        type: boolean
+      skip_android:
+        description: "Skip Android APK build"
+        default: false
+        type: boolean
+      skip_runner:
+        description: "Skip Runner builds"
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Validate release metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+      download_folder: ${{ steps.meta.outputs.download_folder }}
+      channel: ${{ steps.meta.outputs.channel }}
+      is_rc: ${{ steps.meta.outputs.is_rc }}
+      desktop_only: ${{ steps.meta.outputs.desktop_only }}
+      update_only: ${{ steps.meta.outputs.update_only }}
+      skip_android: ${{ steps.meta.outputs.skip_android }}
+      skip_runner: ${{ steps.meta.outputs.skip_runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - name: Validate tag, package version and release notes
+        id: meta
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_CHANNEL: ${{ inputs.channel }}
+          INPUT_DESKTOP_ONLY: ${{ inputs.desktop_only }}
+          INPUT_UPDATE_ONLY: ${{ inputs.update_only }}
+          INPUT_SKIP_ANDROID: ${{ inputs.skip_android }}
+          INPUT_SKIP_RUNNER: ${{ inputs.skip_runner }}
+        run: |
+          node - <<'EOF'
+          import { appendFileSync, existsSync, readFileSync } from "node:fs";
+
+          const tag = process.env.EVENT_NAME === "workflow_dispatch"
+            ? (process.env.INPUT_TAG || "").trim()
+            : (process.env.REF_NAME || "").trim();
+          const match = /^v(\d+\.\d+\.\d+)(?:-rc\.(\d+))?$/u.exec(tag);
+          if (!match) {
+            throw new Error(`Invalid release tag "${tag}". Expected vX.Y.Z or vX.Y.Z-rc.N`);
+          }
+          const version = match[1];
+          const isRc = Boolean(match[2]) || process.env.INPUT_CHANNEL === "rc";
+          const channel = isRc ? "rc" : "stable";
+          const downloadFolder = tag.replace(/^v/u, "");
+          if (isRc && !match[2]) {
+            throw new Error(`RC channel requires a -rc.<n> tag (got "${tag}")`);
+          }
+
+          for (const file of [
+            "package.json",
+            "apps/desktop/package.json",
+            "apps/mobile/package.json",
+            "apps/runner/package.json",
+          ]) {
+            const pkg = JSON.parse(readFileSync(file, "utf8"));
+            if (pkg.version !== version) {
+              throw new Error(`${file} has version "${pkg.version}", expected "${version}" for tag ${tag}`);
+            }
+          }
+
+          const notesPath = `apps/desktop/release-notes/${version}.json`;
+          if (!existsSync(notesPath)) {
+            throw new Error(`Missing release notes file: ${notesPath}`);
+          }
+          const notes = JSON.parse(readFileSync(notesPath, "utf8"));
+          for (const lang of ["zh", "en"]) {
+            const lines = notes[lang];
+            if (
+              !Array.isArray(lines) ||
+              !lines.length ||
+              lines.length > 20 ||
+              lines.some((l) => typeof l !== "string" || !l.trim() || l.length > 300)
+            ) {
+              throw new Error(`Invalid release notes (${lang}) in ${notesPath}`);
+            }
+          }
+
+          const out = process.env.GITHUB_OUTPUT;
+          const write = (k, v) => appendFileSync(out, `${k}=${v}\n`);
+          write("tag", tag);
+          write("version", version);
+          write("download_folder", downloadFolder);
+          write("channel", channel);
+          write("is_rc", String(isRc));
+          write("desktop_only", String(process.env.INPUT_DESKTOP_ONLY === "true"));
+          write("update_only", String(process.env.INPUT_UPDATE_ONLY === "true"));
+          write("skip_android", String(process.env.INPUT_SKIP_ANDROID === "true"));
+          write("skip_runner", String(process.env.INPUT_SKIP_RUNNER === "true"));
+          console.log(`Prepared ${channel} release: tag=${tag} version=${version} folder=${downloadFolder}`);
+          EOF
+
+  check:
+    name: Pre-release check
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm check
+
+  build-mac-arm64:
+    name: Build macOS arm64
+    needs: [prepare, check]
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Package macOS arm64 release
+        env:
+          PIBOT_SIGN_IDENTITY: adhoc
+        run: pnpm --filter @pibot/desktop package -- --release --mac --arm64 --dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-mac-arm64
+          path: |
+            apps/desktop/dist/release/mac-arm64/PiBot-*.dmg
+            apps/desktop/dist/release/mac-arm64/PiBot-*.dmg.blockmap
+            apps/desktop/dist/release/mac-arm64/PiBot-*.zip
+            apps/desktop/dist/release/mac-arm64/PiBot-*.zip.blockmap
+            apps/desktop/dist/release/mac-arm64/latest-mac.yml
+            apps/desktop/dist/release/mac-arm64/release-package.json
+          if-no-files-found: error
+
+  build-mac-x64:
+    name: Build macOS x64 (+ Runner)
+    needs: [prepare, check]
+    runs-on: macos-15-intel
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Package macOS x64 release
+        env:
+          PIBOT_SIGN_IDENTITY: adhoc
+        run: pnpm --filter @pibot/desktop package -- --release --mac --x64 --dmg
+      - name: Package macOS x64 Runner
+        if: needs.prepare.outputs.desktop_only != 'true' && needs.prepare.outputs.skip_runner != 'true'
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          pnpm runner:package --platform darwin --arch x64
+          /usr/bin/ditto -c -k --keepParent "dist/runner/darwin-x64/Pi Bot Runner.app" "dist/runner/PiBot-Runner-${VERSION}-mac-x64.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-mac-x64
+          path: |
+            apps/desktop/dist/release/mac-x64/PiBot-*.dmg
+            apps/desktop/dist/release/mac-x64/PiBot-*.dmg.blockmap
+            apps/desktop/dist/release/mac-x64/PiBot-*.zip
+            apps/desktop/dist/release/mac-x64/PiBot-*.zip.blockmap
+            apps/desktop/dist/release/mac-x64/latest-mac.yml
+            apps/desktop/dist/release/mac-x64/release-package.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: needs.prepare.outputs.desktop_only != 'true' && needs.prepare.outputs.skip_runner != 'true'
+        with:
+          name: runner-mac-x64
+          path: dist/runner/PiBot-Runner-*-mac-x64.zip
+          if-no-files-found: error
+
+  build-win-x64:
+    name: Build Windows x64 (+ Runner)
+    needs: [prepare, check]
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Package Windows x64 release
+        run: pnpm --filter @pibot/desktop package -- --release --win --x64
+      - name: Ensure NSIS makensis is available for Runner installer
+        if: needs.prepare.outputs.desktop_only != 'true' && needs.prepare.outputs.skip_runner != 'true'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
+            choco install nsis -y --no-progress
+          }
+      - name: Package Windows x64 Runner installer
+        if: needs.prepare.outputs.desktop_only != 'true' && needs.prepare.outputs.skip_runner != 'true'
+        run: pnpm runner:package --platform win32 --arch x64 --installer
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-win-x64
+          path: |
+            apps/desktop/dist/release/win-x64/PiBot-*.exe
+            apps/desktop/dist/release/win-x64/PiBot-*.exe.blockmap
+            apps/desktop/dist/release/win-x64/latest.yml
+            apps/desktop/dist/release/win-x64/release-package.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: needs.prepare.outputs.desktop_only != 'true' && needs.prepare.outputs.skip_runner != 'true'
+        with:
+          name: runner-win-x64
+          path: dist/runner/installer/Pi Bot Runner Setup *.exe
+          if-no-files-found: error
+
+  build-linux-x64:
+    name: Build Linux x64 (+ Runner)
+    needs: [prepare, check]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Package Linux x64 release
+        run: xvfb-run -a pnpm --filter @pibot/desktop package -- --release --linux --x64
+      - name: Install fpm for Linux Runner .deb
+        if: needs.prepare.outputs.desktop_only != 'true' && needs.prepare.outputs.skip_runner != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ruby-dev build-essential rpm
+          sudo gem install --no-document fpm
+      - name: Package Linux x64 Runner .deb
+        if: needs.prepare.outputs.desktop_only != 'true' && needs.prepare.outputs.skip_runner != 'true'
+        run: pnpm runner:package --platform linux --arch x64 --installer
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-linux-x64
+          path: |
+            apps/desktop/dist/release/linux-x64/PiBot-*.AppImage
+            apps/desktop/dist/release/linux-x64/PiBot-*.deb
+            apps/desktop/dist/release/linux-x64/PiBot-*.tar.gz
+            apps/desktop/dist/release/linux-x64/latest-linux.yml
+            apps/desktop/dist/release/linux-x64/release-package.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: needs.prepare.outputs.desktop_only != 'true' && needs.prepare.outputs.skip_runner != 'true'
+        with:
+          name: runner-linux-x64
+          path: dist/runner/installer/pibot-runner_*_amd64.deb
+          if-no-files-found: error
+
+  build-android:
+    name: Build Android APK
+    needs: [prepare, check]
+    if: needs.prepare.outputs.desktop_only != 'true' && needs.prepare.outputs.update_only != 'true' && needs.prepare.outputs.skip_android != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - run: pnpm install --frozen-lockfile
+      - name: Prepare optional Firebase config
+        env:
+          GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.ANDROID_GOOGLE_SERVICES_JSON_BASE64 }}
+        run: |
+          if [ -n "$GOOGLE_SERVICES_JSON_BASE64" ]; then
+            echo "$GOOGLE_SERVICES_JSON_BASE64" | base64 -d > "$RUNNER_TEMP/google-services.json"
+            echo "GOOGLE_SERVICES_JSON=$RUNNER_TEMP/google-services.json" >> "$GITHUB_ENV"
+          fi
+      - name: Expo prebuild and Gradle release APK
+        working-directory: apps/mobile
+        env:
+          EXPO_NO_TELEMETRY: "1"
+          EXPO_OWNER: ${{ vars.EXPO_OWNER }}
+          EXPO_PUBLIC_EAS_PROJECT_ID: ${{ vars.EXPO_PUBLIC_EAS_PROJECT_ID }}
+        run: |
+          node scripts/expo.mjs prebuild --platform android --clean --no-install
+          cd android
+          ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a
+      - name: Sign release APK when keystore secret is configured
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          APK="apps/mobile/android/app/build/outputs/apk/release/app-release.apk"
+          BUILD_TOOLS="$(ls -d "${ANDROID_HOME}/build-tools/"* | sort -V | tail -n 1)"
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            "${BUILD_TOOLS}/zipalign" -f -p 4 "$APK" "$RUNNER_TEMP/aligned.apk"
+            "${BUILD_TOOLS}/apksigner" sign \
+              --ks "$RUNNER_TEMP/release.keystore" \
+              --ks-pass "env:KEYSTORE_PASS" \
+              --ks-key-alias "$KEY_ALIAS" \
+              --key-pass "env:KEY_PASS" \
+              --out "$APK" \
+              "$RUNNER_TEMP/aligned.apk"
+            "${BUILD_TOOLS}/apksigner" verify "$APK"
+            rm -f "$RUNNER_TEMP/release.keystore" "$RUNNER_TEMP/aligned.apk"
+          else
+            echo "::warning::ANDROID_KEYSTORE_BASE64 not set; APK uses default signing config"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: apps/mobile/android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+
+  stage-release:
+    name: Assemble SHA256SUMS & GitHub Draft Release
+    needs: [prepare, build-mac-arm64, build-mac-x64, build-win-x64, build-linux-x64, build-android]
+    if: always() && needs.prepare.result == 'success' && needs.build-mac-arm64.result == 'success' && needs.build-mac-x64.result == 'success' && needs.build-win-x64.result == 'success' && needs.build-linux-x64.result == 'success' && (needs.build-android.result == 'success' || needs.build-android.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - uses: android-actions/setup-android@v3
+        if: needs.build-android.result == 'success'
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-mac-arm64
+          path: apps/desktop/dist/release/mac-arm64
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-mac-x64
+          path: apps/desktop/dist/release/mac-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-win-x64
+          path: apps/desktop/dist/release/win-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-linux-x64
+          path: apps/desktop/dist/release/linux-x64
+      - uses: actions/download-artifact@v4
+        if: needs.prepare.outputs.desktop_only != 'true' && needs.prepare.outputs.skip_runner != 'true'
+        with:
+          name: runner-mac-x64
+          path: dist/runner
+      - uses: actions/download-artifact@v4
+        if: needs.prepare.outputs.desktop_only != 'true' && needs.prepare.outputs.skip_runner != 'true'
+        with:
+          name: runner-win-x64
+          path: dist/runner/installer
+      - uses: actions/download-artifact@v4
+        if: needs.prepare.outputs.desktop_only != 'true' && needs.prepare.outputs.skip_runner != 'true'
+        with:
+          name: runner-linux-x64
+          path: dist/runner/installer
+      - uses: actions/download-artifact@v4
+        if: needs.build-android.result == 'success'
+        with:
+          name: android-apk
+          path: apps/mobile/android/app/build/outputs/apk/release
+      - name: Dry-run publish validation & generate feeds preview
+        env:
+          CHANNEL: ${{ needs.prepare.outputs.channel }}
+          FOLDER: ${{ needs.prepare.outputs.download_folder }}
+          DESKTOP_ONLY: ${{ needs.prepare.outputs.desktop_only }}
+          UPDATE_ONLY: ${{ needs.prepare.outputs.update_only }}
+        run: |
+          if [ -n "${ANDROID_HOME:-}" ] && [ -d "${ANDROID_HOME}/build-tools" ]; then
+            BUILD_TOOLS="$(ls -d "${ANDROID_HOME}/build-tools/"* | sort -V | tail -n 1)"
+            export AAPT="${BUILD_TOOLS}/aapt"
+          fi
+          ARGS=(--channel "$CHANNEL" --tag "$FOLDER" --out-dir release-stage --dry-run)
+          [ "$DESKTOP_ONLY" = "true" ] && ARGS+=(--desktop-only)
+          [ "$UPDATE_ONLY" = "true" ] && ARGS+=(--update-only)
+          node tools/release/publish.mjs "${ARGS[@]}"
+      - name: Collect release assets, SHA256SUMS and bilingual release notes
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          mkdir -p release-assets
+          cp apps/desktop/dist/release/mac-arm64/PiBot-*.dmg release-assets/
+          cp apps/desktop/dist/release/mac-arm64/PiBot-*.zip release-assets/
+          cp apps/desktop/dist/release/mac-x64/PiBot-*.dmg release-assets/
+          cp apps/desktop/dist/release/mac-x64/PiBot-*.zip release-assets/
+          cp apps/desktop/dist/release/win-x64/PiBot-*.exe release-assets/
+          cp apps/desktop/dist/release/linux-x64/PiBot-*.AppImage release-assets/
+          cp apps/desktop/dist/release/linux-x64/PiBot-*.deb release-assets/
+          [ -f "dist/runner/PiBot-Runner-${VERSION}-mac-x64.zip" ] && cp "dist/runner/PiBot-Runner-${VERSION}-mac-x64.zip" release-assets/
+          [ -f "dist/runner/installer/Pi Bot Runner Setup ${VERSION}.exe" ] && cp "dist/runner/installer/Pi Bot Runner Setup ${VERSION}.exe" "release-assets/PiBot-Runner-${VERSION}-win-x64.exe"
+          [ -f "dist/runner/installer/pibot-runner_${VERSION}_amd64.deb" ] && cp "dist/runner/installer/pibot-runner_${VERSION}_amd64.deb" "release-assets/PiBot-Runner-${VERSION}-linux-x64.deb"
+          [ -f "apps/mobile/android/app/build/outputs/apk/release/app-release.apk" ] && cp "apps/mobile/android/app/build/outputs/apk/release/app-release.apk" "release-assets/PiBot-${VERSION}-android.apk"
+          (cd release-assets && sha256sum * > SHA256SUMS)
+          node - <<'EOF'
+          import { readFileSync, writeFileSync } from "node:fs";
+          const version = process.env.VERSION;
+          const notes = JSON.parse(readFileSync(`apps/desktop/release-notes/${version}.json`, "utf8"));
+          const body = [
+            "## 中文",
+            ...notes.zh.map((line) => `- ${line}`),
+            "",
+            "## English",
+            ...notes.en.map((line) => `- ${line}`),
+          ].join("\n");
+          writeFileSync("release-stage/RELEASE_NOTES.md", `${body}\n`);
+          EOF
+      - name: Create or update GitHub Release (Draft for stable, Pre-release for RC)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          IS_RC: ${{ needs.prepare.outputs.is_rc }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release-assets/* --clobber
+            gh release edit "$TAG" --notes-file release-stage/RELEASE_NOTES.md
+          else
+            FLAGS=(--title "Pi Bot ${TAG}" --notes-file release-stage/RELEASE_NOTES.md)
+            if [ "$IS_RC" = "true" ]; then
+              FLAGS+=(--prerelease)
+            else
+              FLAGS+=(--draft)
+            fi
+            gh release create "$TAG" release-assets/* "${FLAGS[@]}"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-stage-preview
+          path: |
+            release-stage/**
+            release-assets/SHA256SUMS
+
+  publish-rc:
+    name: Publish RC to Cloudflare R2 & RC feed
+    needs: [prepare, stage-release, build-android]
+    if: always() && needs.prepare.outputs.is_rc == 'true' && needs.stage-release.result == 'success'
+    runs-on: ubuntu-latest
+    environment: rc
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - uses: android-actions/setup-android@v3
+        if: needs.build-android.result == 'success'
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-mac-arm64
+          path: apps/desktop/dist/release/mac-arm64
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-mac-x64
+          path: apps/desktop/dist/release/mac-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-win-x64
+          path: apps/desktop/dist/release/win-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-linux-x64
+          path: apps/desktop/dist/release/linux-x64
+      - uses: actions/download-artifact@v4
+        if: needs.prepare.outputs.desktop_only != 'true' && needs.prepare.outputs.skip_runner != 'true'
+        with:
+          name: runner-mac-x64
+          path: dist/runner
+      - uses: actions/download-artifact@v4
+        if: needs.prepare.outputs.desktop_only != 'true' && needs.prepare.outputs.skip_runner != 'true'
+        with:
+          name: runner-win-x64
+          path: dist/runner/installer
+      - uses: actions/download-artifact@v4
+        if: needs.prepare.outputs.desktop_only != 'true' && needs.prepare.outputs.skip_runner != 'true'
+        with:
+          name: runner-linux-x64
+          path: dist/runner/installer
+      - uses: actions/download-artifact@v4
+        if: needs.build-android.result == 'success'
+        with:
+          name: android-apk
+          path: apps/mobile/android/app/build/outputs/apk/release
+      - name: Upload RC installers to Cloudflare R2 & verify public URLs
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ vars.R2_BUCKET || 'pibot-releases' }}
+          FOLDER: ${{ needs.prepare.outputs.download_folder }}
+          DESKTOP_ONLY: ${{ needs.prepare.outputs.desktop_only }}
+          UPDATE_ONLY: ${{ needs.prepare.outputs.update_only }}
+        run: |
+          if [ -n "${ANDROID_HOME:-}" ] && [ -d "${ANDROID_HOME}/build-tools" ]; then
+            BUILD_TOOLS="$(ls -d "${ANDROID_HOME}/build-tools/"* | sort -V | tail -n 1)"
+            export AAPT="${BUILD_TOOLS}/aapt"
+          fi
+          ARGS=(--channel rc --tag "$FOLDER" --out-dir release-out --reuse-large-uploads)
+          [ "$DESKTOP_ONLY" = "true" ] && ARGS+=(--desktop-only)
+          [ "$UPDATE_ONLY" = "true" ] && ARGS+=(--update-only)
+          node tools/release/publish.mjs "${ARGS[@]}"
+      - name: Dispatch RC update feeds to PiBot_web
+        env:
+          PIBOT_WEB_REPO: ${{ vars.PIBOT_WEB_REPO }}
+          PIBOT_WEB_DISPATCH_TOKEN: ${{ secrets.PIBOT_WEB_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$PIBOT_WEB_REPO" ] || [ -z "$PIBOT_WEB_DISPATCH_TOKEN" ]; then
+            echo "::warning::PIBOT_WEB_REPO or PIBOT_WEB_DISPATCH_TOKEN not set; skipping automatic website deploy."
+            exit 0
+          fi
+          node - <<'EOF'
+          import { readFileSync } from "node:fs";
+          const payload = JSON.parse(readFileSync("release-out/web-dispatch.json", "utf8"));
+          const res = await fetch(`https://api.github.com/repos/${process.env.PIBOT_WEB_REPO}/dispatches`, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${process.env.PIBOT_WEB_DISPATCH_TOKEN}`,
+              Accept: "application/vnd.github+json",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ event_type: "pibot-release-publish", client_payload: payload }),
+          });
+          if (!res.ok) throw new Error(`PiBot_web dispatch failed (${res.status}): ${await res.text()}`);
+          console.log(`Dispatched RC update feeds to ${process.env.PIBOT_WEB_REPO}`);
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rc-publish-receipts
+          path: release-out/**
+
+  publish-production:
+    name: Publish Stable to R2, PiBot_web & GitHub Release
+    needs: [prepare, stage-release, build-android]
+    if: always() && needs.prepare.outputs.is_rc != 'true' && needs.stage-release.result == 'success'
+    runs-on: ubuntu-latest
+    # Configure Required Reviewers on the GitHub `production` environment so stable rollout
+    # waits for manual approval after local VM / real-device acceptance of the Draft Release.
+    environment: production
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - uses: android-actions/setup-android@v3
+        if: needs.build-android.result == 'success'
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-mac-arm64
+          path: apps/desktop/dist/release/mac-arm64
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-mac-x64
+          path: apps/desktop/dist/release/mac-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-win-x64
+          path: apps/desktop/dist/release/win-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-linux-x64
+          path: apps/desktop/dist/release/linux-x64
+      - uses: actions/download-artifact@v4
+        if: needs.prepare.outputs.desktop_only != 'true' && needs.prepare.outputs.skip_runner != 'true'
+        with:
+          name: runner-mac-x64
+          path: dist/runner
+      - uses: actions/download-artifact@v4
+        if: needs.prepare.outputs.desktop_only != 'true' && needs.prepare.outputs.skip_runner != 'true'
+        with:
+          name: runner-win-x64
+          path: dist/runner/installer
+      - uses: actions/download-artifact@v4
+        if: needs.prepare.outputs.desktop_only != 'true' && needs.prepare.outputs.skip_runner != 'true'
+        with:
+          name: runner-linux-x64
+          path: dist/runner/installer
+      - uses: actions/download-artifact@v4
+        if: needs.build-android.result == 'success'
+        with:
+          name: android-apk
+          path: apps/mobile/android/app/build/outputs/apk/release
+      - name: Upload stable installers to Cloudflare R2 & verify public URLs
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ vars.R2_BUCKET || 'pibot-releases' }}
+          DESKTOP_ONLY: ${{ needs.prepare.outputs.desktop_only }}
+          UPDATE_ONLY: ${{ needs.prepare.outputs.update_only }}
+        run: |
+          if [ -n "${ANDROID_HOME:-}" ] && [ -d "${ANDROID_HOME}/build-tools" ]; then
+            BUILD_TOOLS="$(ls -d "${ANDROID_HOME}/build-tools/"* | sort -V | tail -n 1)"
+            export AAPT="${BUILD_TOOLS}/aapt"
+          fi
+          ARGS=(--channel stable --out-dir release-out --reuse-large-uploads)
+          if [ "$UPDATE_ONLY" = "true" ]; then
+            ARGS+=(--update-only)
+          else
+            ARGS+=(--launch)
+          fi
+          [ "$DESKTOP_ONLY" = "true" ] && ARGS+=(--desktop-only)
+          node tools/release/publish.mjs "${ARGS[@]}"
+      - name: Dispatch stable feeds & website buttons to PiBot_web
+        env:
+          PIBOT_WEB_REPO: ${{ vars.PIBOT_WEB_REPO }}
+          PIBOT_WEB_DISPATCH_TOKEN: ${{ secrets.PIBOT_WEB_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$PIBOT_WEB_REPO" ] || [ -z "$PIBOT_WEB_DISPATCH_TOKEN" ]; then
+            echo "::warning::PIBOT_WEB_REPO or PIBOT_WEB_DISPATCH_TOKEN not set; deploy PiBot_web manually from release-out artifact."
+            exit 0
+          fi
+          node - <<'EOF'
+          import { readFileSync } from "node:fs";
+          const payload = JSON.parse(readFileSync("release-out/web-dispatch.json", "utf8"));
+          const res = await fetch(`https://api.github.com/repos/${process.env.PIBOT_WEB_REPO}/dispatches`, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${process.env.PIBOT_WEB_DISPATCH_TOKEN}`,
+              Accept: "application/vnd.github+json",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ event_type: "pibot-release-publish", client_payload: payload }),
+          });
+          if (!res.ok) throw new Error(`PiBot_web dispatch failed (${res.status}): ${await res.text()}`);
+          console.log(`Dispatched stable release to ${process.env.PIBOT_WEB_REPO}`);
+          EOF
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: gh release edit "$TAG" --draft=false --latest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: production-publish-receipts
+          path: release-out/**

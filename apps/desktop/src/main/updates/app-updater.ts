@@ -21,6 +21,8 @@ type CancellationToken = InstanceType<UpdaterModule["CancellationToken"]>;
  * nothing else is sent. HTTPS only.
  */
 export const UPDATE_FEED_URL = "https://pibot.space/updates/";
+export const RC_UPDATE_FEED_URL = "https://pibot.space/updates/rc/";
+export type UpdateChannel = "stable" | "rc";
 /**
  * Maintainers 2026-10-22: the app checks on its own shortly after startup and then every few hours
  * (this replaces the earlier click-only policy). It only checks: downloading waits for the
@@ -38,6 +40,7 @@ export interface AppUpdaterOptions {
   logger: Logger;
   platform: NodeJS.Platform;
   currentVersion: string;
+  channel?: UpdateChannel;
   blocker: DesktopUpdateReason | undefined;
   /** Loads electron-updater; injected so the background owner never loads it. */
   load(): Promise<UpdaterModule>;
@@ -113,7 +116,8 @@ export function createAppUpdater(options: AppUpdaterOptions) {
     // only changed blocks (falling back to the full file); the yml's sha512 still checks the result.
     instance.disableDifferentialDownload = false;
     instance.disableWebInstaller = true;
-    instance.setFeedURL({ provider: "generic", url: UPDATE_FEED_URL });
+    const feedUrl = options.channel === "rc" ? RC_UPDATE_FEED_URL : UPDATE_FEED_URL;
+    instance.setFeedURL({ provider: "generic", url: feedUrl });
     // Electron-updater adds a persistent random `x-user-staging-id` to every check (staged
     // rollouts, which Pi Bot does not use); request headers override it with a constant, and the
     // User-Agent carries only version and platform so the update server can count checks.

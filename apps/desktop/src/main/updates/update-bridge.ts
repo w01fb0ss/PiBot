@@ -6,7 +6,7 @@ import {
   type DesktopUpdateState,
 } from "@pibot/protocol";
 import { app, type BrowserWindow, ipcMain, autoUpdater as nativeUpdater } from "electron";
-import { type AppUpdater, createAppUpdater } from "./app-updater.ts";
+import { type AppUpdater, createAppUpdater, type UpdateChannel } from "./app-updater.ts";
 import { createUpdateProxy } from "./update-proxy.ts";
 import { updateBlocker } from "./update-support.ts";
 
@@ -19,6 +19,8 @@ export function startAppUpdates(options: {
   logger: Logger;
   /** The AppImage runtime's APPIMAGE variable, read by the entry point. */
   appImage: string | undefined;
+  /** Optional update channel override (PIBOT_UPDATE_CHANNEL=rc for release-candidate tests). */
+  channel?: UpdateChannel;
   shutdown(): Promise<boolean>;
 }) {
   const { window, logger } = options;
@@ -45,6 +47,7 @@ export function startAppUpdates(options: {
       proxyLogin: proxy.login,
       platform: process.platform,
       currentVersion: app.getVersion(),
+      channel: options.channel,
       blocker,
       load: () => import("electron-updater").then(commonJs),
       ...(process.platform === "darwin" ? { nativeUpdater } : {}),
