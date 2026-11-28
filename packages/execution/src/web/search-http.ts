@@ -17,6 +17,12 @@ export class SearchHttpError extends Error {
     super(`search_${reason}_failed`);
   }
 }
+/** A non-2xx answer from a search API; carries the status so callers can say what to do next. */
+export class SearchStatusError extends Error {
+  constructor(readonly status: number) {
+    super("Search request failed");
+  }
+}
 /** Only the user-selected search endpoint may opt into private addresses. No redirects. */
 export async function searchResponse(input: {
   url: string;
@@ -133,6 +139,6 @@ export async function searchResponse(input: {
 
 export async function searchJson(input: Parameters<typeof searchResponse>[0]): Promise<unknown> {
   const response = await searchResponse(input);
-  if (response.status < 200 || response.status >= 300) throw new Error("Search request failed");
+  if (response.status < 200 || response.status >= 300) throw new SearchStatusError(response.status);
   return JSON.parse(response.text);
 }

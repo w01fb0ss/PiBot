@@ -96,7 +96,7 @@ Bot 通过视频工具调用这些模型，与聊天模型分开选择。可以�
 
 - **免 Key（自动）**：先试 DuckDuckGo，不通时换 Bing。第一次搜索时还会在聊天里请你确认。
 - **DuckDuckGo**、**Bing**：不用注册，可能被限流。
-- **Brave Search API**、**Tavily**：填 API Key。
+- **Brave Search API**、**Tavily**、**Keenable**：填 API Key。都是可选项，不选就不会有任何变化。
 - **自建 SearXNG**：填你的服务地址，只放行这一个地址。
 
 ## 每个 Bot 用不同的模型

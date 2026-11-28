@@ -117,6 +117,11 @@ export const SearchConfigSchema = z.discriminatedUnion("provider", [
     disclosed: z.boolean(),
   }),
   z.strictObject({
+    provider: z.literal("keenable"),
+    configured: z.boolean(),
+    disclosed: z.boolean(),
+  }),
+  z.strictObject({
     provider: z.literal("searxng"),
     baseUrl: WebUrlSchema,
     configured: z.boolean(),

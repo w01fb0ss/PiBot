@@ -3,6 +3,7 @@ import {
   type BlockedPageReason,
   DuckDuckGoError,
   isProxyFailure,
+  SearchStatusError,
 } from "@pibot/execution";
 import { auditProviderName } from "../../core/audit-fields.ts";
 import type { PreparedTool } from "../../core/local-types.ts";
@@ -27,7 +28,31 @@ export class SearchRunError extends Error {
     return language === "zh" ? this.zh : this.en;
   }
 }
-function failure(error: unknown, provider: string, receipt?: PreparedTool) {
+/** Keenable's HTTP errors, each with something the user can do; never a silent empty result. */
+function keenableStatus(status: number) {
+  if (status === 429)
+    return new SearchRunError(
+      "Keenable 搜索请求太频繁（429），请稍后再试，或在设置里换一个搜索服务",
+      "Keenable is rate limiting searches (429). Try again shortly, or switch the search service in settings",
+    );
+  if (status === 401 || status === 403)
+    return new SearchRunError(
+      `Keenable 拒绝了这个 API Key（${status}），请在设置里检查或更换 Key`,
+      `Keenable rejected the API key (${status}). Check or replace the key in settings`,
+    );
+  if (status === 402)
+    return new SearchRunError(
+      "Keenable 账户额度不足（402），请充值，或在设置里换一个搜索服务",
+      "The Keenable account is out of credits (402). Add credits, or switch the search service in settings",
+    );
+  return new SearchRunError(
+    `Keenable 搜索失败（HTTP ${status}），请稍后再试，或在设置里换一个搜索服务`,
+    `Keenable search failed (HTTP ${status}). Try again, or switch the search service in settings`,
+  );
+}
+export function failure(error: unknown, provider: string, receipt?: PreparedTool) {
+  if (provider === "Keenable" && error instanceof SearchStatusError)
+    return keenableStatus(error.status);
   const reason =
     error instanceof DuckDuckGoError || error instanceof BingError ? error.reason : "other";
   return reason === "unavailable"
